@@ -1,0 +1,457 @@
+diff --git a/assets/inject/renderer-inject.js b/assets/inject/renderer-inject.js
+index fb3db2d..5d1afa8 100644
+--- a/assets/inject/renderer-inject.js
++++ b/assets/inject/renderer-inject.js
+@@ -34,7 +34,7 @@
+   const chatsSortRefreshIntervalMs = 1500;
+   const chatsSortDbRefreshIntervalMs = 5000;
+   const styleId = "codex-delete-style";
+-  const codexDeleteStyleVersion = "9";
++  const codexDeleteStyleVersion = "10";
+   const codexPlusMenuId = "codex-plus-menu";
+   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
+   const codexDeleteVersion = "7";
+@@ -60,6 +60,8 @@
+   const codexThreadScrollListenerVersion = "4";
+   const codexThreadScrollUserIntentVersion = "dispatcher:2";
+   const codexForcePluginInstallRefreshIntervalMs = 1000;
++  const codexPluginEntryUnlockVersion = "2";
++  const codexPluginEntryRefreshIntervalMs = 1000;
+   window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
+   const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
+   clearTimeout(window.__codexProjectMoveProjectionTimer);
+@@ -1283,6 +1285,51 @@
+     return !!button.closest?.('[class*="ms-auto"][class*="shrink-0"][class*="items-center"]');
+   }
+ 
++  function rectsOverlap(first, second, padding = 0) {
++    return first.left < second.right + padding &&
++      first.right > second.left - padding &&
++      first.top < second.bottom + padding &&
++      first.bottom > second.top - padding;
++  }
++
++  function visibleElementRect(element) {
++    if (!element || element.closest?.(`#${codexPlusMenuId}`)) return null;
++    const rect = element.getBoundingClientRect?.();
++    if (!rect || !(rect.width > 0 && rect.height > 0)) return null;
++    const styles = getComputedStyle(element);
++    if (styles.display === "none" || styles.visibility === "hidden") return null;
++    return rect;
++  }
++
++  function floatingMenuNativeControlRects(menuRect) {
++    const rightSideBoundary = Math.max(260, window.innerWidth * 0.35);
++    const verticalPadding = 12;
++    return Array.from(document.querySelectorAll("button, a[href], input, select, textarea, [role='button'], [role='tab'], [aria-haspopup]"))
++      .filter((element) => !isExtensionUiNode(element))
++      .map(visibleElementRect)
++      .filter(Boolean)
++      .filter((rect) => rect.right >= rightSideBoundary)
++      .filter((rect) => rect.bottom >= menuRect.top - verticalPadding && rect.top <= menuRect.bottom + verticalPadding);
++  }
++
++  function avoidFloatingCodexPlusMenuNativeControlOverlap(menu) {
++    if (!menu?.classList?.contains(codexPlusMenuFloatingClass) || !menu.isConnected) return;
++    for (let attempt = 0; attempt < 4; attempt += 1) {
++      const menuRect = menu.getBoundingClientRect();
++      if (!(menuRect.width > 0 && menuRect.height > 0)) return;
++      const blockers = floatingMenuNativeControlRects(menuRect)
++        .filter((rect) => rectsOverlap(menuRect, rect, 8));
++      if (!blockers.length) return;
++      const leftEdge = Math.min(...blockers.map((rect) => rect.left));
++      const currentRight = numericCssValue(menu.style.getPropertyValue("--codex-plus-menu-right") || getComputedStyle(menu).right);
++      const desiredRight = Math.max(currentRight, window.innerWidth - leftEdge + 10);
++      const maxRight = Math.max(0, window.innerWidth - menuRect.width - 12);
++      const nextRight = Math.min(desiredRight, maxRight);
++      if (nextRight <= currentRight + 0.5) return;
++      setCssPropIfChanged(menu, "--codex-plus-menu-right", `${Math.ceil(nextRight)}px`);
++    }
++  }
++
+   function updateFloatingCodexPlusMenuPosition(menu) {
+     if (!menu?.classList?.contains(codexPlusMenuFloatingClass)) return;
+     const header = document.querySelector(selectors.appHeader) || document.querySelector("header");
+@@ -1299,6 +1346,7 @@
+       setCssPropIfChanged(menu, "--codex-plus-menu-top", `${anchor.rect.top}px`);
+       setCssPropIfChanged(menu, "--codex-plus-menu-height", `${anchor.rect.height}px`);
+       setCssPropIfChanged(menu, "--codex-plus-menu-right", `${Math.max(0, window.innerWidth - anchor.rect.left + gap)}px`);
++      avoidFloatingCodexPlusMenuNativeControlOverlap(menu);
+       return;
+     }
+ 
+@@ -1308,6 +1356,7 @@
+       setCssPropIfChanged(menu, "--codex-plus-menu-height", `${headerRect.height}px`);
+     }
+     menu.style.removeProperty("--codex-plus-menu-right");
++    avoidFloatingCodexPlusMenuNativeControlOverlap(menu);
+   }
+ 
+   function installCodexPlusMenu() {
+@@ -1373,23 +1422,33 @@
+   }
+ 
+   function pluginPatchDisabledInRelayMode() {
+-    return !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.launchMode === "relay";
++    return codexPlusBackendSettings.launchMode === "relay";
++  }
++
++  function normalizePluginEntryLabel(text) {
++    return (text || "").replace(/\s+/g, " ").trim();
++  }
++
++  function isPluginEntryLabel(text) {
++    return /^(插件|Plugins)(\s+-\s+.*)?$/i.test(normalizePluginEntryLabel(text));
++  }
++
++  function pluginEntryCandidates() {
++    return Array.from(new Set([
++      ...document.querySelectorAll(selectors.pluginNavButton),
++      ...document.querySelectorAll('nav[role="navigation"] button, nav button'),
++    ]));
+   }
+ 
+   function pluginEntryButton() {
+     const byIcon = document.querySelector(`${selectors.pluginNavButton} ${selectors.pluginSvgPath}`)?.closest("button");
+     if (byIcon) return byIcon;
+-    return Array.from(document.querySelectorAll(selectors.pluginNavButton))
+-      .find((button) => /^(插件|Plugins)(\s+-\s+.*)?$/i.test((button.textContent || "").trim())) || null;
++    return pluginEntryCandidates()
++      .find((button) => isPluginEntryLabel(button.textContent || button.innerText)) || null;
+   }
+ 
+   function labelUnlockedPluginEntry(button) {
+-    const labelTextNode = Array.from(button.querySelectorAll("span, div")).reverse()
+-      .flatMap((node) => Array.from(node.childNodes))
+-      .find((node) => node.nodeType === 3 && /^(插件|Plugins)( - 已解锁| - Unlocked)?$/i.test((node.nodeValue || "").trim()));
+-    if (!labelTextNode) return;
+-    const current = (labelTextNode.nodeValue || "").trim();
+-    labelTextNode.nodeValue = /^Plugins/i.test(current) ? "Plugins - Unlocked" : "插件 - 已解锁";
++    clearPluginEntryUnlockLabel(button);
+   }
+ 
+   function clearPluginEntryUnlockLabel(button) {
+@@ -1406,24 +1465,94 @@
+     const pluginButton = pluginEntryButton();
+     if (!pluginButton) return;
+     spoofChatGPTAuthMethod(pluginButton);
+-    pluginButton.disabled = false;
+-    pluginButton.removeAttribute("disabled");
+-    pluginButton.style.display = "";
+-    pluginButton.querySelectorAll("*").forEach((node) => {
+-      node.style.display = "";
+-    });
++    pluginEntryUnlockNodes(pluginButton).forEach(clearPluginEntryDisabledState);
+     labelUnlockedPluginEntry(pluginButton);
+-    const reactPropsKey = Object.keys(pluginButton).find((key) => key.startsWith("__reactProps"));
+-    if (reactPropsKey) {
+-      pluginButton[reactPropsKey].disabled = false;
+-    }
+-    if (pluginButton.dataset.codexPluginEnabled === "true") return;
+-    pluginButton.dataset.codexPluginEnabled = "true";
+-    pluginButton.addEventListener("click", () => {
+-      spoofChatGPTAuthMethod(pluginButton);
++    installPluginEntryGuard(pluginButton);
++    pluginButton.dataset.codexPluginEnabled = codexPluginEntryUnlockVersion;
++  }
++
++  function pluginEntryUnlockNodes(button) {
++    const nodes = [button];
++    button.querySelectorAll?.("button, [role='button'], [disabled], [aria-disabled], [data-disabled], .cursor-not-allowed, .pointer-events-none")
++      .forEach((node) => nodes.push(node));
++    let parent = button.parentElement;
++    for (let depth = 0; parent && depth < 3; depth += 1, parent = parent.parentElement) {
++      if (parent.matches?.("[disabled], [aria-disabled], [data-disabled], .cursor-not-allowed, .pointer-events-none")) {
++        nodes.push(parent);
++      }
++    }
++    return Array.from(new Set(nodes));
++  }
++
++  function clearPluginEntryDisabledState(element) {
++    if (!(element instanceof HTMLElement)) return;
++    if ("disabled" in element) element.disabled = false;
++    element.removeAttribute("disabled");
++    element.removeAttribute("aria-disabled");
++    element.removeAttribute("data-disabled");
++    element.removeAttribute("inert");
++    element.classList.remove("disabled", "opacity-50", "cursor-not-allowed", "pointer-events-none");
++    element.style.display = "";
++    element.style.pointerEvents = "auto";
++    element.style.opacity = "";
++    element.style.cursor = "pointer";
++    if (element.tagName === "BUTTON" || element.getAttribute("role") === "button") {
++      element.tabIndex = 0;
++    }
++    patchReactDisabledProps(element);
++  }
++
++  function pluginPageVisible(button) {
++    if (button?.getAttribute("aria-current") === "page") return true;
++    const text = document.body?.innerText || "";
++    return /(^|\n)(搜索插件|Search plugins)(\n|$)/i.test(text) ||
++      /(^|\n)(插件|Plugins)\n(技能|Skills)\n(管理|Manage)/i.test(text);
++  }
++
++  function installPluginEntryGuard(button) {
++    if (button.dataset.codexPluginEnabled === codexPluginEntryUnlockVersion) return;
++    const keepUnlocked = () => {
++      spoofChatGPTAuthMethod(button);
++      pluginEntryUnlockNodes(button).forEach(clearPluginEntryDisabledState);
++    };
++    ["pointerdown", "mousedown", "mouseup", "focus", "keydown"].forEach((eventName) => {
++      button.addEventListener(eventName, keepUnlocked, true);
++    });
++    button.addEventListener("click", () => {
++      keepUnlocked();
++      if (button.dataset.codexPluginSyntheticClick === "true") return;
++      setTimeout(() => {
++        if (!button.isConnected || pluginPageVisible(button)) return;
++        button.dataset.codexPluginSyntheticClick = "true";
++        try {
++          button.click();
++        } finally {
++          setTimeout(() => {
++            delete button.dataset.codexPluginSyntheticClick;
++          }, 0);
++        }
++      }, 250);
+     }, true);
+   }
+ 
++  function refreshPluginEntryUnlockLoop() {
++    const shouldRun = !pluginPatchDisabledInRelayMode() && codexPlusSettings().pluginEntryUnlock;
++    if (!shouldRun) {
++      clearInterval(window.__codexPluginEntryRefreshTimer);
++      window.__codexPluginEntryRefreshTimer = null;
++      return;
++    }
++    if (window.__codexPluginEntryRefreshTimer) return;
++    window.__codexPluginEntryRefreshTimer = setInterval(() => {
++      if (!codexPlusSettings().pluginEntryUnlock || pluginPatchDisabledInRelayMode()) {
++        clearInterval(window.__codexPluginEntryRefreshTimer);
++        window.__codexPluginEntryRefreshTimer = null;
++        return;
++      }
++      enablePluginEntry();
++    }, codexPluginEntryRefreshIntervalMs);
++  }
++
+   function pluginInstallCandidates() {
+     const nodes = Array.from(document.querySelectorAll(selectors.disabledInstallButton));
+     return Array.from(new Set(nodes.map((node) => node.closest?.("button, [role='button']") || node)));
+@@ -1517,6 +1646,8 @@
+   }
+ 
+   function clearPluginPatchArtifacts() {
++    clearInterval(window.__codexPluginEntryRefreshTimer);
++    window.__codexPluginEntryRefreshTimer = null;
+     const pluginButton = pluginEntryButton();
+     if (pluginButton) {
+       delete pluginButton.dataset.codexPluginEnabled;
+@@ -2413,6 +2544,8 @@
+   let codexModelCatalogLoadedAt = 0;
+   let codexModelCatalogPromise = null;
+   const codexPlusModelListRequestIds = new Set();
++  const codexPlusAccountReadRequestIds = new Set();
++  const codexPlusPluginReadRequestIds = new Set();
+ 
+   function codexPlusModelUnlockEnabled() {
+     return !!codexPlusSettings().modelWhitelistUnlock;
+@@ -2700,7 +2833,13 @@
+           request.params = { ...(request.params || {}), includeHidden: true };
+           if (request.id != null) codexPlusModelListRequestIds.add(String(request.id));
+         }
+-        if (event?.type === "message") patchMcpModelResponseData(event.data);
++        if (event?.type === "codex-message-from-view" && detail?.type === "mcp-request" && request?.method === "account/read" && request.id != null) {
++          codexPlusAccountReadRequestIds.add(String(request.id));
++        }
++        if (event?.type === "codex-message-from-view" && detail?.type === "mcp-request" && request?.method === "plugin/read" && request.id != null) {
++          codexPlusPluginReadRequestIds.add(String(request.id));
++        }
++        if (event?.type === "message") patchMcpResponseData(event.data);
+       } catch (error) {
+         window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
+         window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
+@@ -2710,7 +2849,7 @@
+ 
+     window.addEventListener("message", (event) => {
+       try {
+-        patchMcpModelResponseData(event?.data);
++        patchMcpResponseData(event?.data);
+       } catch (error) {
+         window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
+         window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
+@@ -2718,6 +2857,99 @@
+     }, true);
+   }
+ 
++  function patchMcpResponseData(data) {
++    let changed = patchMcpAccountReadResponseData(data);
++    if (patchMcpPluginReadResponseData(data)) changed = true;
++    if (patchMcpModelResponseData(data)) changed = true;
++    return changed;
++  }
++
++  function ensureCodexPlusArrayProperty(target, property) {
++    if (!target || typeof target !== "object") return false;
++    if (Array.isArray(target[property])) return false;
++    target[property] = [];
++    return true;
++  }
++
++  function normalizeCodexPlusPluginDetail(plugin) {
++    if (!plugin || typeof plugin !== "object") return false;
++    let changed = false;
++    if (ensureCodexPlusArrayProperty(plugin, "apps")) changed = true;
++    if (ensureCodexPlusArrayProperty(plugin, "skills")) changed = true;
++    if (ensureCodexPlusArrayProperty(plugin, "mcpServers")) changed = true;
++    if (ensureCodexPlusArrayProperty(plugin, "hooks")) changed = true;
++    return changed;
++  }
++
++  function patchCodexPlusPluginDetailResult(result) {
++    if (!result || typeof result !== "object") return false;
++    let changed = false;
++    if (normalizeCodexPlusPluginDetail(result.plugin)) changed = true;
++    if (normalizeCodexPlusPluginDetail(result)) changed = true;
++    return changed;
++  }
++
++  function patchMcpPluginReadResponseData(data) {
++    if (data?.type !== "mcp-response") return false;
++    const message = data.message || data.response;
++    const requestId = message?.id != null ? String(message.id) : "";
++    if (!requestId || !codexPlusPluginReadRequestIds.has(requestId)) return false;
++    codexPlusPluginReadRequestIds.delete(requestId);
++    let changed = false;
++    if (patchCodexPlusPluginDetailResult(message?.result)) changed = true;
++    if (data.response && data.response !== message && patchCodexPlusPluginDetailResult(data.response.result)) changed = true;
++    if (data.message && data.message !== message && patchCodexPlusPluginDetailResult(data.message.result)) changed = true;
++    if (changed) sendCodexPlusDiagnostic("plugin_read_detail_compat_applied", { requestId });
++    return changed;
++  }
++
++  function codexPlusSyntheticAccountReadResult() {
++    return {
++      account: {
++        type: "chatgpt",
++        email: "codexplusplus@local",
++        planType: "plus",
++      },
++      requiresOpenaiAuth: true,
++    };
++  }
++
++  function applyCodexPlusSyntheticAccountReadResult(data, message) {
++    const result = codexPlusSyntheticAccountReadResult();
++    delete message.error;
++    message.result = result;
++    if (data.response && data.response !== message) {
++      delete data.response.error;
++      data.response.result = result;
++    }
++    if (data.message && data.message !== message) {
++      delete data.message.error;
++      data.message.result = result;
++    }
++  }
++
++  function patchMcpAccountReadResponseData(data) {
++    if (data?.type !== "mcp-response") return false;
++    const message = data.message || data.response;
++    const requestId = message?.id != null ? String(message.id) : "";
++    if (!requestId || !codexPlusAccountReadRequestIds.has(requestId)) return false;
++    const errorMessage = String(message?.error?.message || data?.error?.message || "");
++    codexPlusAccountReadRequestIds.delete(requestId);
++    if (/email and plan type are required for chatgpt authentication/i.test(errorMessage)) {
++      applyCodexPlusSyntheticAccountReadResult(data, message);
++      sendCodexPlusDiagnostic("account_read_compat_applied", { requestId });
++      return true;
++    }
++    const result = message?.result || data?.result;
++    const accountType = result?.account?.type;
++    if (accountType === "apiKey") {
++      applyCodexPlusSyntheticAccountReadResult(data, message);
++      sendCodexPlusDiagnostic("account_read_pure_api_compat_applied", { requestId });
++      return true;
++    }
++    return false;
++  }
++
+   function patchMcpModelResponseData(data) {
+     if (data?.type !== "mcp-response") return false;
+     const message = data.message || data.response;
+@@ -3598,16 +3830,21 @@
+ 
+   function isCurrentSessionRow(row, ref) {
+     if (row.getAttribute("aria-current") === "page" || row.getAttribute("aria-current") === "true") return true;
++    const currentThreadId = locationThreadId();
++    if (!currentThreadId || !ref.session_id) return false;
++    const currentVariants = new Set(threadIdVariants(currentThreadId).map(projectMoveSessionKey).filter(Boolean));
++    const refVariants = threadIdVariants(ref.session_id).map(projectMoveSessionKey).filter(Boolean);
++    if (!refVariants.some((id) => currentVariants.has(id))) return false;
+     const href = rowHref(row);
+     if (href) {
+       try {
+         const url = new URL(href, window.location.href);
+-        if (url.href === window.location.href || url.pathname === window.location.pathname) return true;
++        if (url.href === window.location.href) return true;
+       } catch {
+-        if (window.location.href.includes(href)) return true;
++        if (href.length >= 8 && window.location.href.includes(href)) return true;
+       }
+     }
+-    return !!ref.session_id && window.location.href.includes(ref.session_id);
++    return true;
+   }
+ 
+   function releaseDeleteFocus(row, button) {
+@@ -3622,7 +3859,7 @@
+     const shouldReload = isCurrentSessionRow(row, ref);
+     row.remove();
+     if (shouldReload) {
+-      window.location.reload();
++      showToast("当前会话已删除，请从左侧选择其他会话。", null);
+     }
+   }
+ 
+@@ -4614,6 +4851,7 @@
+   function scanLightweight() {
+     installStyle();
+     installCodexPlusMenu();
++    updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));
+     scheduleBackendHeartbeat();
+     installDeleteButtonEventDelegation();
+     updateThreadScrollHandlers();
+@@ -5129,11 +5367,14 @@
+   }
+ 
+   function scanDeferred() {
++    patchAppServerModelMessages();
+     if (pluginPatchDisabledInRelayMode()) {
+       clearPluginPatchArtifacts();
++      refreshPluginEntryUnlockLoop();
+       refreshForcePluginInstallUnlockLoop();
+     } else {
+       enablePluginEntry();
++      refreshPluginEntryUnlockLoop();
+       unblockPluginInstallButtons();
+       refreshForcePluginInstallUnlockLoop();
+     }
+@@ -5179,6 +5420,8 @@
+       '[data-testid="conversation-turn"]',
+       '[class*="user-message"]',
+       '[class*="UserMessage"]',
++      selectors.pluginNavButton,
++      'nav[role="navigation"]',
+       selectors.appHeader,
+       selectors.archiveNav,
+       ...(pluginPatchDisabledInRelayMode() ? [] : [selectors.disabledInstallButton]),
+@@ -5256,5 +5499,5 @@
+   window.addEventListener("resize", window.__codexPlusResizeHandler);
+   window.__codexSessionDeleteObserver?.disconnect();
+   window.__codexSessionDeleteObserver = new MutationObserver(scheduleScan);
+-  window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, { childList: true, subtree: true });
++  window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "disabled", "aria-disabled", "data-disabled", "aria-current"] });
+ })();

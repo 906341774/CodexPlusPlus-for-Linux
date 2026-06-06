@@ -1,0 +1,220 @@
+= Codex++ Linux adaptation snippets
+:toc:
+:toclevels: 2
+
+This page is both documentation and installer input.
+The table is intended for maintainers; the JSON manifest is parsed by `scripts/Manage-CodexPlusPlusLinux.ps1`.
+
+== Snippet table
+
+[cols="1,1,2,3,2,2", options="header"]
+|===
+|ID |Default |Target |Purpose |Injection condition |Attachment
+
+|`010-linux-app-paths`
+|Required
+|`Cargo.lock`, `crates/codex-plus-core/Cargo.toml`, `crates/codex-plus-core/src/app_paths.rs`
+|Recognize Linux `codex-app/start.sh` as the Codex executable and read the Linux wrapper `version` file.
+|Needed when upstream does not natively identify the `ilysenko/codex-desktop-linux` app layout.
+|xref:attachment$patches/010-linux-app-paths.patch[patch]
+
+|`020-cdp-multi-target-injection`
+|Required
+|`crates/codex-plus-core/src/cdp.rs`, `apps/codex-plus-launcher/src/main.rs`
+|Inject all live Codex webview page targets while preferring the primary window over the hotkey window.
+|Needed when Linux webview exposes several unlabeled CDP page targets or the first target is not the main window.
+|xref:attachment$patches/020-cdp-multi-target-injection.patch[patch]
+
+|`030-linux-launcher-environment`
+|Required
+|`crates/codex-plus-core/src/launcher.rs`
+|Launch Linux Codex Desktop through `start.sh`, preserve resolver/proxy environment, remove Electron poison variables, set safe webview ports, and keep the Linux wrapper alive after injection failure.
+|Needed for the hacked Linux Codex Desktop wrapper and for reliable DNS/proxy behavior in desktop sessions.
+|xref:attachment$patches/030-linux-launcher-environment.patch[patch]
+
+|`040-linux-entrypoints-health`
+|Required
+|`crates/codex-plus-core/src/install/mod.rs`, `apps/codex-plus-manager/src-tauri/src/commands.rs`, `apps/codex-plus-manager/src-tauri/src/install.rs`
+|Make manager health checks detect adapter-local Linux launcher and manager binaries under `codex-app/.codex-plusplus/install`.
+|Needed when the manager reports static launch entry or management tool entry as missing on Linux.
+|xref:attachment$patches/040-linux-entrypoints-health.patch[patch]
+
+|`050-pure-api-config-sync`
+|Required
+|`crates/codex-plus-core/src/relay_config.rs`, `apps/codex-plus-manager/src/App.tsx`
+|Make Pure API mode write `requires_openai_auth = false`, preserve hostname BaseURL values, upgrade plain HTTP public hostnames to HTTPS, and re-apply `$HOME/.codex/config.toml` whenever the active API profile changes.
+|Needed when switching API profiles in Codex++ does not update Codex Desktop immediately.
+|xref:attachment$patches/050-pure-api-config-sync.patch[patch]
+
+|`060-renderer-linux-compatibility`
+|Required
+|`assets/inject/renderer-inject.js`
+|Stabilize Linux renderer injection: plugin nav unlock, plugin detail response normalization, Pure API synthetic account compatibility, no full refresh on delete, no debug suffix on Plugins label, and floating Codex++ trigger overlap avoidance.
+|Needed while upstream renderer injection does not account for Linux Codex Desktop DOM and MCP response differences.
+|xref:attachment$patches/060-renderer-linux-compatibility.patch[patch]
+
+|`900-regression-tests`
+|Optional
+|`crates/codex-plus-core/tests/*.rs`
+|Add regression coverage for the Linux path, CDP target selection, Linux launcher environment, Pure API config, plugin details, delete stability, and floating menu positioning.
+|Recommended for source builds and CI; can be disabled for a faster production-only patch.
+|xref:attachment$patches/900-regression-tests.patch[patch]
+|===
+
+== Machine-readable manifest
+
+The manager script extracts the JSON block between the markers below.
+
+// tag::snippet-manifest[]
+[source,json]
+----
+[
+  {
+    "id": "010-linux-app-paths",
+    "required": true,
+    "defaultEnabled": true,
+    "kind": "production",
+    "patch": "docs/modules/ROOT/attachments/patches/010-linux-app-paths.patch",
+    "targets": [
+      "Cargo.lock",
+      "crates/codex-plus-core/Cargo.toml",
+      "crates/codex-plus-core/src/app_paths.rs"
+    ],
+    "purpose": "Recognize the Linux codex-app/start.sh wrapper and Linux version file."
+  },
+  {
+    "id": "020-cdp-multi-target-injection",
+    "required": true,
+    "defaultEnabled": true,
+    "kind": "production",
+    "patch": "docs/modules/ROOT/attachments/patches/020-cdp-multi-target-injection.patch",
+    "targets": [
+      "crates/codex-plus-core/src/cdp.rs",
+      "apps/codex-plus-launcher/src/main.rs"
+    ],
+    "purpose": "Inject every live Codex webview target and prefer the primary Codex window."
+  },
+  {
+    "id": "030-linux-launcher-environment",
+    "required": true,
+    "defaultEnabled": true,
+    "kind": "production",
+    "patch": "docs/modules/ROOT/attachments/patches/030-linux-launcher-environment.patch",
+    "targets": [
+      "crates/codex-plus-core/src/launcher.rs"
+    ],
+    "purpose": "Launch Linux Codex Desktop through start.sh and preserve desktop resolver/proxy environment."
+  },
+  {
+    "id": "040-linux-entrypoints-health",
+    "required": true,
+    "defaultEnabled": true,
+    "kind": "production",
+    "patch": "docs/modules/ROOT/attachments/patches/040-linux-entrypoints-health.patch",
+    "targets": [
+      "crates/codex-plus-core/src/install/mod.rs",
+      "apps/codex-plus-manager/src-tauri/src/commands.rs",
+      "apps/codex-plus-manager/src-tauri/src/install.rs"
+    ],
+    "purpose": "Detect Linux adapter entrypoints in the Codex Desktop app-local install directory."
+  },
+  {
+    "id": "050-pure-api-config-sync",
+    "required": true,
+    "defaultEnabled": true,
+    "kind": "production",
+    "patch": "docs/modules/ROOT/attachments/patches/050-pure-api-config-sync.patch",
+    "targets": [
+      "crates/codex-plus-core/src/relay_config.rs",
+      "apps/codex-plus-manager/src/App.tsx"
+    ],
+    "purpose": "Synchronize active API profiles into $HOME/.codex/config.toml for Mixed and Pure API modes."
+  },
+  {
+    "id": "060-renderer-linux-compatibility",
+    "required": true,
+    "defaultEnabled": true,
+    "kind": "production",
+    "patch": "docs/modules/ROOT/attachments/patches/060-renderer-linux-compatibility.patch",
+    "targets": [
+      "assets/inject/renderer-inject.js"
+    ],
+    "purpose": "Patch Linux-specific renderer compatibility for plugin navigation, plugin details, Pure API account reads, delete behavior, label cleanup, and menu positioning."
+  },
+  {
+    "id": "900-regression-tests",
+    "required": false,
+    "defaultEnabled": true,
+    "kind": "test",
+    "patch": "docs/modules/ROOT/attachments/patches/900-regression-tests.patch",
+    "targets": [
+      "crates/codex-plus-core/tests/cdp_bridge.rs",
+      "crates/codex-plus-core/tests/installers.rs",
+      "crates/codex-plus-core/tests/launcher.rs",
+      "crates/codex-plus-core/tests/relay_config.rs"
+    ],
+    "purpose": "Add regression tests for the Linux adaptation snippets."
+  }
+]
+----
+// end::snippet-manifest[]
+
+== Patch attachments
+
+The full patch body for each snippet is stored as an Antora attachment and included below for auditability.
+
+[#snippet-010-linux-app-paths]
+=== 010 Linux app paths
+
+[source,diff]
+----
+include::attachment$patches/010-linux-app-paths.patch[]
+----
+
+[#snippet-020-cdp-multi-target-injection]
+=== 020 CDP multi-target injection
+
+[source,diff]
+----
+include::attachment$patches/020-cdp-multi-target-injection.patch[]
+----
+
+[#snippet-030-linux-launcher-environment]
+=== 030 Linux launcher environment
+
+[source,diff]
+----
+include::attachment$patches/030-linux-launcher-environment.patch[]
+----
+
+[#snippet-040-linux-entrypoints-health]
+=== 040 Linux entrypoints and health
+
+[source,diff]
+----
+include::attachment$patches/040-linux-entrypoints-health.patch[]
+----
+
+[#snippet-050-pure-api-config-sync]
+=== 050 Pure API config synchronization
+
+[source,diff]
+----
+include::attachment$patches/050-pure-api-config-sync.patch[]
+----
+
+[#snippet-060-renderer-linux-compatibility]
+=== 060 Renderer Linux compatibility
+
+[source,diff]
+----
+include::attachment$patches/060-renderer-linux-compatibility.patch[]
+----
+
+[#snippet-900-regression-tests]
+=== 900 Regression tests
+
+[source,diff]
+----
+include::attachment$patches/900-regression-tests.patch[]
+----

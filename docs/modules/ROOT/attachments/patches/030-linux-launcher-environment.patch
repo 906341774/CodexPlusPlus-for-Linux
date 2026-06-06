@@ -1,0 +1,370 @@
+diff --git a/crates/codex-plus-core/src/launcher.rs b/crates/codex-plus-core/src/launcher.rs
+index 9470b54..0ce2905 100644
+--- a/crates/codex-plus-core/src/launcher.rs
++++ b/crates/codex-plus-core/src/launcher.rs
+@@ -240,7 +240,9 @@ where
+             if helper_started {
+                 hooks.shutdown_helper(helper_port).await;
+             }
+-            if let Some(launch) = &launched {
++            if let Some(launch) = &launched
++                && should_terminate_launch_on_startup_failure(launch)
++            {
+                 hooks.terminate_codex(launch).await;
+             }
+             let message = error.to_string();
+@@ -357,7 +359,7 @@ impl LaunchHooks for DefaultLaunchHooks {
+                 else {
+                     unreachable!();
+                 };
+-                let env = codex_process_environment();
++                let env = codex_process_environment_for_app(app_dir);
+                 let process_id =
+                     activate_packaged_app_with_environment(app_user_model_id, arguments, &env)
+                         .await?;
+@@ -388,7 +390,8 @@ impl LaunchHooks for DefaultLaunchHooks {
+                 .ok_or_else(|| anyhow::anyhow!("macOS open command is empty"))?;
+             let child = Command::new(executable)
+                 .args(&command[1..])
+-                .envs(codex_process_environment())
++                .env_clear()
++                .envs(codex_process_environment_for_app(app_dir))
+                 .stdout(Stdio::null())
+                 .stderr(Stdio::null())
+                 .spawn()
+@@ -408,7 +411,8 @@ impl LaunchHooks for DefaultLaunchHooks {
+         let mut child_command = Command::new(executable);
+         child_command
+             .args(&command[1..])
+-            .envs(codex_process_environment())
++            .env_clear()
++            .envs(codex_process_environment_for_app(app_dir))
+             .stdout(Stdio::null())
+             .stderr(Stdio::null());
+         #[cfg(windows)]
+@@ -660,6 +664,10 @@ pub fn build_codex_command(app_dir: &Path, debug_port: u16) -> Vec<String> {
+             .to_string_lossy()
+             .to_string(),
+     ];
++    if cfg!(target_os = "linux") && app_dir.join("start.sh").exists() {
++        command.push("--new-instance".to_string());
++        command.push("--".to_string());
++    }
+     command.extend(build_codex_arguments(debug_port));
+     command
+ }
+@@ -677,11 +685,53 @@ pub fn codex_process_environment() -> HashMap<String, String> {
+     codex_process_environment_from(&env, crate::proxy::detect_system_proxy)
+ }
+ 
++pub fn codex_process_environment_for_app(app_dir: &Path) -> HashMap<String, String> {
++    let env = std::env::vars().collect::<HashMap<_, _>>();
++    codex_process_environment_for_app_from(app_dir, &env, crate::proxy::detect_system_proxy)
++}
++
++pub fn codex_process_environment_for_app_from(
++    app_dir: &Path,
++    env: &HashMap<String, String>,
++    detect_system_proxy: impl FnOnce() -> Option<String>,
++) -> HashMap<String, String> {
++    let mut env = codex_process_environment_from(env, detect_system_proxy);
++    apply_linux_codex_plusplus_webview_environment(app_dir, &mut env);
++    env
++}
++
++const NETWORK_ENV_VARS: &[&str] = &[
++    "HTTP_PROXY",
++    "HTTPS_PROXY",
++    "ALL_PROXY",
++    "NO_PROXY",
++    "http_proxy",
++    "https_proxy",
++    "all_proxy",
++    "no_proxy",
++    "RES_OPTIONS",
++    "LOCALDOMAIN",
++    "HOSTALIASES",
++    "SSL_CERT_FILE",
++    "SSL_CERT_DIR",
++    "NODE_OPTIONS",
++];
++
++const LINUX_CODEX_PLUSPLUS_WEBVIEW_PORT: &str = "5176";
++const LINUX_CODEX_PLUSPLUS_MULTI_LAUNCH_PORT_RANGE: &str = "5176-5185";
++
+ pub fn codex_process_environment_from(
+     env: &HashMap<String, String>,
+     detect_system_proxy: impl FnOnce() -> Option<String>,
+ ) -> HashMap<String, String> {
+     let mut env = env.clone();
++    if cfg!(target_os = "linux") {
++        env.remove("ELECTRON_RUN_AS_NODE");
++        env.remove("ELECTRON_NO_ATTACH_CONSOLE");
++        if should_hydrate_linux_network_environment(&env) {
++            hydrate_linux_network_environment(&mut env);
++        }
++    }
+     if crate::proxy::has_proxy_environment(&env) {
+         return env;
+     }
+@@ -695,12 +745,150 @@ pub fn codex_process_environment_from(
+     env
+ }
+ 
++#[cfg(target_os = "linux")]
++fn apply_linux_codex_plusplus_webview_environment(
++    app_dir: &Path,
++    env: &mut HashMap<String, String>,
++) {
++    if !app_dir.join("start.sh").exists() {
++        return;
++    }
++    env.entry("CODEX_WEBVIEW_PORT".to_string())
++        .or_insert_with(|| LINUX_CODEX_PLUSPLUS_WEBVIEW_PORT.to_string());
++    env.entry("CODEX_MULTI_LAUNCH_PORT_RANGE".to_string())
++        .or_insert_with(|| LINUX_CODEX_PLUSPLUS_MULTI_LAUNCH_PORT_RANGE.to_string());
++}
++
++#[cfg(not(target_os = "linux"))]
++fn apply_linux_codex_plusplus_webview_environment(
++    _app_dir: &Path,
++    _env: &mut HashMap<String, String>,
++) {
++}
++
++#[cfg(target_os = "linux")]
++fn hydrate_linux_network_environment(env: &mut HashMap<String, String>) {
++    hydrate_linux_network_environment_from_systemd(env);
++    hydrate_linux_network_environment_from_processes(env);
++}
++
++#[cfg(not(target_os = "linux"))]
++fn hydrate_linux_network_environment(_env: &mut HashMap<String, String>) {}
++
++#[cfg(target_os = "linux")]
++fn should_hydrate_linux_network_environment(env: &HashMap<String, String>) -> bool {
++    [
++        "DISPLAY",
++        "WAYLAND_DISPLAY",
++        "XDG_RUNTIME_DIR",
++        "DBUS_SESSION_BUS_ADDRESS",
++    ]
++    .into_iter()
++    .any(|name| env.get(name).is_some_and(|value| !value.is_empty()))
++}
++
++#[cfg(not(target_os = "linux"))]
++fn should_hydrate_linux_network_environment(_env: &HashMap<String, String>) -> bool {
++    false
++}
++
++#[cfg(target_os = "linux")]
++fn hydrate_linux_network_environment_from_systemd(env: &mut HashMap<String, String>) {
++    let Ok(output) = std::process::Command::new("systemctl")
++        .args(["--user", "show-environment"])
++        .output()
++    else {
++        return;
++    };
++    if !output.status.success() {
++        return;
++    }
++    let contents = String::from_utf8_lossy(&output.stdout);
++    for line in contents.lines() {
++        import_linux_network_env_entry(env, line);
++    }
++}
++
++#[cfg(target_os = "linux")]
++fn hydrate_linux_network_environment_from_processes(env: &mut HashMap<String, String>) {
++    let Ok(entries) = std::fs::read_dir("/proc") else {
++        return;
++    };
++    let uid = effective_uid();
++    for entry in entries.flatten() {
++        let file_name = entry.file_name();
++        let Some(pid) = file_name
++            .to_str()
++            .filter(|value| value.bytes().all(|byte| byte.is_ascii_digit()))
++        else {
++            continue;
++        };
++        if process_uid(pid).is_some_and(|process_uid| process_uid != uid) {
++            continue;
++        }
++        let environ_path = entry.path().join("environ");
++        let Ok(contents) = std::fs::read(environ_path) else {
++            continue;
++        };
++        let found_graphical_process = contents
++            .split(|byte| *byte == 0)
++            .any(|entry| entry.starts_with(b"DISPLAY=") || entry.starts_with(b"WAYLAND_DISPLAY="));
++        if !found_graphical_process {
++            continue;
++        }
++        for entry in contents.split(|byte| *byte == 0) {
++            if let Ok(entry) = std::str::from_utf8(entry) {
++                import_linux_network_env_entry(env, entry);
++            }
++        }
++        return;
++    }
++}
++
++#[cfg(target_os = "linux")]
++fn process_uid(pid: &str) -> Option<u32> {
++    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
++    status.lines().find_map(|line| {
++        let rest = line.strip_prefix("Uid:")?;
++        rest.split_whitespace().next()?.parse().ok()
++    })
++}
++
++#[cfg(target_os = "linux")]
++fn effective_uid() -> u32 {
++    process_uid("self").unwrap_or(u32::MAX)
++}
++
++#[cfg(target_os = "linux")]
++fn import_linux_network_env_entry(env: &mut HashMap<String, String>, entry: &str) {
++    let Some((name, value)) = entry.split_once('=') else {
++        return;
++    };
++    if !NETWORK_ENV_VARS.contains(&name) || value.is_empty() {
++        return;
++    }
++    env.entry(name.to_string())
++        .or_insert_with(|| value.to_string());
++}
++
++#[cfg(target_os = "linux")]
+ async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+     let mut last_error = None;
+-    for _ in 0..20 {
++    let attempts = if cfg!(target_os = "linux") { 90 } else { 20 };
++    for attempt in 0..attempts {
+         match try_inject(debug_port, helper_port).await {
+             Ok(()) => return Ok(()),
+             Err(error) => {
++                let _ = crate::diagnostic_log::append_diagnostic_log(
++                    "bridge.inject_retry",
++                    serde_json::json!({
++                        "attempt": attempt + 1,
++                        "attempts": attempts,
++                        "debug_port": debug_port,
++                        "helper_port": helper_port,
++                        "message": error.to_string()
++                    }),
++                );
+                 last_error = Some(error);
+                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+             }
+@@ -709,6 +897,15 @@ async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()
+     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Codex injection failed")))
+ }
+ 
++fn should_terminate_launch_on_startup_failure(launch: &CodexLaunch) -> bool {
++    match launch {
++        CodexLaunch::Process { command, .. } if cfg!(target_os = "linux") => command
++            .first()
++            .is_none_or(|executable| !executable.ends_with("/start.sh")),
++        _ => true,
++    }
++}
++
+ pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> bool {
+     let healthy = match bridge_health_ok(debug_port).await {
+         Ok(healthy) => healthy,
+@@ -762,7 +959,7 @@ pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> boo
+ 
+ async fn bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
+     let targets = crate::cdp::list_targets(debug_port).await?;
+-    let target = crate::cdp::pick_page_target(&targets)?;
++    let target = crate::cdp::pick_primary_page_target(&targets)?;
+     let websocket_url = target
+         .web_socket_debugger_url
+         .as_deref()
+@@ -787,28 +984,66 @@ fn runtime_evaluate_result_is_true(result: &Value) -> bool {
+ 
+ async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+     let targets = crate::cdp::list_targets(debug_port).await?;
+-    let target = crate::cdp::pick_page_target(&targets)?;
+-    let websocket_url = target
+-        .web_socket_debugger_url
+-        .as_deref()
+-        .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
++    let targets = crate::cdp::injectable_page_targets(&targets);
++    if targets.is_empty() {
++        anyhow::bail!("No injectable Codex page target found");
++    }
+     let script = crate::assets::injection_script(helper_port);
+     let ctx = crate::routes::BridgeContext::core(Arc::new(crate::routes::CoreRuntimeService::new(
+         debug_port,
+         StatusStore::default(),
+     )));
+-    crate::bridge::install_bridge(
+-        websocket_url,
+-        crate::bridge::BRIDGE_BINDING_NAME,
+-        Arc::new(move |path, payload| {
+-            let ctx = ctx.clone();
+-            Box::pin(
+-                async move { Ok(crate::routes::handle_bridge_request(ctx, &path, payload).await) },
+-            )
+-        }),
+-        &[script],
+-    )
+-    .await
++    let mut main_injected = false;
++    let mut injected = 0usize;
++    let mut last_error = None;
++    for target in targets {
++        let Some(websocket_url) = target.web_socket_debugger_url.as_deref() else {
++            continue;
++        };
++        let result = crate::bridge::install_bridge(
++            websocket_url,
++            crate::bridge::BRIDGE_BINDING_NAME,
++            Arc::new({
++                let ctx = ctx.clone();
++                move |path, payload| {
++                    let ctx = ctx.clone();
++                    Box::pin(async move {
++                        Ok(crate::routes::handle_bridge_request(ctx, &path, payload).await)
++                    })
++                }
++            }),
++            std::slice::from_ref(&script),
++        )
++        .await;
++        match result {
++            Ok(()) => {
++                injected += 1;
++                if crate::cdp::is_primary_codex_window(&target) {
++                    main_injected = true;
++                }
++                let _ = crate::diagnostic_log::append_diagnostic_log(
++                    "bridge.target_injected",
++                    serde_json::json!({
++                        "debug_port": debug_port,
++                        "helper_port": helper_port,
++                        "target_id": &target.id,
++                        "target_url": &target.url,
++                        "primary": crate::cdp::is_primary_codex_window(&target)
++                    }),
++                );
++            }
++            Err(error) => {
++                last_error = Some(error);
++            }
++        }
++    }
++    if main_injected {
++        return Ok(());
++    }
++    if injected > 0 {
++        anyhow::bail!("Codex++ injected only non-primary Codex page targets");
++    }
++    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Codex injection failed")))
+ }
+ 
+ pub fn build_macos_open_command(app_dir: &Path, debug_port: u16) -> Vec<String> {

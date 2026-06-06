@@ -1,0 +1,34 @@
+= Codex++ Linux Adapter
+:toc:
+:toclevels: 2
+
+This Antora component records the source-level Linux adaptation work applied to `BigPizzaV3/CodexPlusPlus` so it can be repeated, audited, or selectively disabled after upstream changes.
+
+The production installer reads the machine-readable snippet manifest from xref:snippets.adoc[] and applies the referenced patch attachments in order.
+
+== Scope
+
+The adaptation targets the unofficial Linux Codex Desktop layout produced by `ilysenko/codex-desktop-linux`, especially this application layout:
+
+[source,text]
+----
+$HOME/opt/codex-desktop-linux/codex-app/start.sh
+$HOME/opt/codex-desktop-linux/codex-app/.codex-plusplus/
+----
+
+The adapter does not modify the original Codex Desktop source tree. It builds an adapted `Codex++` launcher and manager, then installs the resulting binaries under the Linux Codex Desktop application directory.
+
+== Main outputs
+
+* `scripts/Manage-CodexPlusPlusLinux.ps1`: bilingual PowerShell manager for install, update, uninstall, and snippet application.
+* xref:snippets.adoc[]: structured documentation and snippet manifest.
+* `docs/modules/ROOT/attachments/patches/*.patch`: source patch attachments used by the manager script.
+
+== Operational model
+
+. Prepare or fetch the original `BigPizzaV3/CodexPlusPlus` source.
+. Read the Antora snippet manifest.
+. Apply enabled patch snippets in manifest order.
+. Build `codex-plus-plus` and `codex-plus-plus-manager`.
+. Install binaries and the Linux launcher wrapper into `codex-app/.codex-plusplus/install`.
+. Launch Codex Desktop through `Codex++`, passing `--app-path` to the Linux `codex-app` directory.

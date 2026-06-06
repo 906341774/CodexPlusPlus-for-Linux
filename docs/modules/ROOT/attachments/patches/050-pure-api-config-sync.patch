@@ -1,0 +1,439 @@
+diff --git a/apps/codex-plus-manager/src/App.tsx b/apps/codex-plus-manager/src/App.tsx
+index 87853b5..42d67cf 100644
+--- a/apps/codex-plus-manager/src/App.tsx
++++ b/apps/codex-plus-manager/src/App.tsx
+@@ -83,6 +83,7 @@ type BackendSettings = {
+ };
+ 
+ type LaunchMode = "patch" | "relay";
++type ApiMode = "official" | "mixed" | "pure";
+ 
+ type RelayProfile = {
+   id: string;
+@@ -227,6 +228,7 @@ export function App() {
+     helperPort: "57321",
+   });
+   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
++  const [activeApiMode, setActiveApiMode] = useState<ApiMode>("official");
+   const [removeOwnedData, setRemoveOwnedData] = useState(false);
+ 
+   const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
+@@ -265,6 +267,7 @@ export function App() {
+     const result = await run(() => call<RelayResult>("relay_status"));
+     if (result) {
+       setRelay(result);
++      setActiveApiMode(apiModeKind(result));
+       if (!silent) showResultNotice("登录状态", result, { silentSuccess: true });
+     }
+   };
+@@ -416,12 +419,68 @@ export function App() {
+   };
+ 
+   const saveSettings = async () => {
+-    const result = await run(() => call<SettingsResult>("save_settings", { settings: settingsForm }));
++    const result = await saveSettingsValue(settingsForm);
++    if (result) showNotice("设置保存", result.message, result.status);
++  };
++
++  const saveSettingsValue = async (next: BackendSettings) => {
++    const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
+     if (result) {
+       setSettings(result);
+       setSettingsForm(normalizeSettings(result.settings));
+-      showNotice("设置保存", result.message, result.status);
+     }
++    return result;
++  };
++
++  const applyActiveApiMode = async (mode: ApiMode, silent = false) => {
++    if (mode === "mixed") {
++      const result = await run(() => call<RelayResult>("apply_relay_injection"));
++      if (result) {
++        setRelay(result);
++        if (isSuccessStatus(result.status) && result.configured && result.requiresOpenaiAuth) setActiveApiMode("mixed");
++        if (!silent || !isSuccessStatus(result.status)) showNotice("混合 API 模式", result.message, result.status);
++      }
++      return !!result && isSuccessStatus(result.status) && result.configured && result.requiresOpenaiAuth;
++    }
++    if (mode === "pure") {
++      const result = await run(() => call<RelayResult>("apply_pure_api_injection"));
++      if (result) {
++        setRelay(result);
++        if (isSuccessStatus(result.status) && result.configured && !result.requiresOpenaiAuth) setActiveApiMode("pure");
++        if (!silent || !isSuccessStatus(result.status)) showNotice("纯 API 模式", result.message, result.status);
++      }
++      return !!result && isSuccessStatus(result.status) && result.configured && !result.requiresOpenaiAuth;
++    }
++    return true;
++  };
++
++  const saveRelaySettings = async (next: BackendSettings = settingsForm, silent = false) => {
++    const saved = await saveSettingsValue(syncLegacyRelayFields(normalizeSettings(next)));
++    if (!saved) return false;
++    if (!isSuccessStatus(saved.status)) {
++      showNotice("API 列表", saved.message, saved.status);
++      return false;
++    }
++    const mode = activeApiMode;
++    if (mode === "official") {
++      if (!silent) showNotice("API 列表", "API 配置已保存；当前为官方登录模式，未写入 Codex API 配置。", saved.status);
++      return true;
++    }
++    const applied = await applyActiveApiMode(mode, true);
++    if (!silent) {
++      showNotice(
++        "API 列表",
++        applied ? "API 配置已保存，并已重新写入当前运行模式。" : "API 配置已保存，但重新写入当前运行模式失败。",
++        applied ? "ok" : "failed",
++      );
++    }
++    return applied;
++  };
++
++  const selectRelayProfile = async (profileId: string) => {
++    const next = syncLegacyRelayFields({ ...normalizeSettings(settingsForm), activeRelayId: profileId });
++    setSettingsForm(next);
++    await saveRelaySettings(next);
+   };
+ 
+   const resetSettings = async () => {
+@@ -449,10 +508,8 @@ export function App() {
+   };
+ 
+   const applyRelayInjection = async (silent = false) => {
+-    const settingsResult = await run(() => call<SettingsResult>("save_settings", { settings: settingsForm }));
++    const settingsResult = await saveSettingsValue(settingsForm);
+     if (settingsResult) {
+-      setSettings(settingsResult);
+-      setSettingsForm(normalizeSettings(settingsResult.settings));
+       if (!isSuccessStatus(settingsResult.status)) {
+         showNotice("设置保存", settingsResult.message, settingsResult.status);
+         return false;
+@@ -463,6 +520,7 @@ export function App() {
+     const result = await run(() => call<RelayResult>("apply_relay_injection"));
+     if (result) {
+       setRelay(result);
++      if (isSuccessStatus(result.status) && result.configured && result.requiresOpenaiAuth) setActiveApiMode("mixed");
+       if (!silent || !isSuccessStatus(result.status)) showNotice("混合 API 模式", result.message, result.status);
+     }
+     return !!result && isSuccessStatus(result.status) && result.configured;
+@@ -481,10 +539,8 @@ export function App() {
+   };
+ 
+   const applyPureApiInjection = async (silent = false) => {
+-    const settingsResult = await run(() => call<SettingsResult>("save_settings", { settings: settingsForm }));
++    const settingsResult = await saveSettingsValue(settingsForm);
+     if (settingsResult) {
+-      setSettings(settingsResult);
+-      setSettingsForm(normalizeSettings(settingsResult.settings));
+       if (!isSuccessStatus(settingsResult.status)) {
+         showNotice("设置保存", settingsResult.message, settingsResult.status);
+         return false;
+@@ -495,6 +551,7 @@ export function App() {
+     const result = await run(() => call<RelayResult>("apply_pure_api_injection"));
+     if (result) {
+       setRelay(result);
++      if (isSuccessStatus(result.status) && result.configured && !result.requiresOpenaiAuth) setActiveApiMode("pure");
+       if (!silent || !isSuccessStatus(result.status)) showNotice("纯 API 模式", result.message, result.status);
+     }
+     return !!result && isSuccessStatus(result.status) && result.configured;
+@@ -504,6 +561,7 @@ export function App() {
+     const result = await run(() => call<RelayResult>("clear_relay_injection"));
+     if (result) {
+       setRelay(result);
++      if (isSuccessStatus(result.status) && !result.configured) setActiveApiMode("official");
+       if (!silent || !isSuccessStatus(result.status)) showNotice("官方登录模式", result.message, result.status);
+     }
+     return !!result && isSuccessStatus(result.status) && !result.configured;
+@@ -605,6 +663,8 @@ export function App() {
+       checkUpdate,
+       performUpdate,
+       saveSettings,
++      saveRelaySettings,
++      selectRelayProfile,
+       resetSettings,
+       chooseCodexAppPath: async (mode: "folder" | "file") => {
+         const selected = await open(
+@@ -676,7 +736,7 @@ export function App() {
+       disableWatcher: () => watcherAction("disable_watcher"),
+       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
+     }),
+-    [route, launchForm, settingsForm, removeOwnedData, update, logs, diagnostics, theme],
++    [route, launchForm, settingsForm, activeApiMode, removeOwnedData, update, logs, diagnostics, theme],
+   );
+   const hasUpdate = update?.updateAvailable === true;
+ 
+@@ -764,6 +824,7 @@ export function App() {
+               relay={relay}
+               form={settingsForm}
+               onFormChange={setSettingsForm}
++              onRelayFormSave={saveRelaySettings}
+               actions={actions}
+             />
+           ) : null}
+@@ -819,6 +880,8 @@ type Actions = {
+   checkUpdate: () => Promise<void>;
+   performUpdate: () => Promise<void>;
+   saveSettings: () => Promise<void>;
++  saveRelaySettings: (next?: BackendSettings, silent?: boolean) => Promise<boolean>;
++  selectRelayProfile: (profileId: string) => Promise<void>;
+   resetSettings: () => Promise<void>;
+   chooseCodexAppPath: (mode: "folder" | "file") => Promise<void>;
+   clearCodexAppPath: () => Promise<void>;
+@@ -940,12 +1003,14 @@ function RelayScreen({
+   relay,
+   form,
+   onFormChange,
++  onRelayFormSave,
+   actions,
+ }: {
+   settings: SettingsResult | null;
+   relay: RelayResult | null;
+   form: BackendSettings;
+   onFormChange: (value: BackendSettings) => void;
++  onRelayFormSave: (next?: BackendSettings, silent?: boolean) => Promise<boolean>;
+   actions: Actions;
+ }) {
+   const normalized = normalizeSettings(form);
+@@ -961,7 +1026,7 @@ function RelayScreen({
+               <span>使用 ChatGPT 官方账号，不写 API Key；历史会话显示为 openai，页面增强使用兼容模式。</span>
+             </button>
+             <button
+-              className={`mode-option ${relay?.configured && relay.authenticated ? "active" : ""}`}
++              className={`mode-option ${apiModeKind(relay) === "mixed" ? "active" : ""}`}
+               onClick={() => void actions.switchMixedApiMode()}
+               type="button"
+             >
+@@ -969,7 +1034,7 @@ function RelayScreen({
+               <span>保留官方登录，把模型请求切到当前 API；历史会话显示为 CodexPlusPlus，页面增强使用兼容模式。</span>
+             </button>
+             <button
+-              className={`mode-option ${relay?.configured && !relay.authenticated ? "active" : ""}`}
++              className={`mode-option ${apiModeKind(relay) === "pure" ? "active" : ""}`}
+               onClick={() => void actions.switchPureApiMode()}
+               type="button"
+             >
+@@ -996,7 +1061,7 @@ function RelayScreen({
+       <Panel>
+         <CardHead title="API 列表" detail={`${normalized.relayProfiles.length} 个 API 配置，可随时切换当前使用项`} />
+         <CardContent>
+-          <RelayProfileList form={normalized} onFormChange={onFormChange} />
++          <RelayProfileList form={normalized} onFormChange={onFormChange} onSelect={actions.selectRelayProfile} />
+           <Toolbar>
+             <Button
+               variant="secondary"
+@@ -1005,7 +1070,7 @@ function RelayScreen({
+               <Plus className="h-4 w-4" />
+               添加 API
+             </Button>
+-            <Button onClick={() => void actions.saveSettings()}>保存列表</Button>
++            <Button onClick={() => void onRelayFormSave(normalized)}>保存并应用</Button>
+           </Toolbar>
+         </CardContent>
+       </Panel>
+@@ -1495,9 +1560,11 @@ function DiagnosticsScreen({ diagnostics, actions }: { diagnostics: DiagnosticsR
+ function RelayProfileList({
+   form,
+   onFormChange,
++  onSelect,
+ }: {
+   form: BackendSettings;
+   onFormChange: (value: BackendSettings) => void;
++  onSelect: (profileId: string) => Promise<void>;
+ }) {
+   return (
+     <div className="relay-profile-list">
+@@ -1506,7 +1573,7 @@ function RelayProfileList({
+           <div className="relay-profile-head">
+             <button
+               className="relay-select"
+-              onClick={() => onFormChange(syncLegacyRelayFields({ ...form, activeRelayId: profile.id }))}
++              onClick={() => void onSelect(profile.id)}
+               type="button"
+             >
+               <strong>{profile.name || "未命名中转"}</strong>
+@@ -1771,13 +1838,14 @@ function statusLabel(status: string) {
+     not_checked: "未检查",
+     not_implemented: "未实现",
+     disabled: "已禁用",
++    not_required: "不需要",
+     unknown: "未知",
+   };
+   return labels[status] ?? status;
+ }
+ 
+ function statusClass(status: string) {
+-  if (["found", "installed", "ok", "running"].includes(status)) return "good";
++  if (["found", "installed", "ok", "running", "not_required"].includes(status)) return "good";
+   if (["failed", "missing"].includes(status)) return "bad";
+   return "warn";
+ }
+@@ -1787,8 +1855,15 @@ function isSuccessStatus(status?: Status) {
+ }
+ 
+ function apiModeLabel(relay: RelayResult | null) {
+-  if (!relay?.configured) return "官方登录";
+-  return relay.authenticated ? "混合 API" : "纯 API";
++  const mode = apiModeKind(relay);
++  if (mode === "mixed") return "混合 API";
++  if (mode === "pure") return "纯 API";
++  return "官方登录";
++}
++
++function apiModeKind(relay: RelayResult | null): ApiMode {
++  if (!relay?.configured) return "official";
++  return relay.requiresOpenaiAuth ? "mixed" : "pure";
+ }
+ 
+ function healthItems(overview: OverviewResult | null, relay: RelayResult | null) {
+@@ -1813,13 +1888,31 @@ function healthItems(overview: OverviewResult | null, relay: RelayResult | null)
+     },
+     {
+       title: "ChatGPT 登录",
+-      status: relay?.authenticated ? "ok" : "missing",
+-      ok: !!relay?.authenticated,
+-      detail: relay?.accountLabel || relay?.authSource || "混合 API 需要官方登录；纯 API 可不用官方登录。",
++      status: chatGptLoginHealthStatus(relay),
++      ok: chatGptLoginHealthOk(relay),
++      detail: chatGptLoginHealthDetail(relay),
+     },
+   ];
+ }
+ 
++function chatGptLoginHealthStatus(relay: RelayResult | null) {
++  if (!relay) return "not_checked";
++  if (relay.authenticated) return "ok";
++  if (relay.configured && !relay.requiresOpenaiAuth) return "not_required";
++  return "missing";
++}
++
++function chatGptLoginHealthOk(relay: RelayResult | null) {
++  return ["ok", "not_required"].includes(chatGptLoginHealthStatus(relay));
++}
++
++function chatGptLoginHealthDetail(relay: RelayResult | null) {
++  if (!relay) return "尚未检查 ChatGPT 登录状态。";
++  if (relay.authenticated) return relay.accountLabel || relay.authSource || "已检测到官方登录。";
++  if (relay.configured && !relay.requiresOpenaiAuth) return "纯 API 模式不需要官方 ChatGPT 登录。";
++  return relay.authSource || "混合 API 需要官方登录；纯 API 可不用官方登录。";
++}
++
+ function normalizeSettings(settings: BackendSettings): BackendSettings {
+   const profiles =
+     settings.relayProfiles?.length
+diff --git a/crates/codex-plus-core/src/relay_config.rs b/crates/codex-plus-core/src/relay_config.rs
+index fd89842..873a16a 100644
+--- a/crates/codex-plus-core/src/relay_config.rs
++++ b/crates/codex-plus-core/src/relay_config.rs
+@@ -3,6 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
+ 
+ use serde::Serialize;
+ use serde_json::Value;
++use url::Host;
+ 
+ const RELAY_PROVIDER: &str = "CodexPlusPlus";
+ const LEGACY_RELAY_PROVIDER: &str = "CodexPP";
+@@ -112,7 +113,7 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
+         .map(|value| !unquote_toml_string(value).trim().is_empty())
+         .unwrap_or(false);
+     RelayConfigStatus {
+-        configured: root_provider && requires_openai_auth && has_bearer_token && has_base_url,
++        configured: root_provider && has_bearer_token && has_base_url,
+         requires_openai_auth,
+         has_bearer_token,
+         config_path: config_path.to_string_lossy().to_string(),
+@@ -124,7 +125,7 @@ pub fn apply_relay_config_to_home(
+     base_url: &str,
+     bearer_token: &str,
+ ) -> anyhow::Result<RelayApplyResult> {
+-    let base_url = base_url.trim();
++    let base_url = effective_codex_base_url(base_url);
+     if base_url.is_empty() {
+         anyhow::bail!("中转 Base URL 不能为空");
+     }
+@@ -142,7 +143,7 @@ pub fn apply_relay_config_to_home(
+     } else {
+         None
+     };
+-    let updated = upsert_model_provider_config(&existing, base_url, bearer_token);
++    let updated = upsert_model_provider_config(&existing, &base_url, bearer_token, true);
+     std::fs::write(&config_path, updated)?;
+     let status = relay_config_status_from_home(home);
+     Ok(RelayApplyResult {
+@@ -157,7 +158,7 @@ pub fn apply_pure_api_config_to_home(
+     base_url: &str,
+     bearer_token: &str,
+ ) -> anyhow::Result<RelayApplyResult> {
+-    let base_url = base_url.trim();
++    let base_url = effective_codex_base_url(base_url);
+     if base_url.is_empty() {
+         anyhow::bail!("中转 Base URL 不能为空");
+     }
+@@ -187,7 +188,7 @@ pub fn apply_pure_api_config_to_home(
+     } else {
+         None
+     };
+-    let updated = upsert_model_provider_config(&existing, base_url, bearer_token);
++    let updated = upsert_model_provider_config(&existing, &base_url, bearer_token, false);
+     std::fs::write(&config_path, updated)?;
+     let status = relay_config_status_from_home(home);
+     Ok(RelayApplyResult {
+@@ -226,6 +227,35 @@ pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResul
+     })
+ }
+ 
++fn effective_codex_base_url(base_url: &str) -> String {
++    let trimmed = base_url.trim();
++    let Ok(mut parsed) = url::Url::parse(trimmed) else {
++        return trimmed.to_string();
++    };
++    if parsed.scheme() == "http" && parsed.port().is_none() && is_public_dns_host(parsed.host()) {
++        let _ = parsed.set_scheme("https");
++        let mut normalized = parsed.to_string();
++        if !trimmed.ends_with('/')
++            && parsed.path() == "/"
++            && parsed.query().is_none()
++            && parsed.fragment().is_none()
++            && normalized.ends_with('/')
++        {
++            normalized.pop();
++        }
++        return normalized;
++    }
++    trimmed.to_string()
++}
++
++fn is_public_dns_host(host: Option<Host<&str>>) -> bool {
++    let Some(Host::Domain(domain)) = host else {
++        return false;
++    };
++    let domain = domain.trim_end_matches('.').to_ascii_lowercase();
++    !matches!(domain.as_str(), "" | "localhost") && !domain.ends_with(".local")
++}
++
+ fn clear_pure_api_auth_json(home: &Path) -> anyhow::Result<()> {
+     let auth_path = home.join("auth.json");
+     if !auth_path.exists() {
+@@ -367,7 +397,12 @@ fn upsert_root_keys(contents: &str, entries: &[(&str, String)]) -> String {
+     updated
+ }
+ 
+-fn upsert_model_provider_config(contents: &str, base_url: &str, bearer_token: &str) -> String {
++fn upsert_model_provider_config(
++    contents: &str,
++    base_url: &str,
++    bearer_token: &str,
++    requires_openai_auth: bool,
++) -> String {
+     let mut updated = upsert_root_keys(
+         contents,
+         &[(
+@@ -387,7 +422,7 @@ fn upsert_model_provider_config(contents: &str, base_url: &str, bearer_token: &s
+         format!("[model_providers.{RELAY_PROVIDER}]"),
+         format!("name = \"{}\"", toml_escape(RELAY_PROVIDER)),
+         "wire_api = \"responses\"".to_string(),
+-        "requires_openai_auth = true".to_string(),
++        format!("requires_openai_auth = {requires_openai_auth}"),
+         format!("base_url = \"{}\"", toml_escape(base_url)),
+         format!(
+             "experimental_bearer_token = \"{}\"",

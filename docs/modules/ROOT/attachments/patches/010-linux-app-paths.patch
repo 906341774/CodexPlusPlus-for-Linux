@@ -1,0 +1,55 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 4124848..9d35f7e 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -366,6 +366,7 @@ dependencies = [
+  "thiserror 2.0.18",
+  "tokio",
+  "tokio-tungstenite",
++ "url",
+  "windows 0.58.0",
+ ]
+ 
+diff --git a/crates/codex-plus-core/Cargo.toml b/crates/codex-plus-core/Cargo.toml
+index 9c4667a..b10478b 100644
+--- a/crates/codex-plus-core/Cargo.toml
++++ b/crates/codex-plus-core/Cargo.toml
+@@ -17,6 +17,7 @@ serde_json.workspace = true
+ thiserror.workspace = true
+ tokio = { workspace = true, features = ["net"] }
+ tokio-tungstenite.workspace = true
++url.workspace = true
+ 
+ [target.'cfg(windows)'.dependencies]
+ windows = { version = "0.58", features = [
+diff --git a/crates/codex-plus-core/src/app_paths.rs b/crates/codex-plus-core/src/app_paths.rs
+index 7bb3c6f..401f186 100644
+--- a/crates/codex-plus-core/src/app_paths.rs
++++ b/crates/codex-plus-core/src/app_paths.rs
+@@ -162,6 +162,10 @@ pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
+     if app_dir.extension() == Some(OsStr::new("app")) {
+         return app_dir.join("Contents").join("MacOS").join("Codex");
+     }
++    let linux_launcher = app_dir.join("start.sh");
++    if cfg!(target_os = "linux") && linux_launcher.exists() {
++        return linux_launcher;
++    }
+     let upper = app_dir.join("Codex.exe");
+     if upper.exists() {
+         upper
+@@ -174,6 +178,15 @@ pub fn codex_app_version(app_dir: &Path) -> Option<String> {
+     if app_dir.extension() == Some(OsStr::new("app")) {
+         return macos_app_version(app_dir);
+     }
++    if cfg!(target_os = "linux") {
++        let version_file = app_dir.join("version");
++        if let Ok(version) = std::fs::read_to_string(version_file) {
++            let version = version.trim();
++            if !version.is_empty() {
++                return Some(version.to_string());
++            }
++        }
++    }
+     let package_dir = if app_dir
+         .file_name()
+         .and_then(OsStr::to_str)

@@ -1,0 +1,7 @@
+.tmp/
+.cache/
+work/
+dist/
+*.log
+node_modules/
+target/
