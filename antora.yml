@@ -1,6 +1,6 @@
-name: codexplusplus-linux-adapter
-title: Codex++ Linux Adapter
-version: '0.1'
+name: CodexPlusPlus-on-Linux
+title: CodexPlusPlus on Linux
+version: '1.2.3'
 start_page: ROOT:index.adoc
 nav:
   - modules/ROOT/nav.adoc

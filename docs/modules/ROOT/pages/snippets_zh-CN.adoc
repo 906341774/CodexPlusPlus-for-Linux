@@ -1,78 +1,78 @@
-= Codex++ Linux adaptation snippets
+= Codex++ Linux 适配片段
 :toc:
 :toclevels: 2
 
-English | xref:snippets_zh-CN.adoc[简体中文]
+xref:snippets.adoc[English] | 简体中文
 
-This page is both documentation and installer input.
-The table is intended for maintainers; the JSON manifest is parsed by `scripts/Installer-and-Manager.ps1`.
+本页面同时是文档和安装器输入。
+表格面向维护者；JSON manifest 由 `scripts/Installer-and-Manager.ps1` 解析。
 
-== Snippet table
+== 片段表
 
 [cols="1,1,2,3,2,2", options="header"]
 |===
-|ID |Default |Target |Purpose |Injection condition |Attachment
+|ID |默认状态 |目标 |目的 |注入条件 |附件
 
 |`010-linux-app-paths`
-|Required
+|必需
 |`Cargo.lock`, `crates/codex-plus-core/Cargo.toml`, `crates/codex-plus-core/src/app_paths.rs`
-|Recognize Linux `codex-app/start.sh` as the Codex executable and read the Linux wrapper `version` file.
-|Needed when upstream does not natively identify the `ilysenko/codex-desktop-linux` app layout.
+|识别 Linux `codex-app/start.sh` 作为 Codex 可执行入口，并读取 Linux wrapper 的 `version` 文件。
+|当上游尚不能原生识别 `ilysenko/codex-desktop-linux` 应用布局时需要。
 |xref:attachment$patches/010-linux-app-paths.patch[patch]
 
 |`020-cdp-multi-target-injection`
-|Required
+|必需
 |`crates/codex-plus-core/src/cdp.rs`, `apps/codex-plus-launcher/src/main.rs`
-|Inject all live Codex webview page targets while preferring the primary window over the hotkey window.
-|Needed when Linux webview exposes several unlabeled CDP page targets or the first target is not the main window.
+|注入所有存活的 Codex webview page target，同时优先选择主窗口而不是 hotkey window。
+|当 Linux webview 暴露多个未标记 CDP page target，或第一个 target 不是主窗口时需要。
 |xref:attachment$patches/020-cdp-multi-target-injection.patch[patch]
 
 |`030-linux-launcher-environment`
-|Required
+|必需
 |`crates/codex-plus-core/src/launcher.rs`
-|Launch Linux Codex Desktop through `start.sh`, preserve resolver/proxy environment, remove Electron poison variables, set safe webview ports, allow Chromium private-network helper preflights, and keep the Linux wrapper alive after injection failure.
-|Needed for the hacked Linux Codex Desktop wrapper, reliable DNS/proxy behavior in desktop sessions, and Codex webview access to the Codex++ helper.
+|通过 `start.sh` 启动 Linux Codex Desktop，保留 resolver/proxy 环境，移除会污染 Electron 的变量，设置安全 webview 端口，允许 Chromium private-network helper 预检，并在注入失败后保持 Linux wrapper 存活。
+|适配 hacked Linux Codex Desktop wrapper、保证桌面会话中的 DNS/proxy 行为稳定，以及让 Codex webview 能访问 Codex++ helper 时需要。
 |xref:attachment$patches/030-linux-launcher-environment.patch[patch]
 
 |`040-linux-entrypoints-health`
-|Required
+|必需
 |`crates/codex-plus-core/src/install/mod.rs`, `apps/codex-plus-manager/src-tauri/src/commands.rs`, `apps/codex-plus-manager/src-tauri/src/install.rs`
-|Make manager health checks detect adapter-local Linux launcher and manager binaries under `codex-app/.codex-plusplus/install`, while preserving upstream-style Codex++ desktop entry names.
-|Needed when the manager reports static launch entry or management tool entry as missing on Linux.
+|让 manager health check 能检测 `codex-app/.codex-plusplus/install` 下的 adapter-local Linux launcher 和 manager 二进制文件，同时保留贴近上游 Codex++ 风格的 desktop entry 名称。
+|当 manager 在 Linux 上把 static launch entry 或 management tool entry 报告为 missing 时需要。
 |xref:attachment$patches/040-linux-entrypoints-health.patch[patch]
 
 |`050-pure-api-config-sync`
-|Required
+|必需
 |`crates/codex-plus-core/src/relay_config.rs`, `apps/codex-plus-manager/src/App.tsx`
-|Make Pure API mode write `requires_openai_auth = false`, preserve hostname BaseURL values, upgrade plain HTTP public hostnames to HTTPS, and re-apply `$HOME/.codex/config.toml` whenever the active API profile changes.
-|Needed when switching API profiles in Codex++ does not update Codex Desktop immediately.
+|让 Pure API mode 写入 `requires_openai_auth = false`，保留 hostname BaseURL，把普通 HTTP public hostnames 升级到 HTTPS，并在 active API profile 改变时重新应用 `$HOME/.codex/config.toml`。
+|当在 Codex++ 中切换 API profiles 不能立即更新 Codex Desktop 时需要。
 |xref:attachment$patches/050-pure-api-config-sync.patch[patch]
 
 |`060-renderer-linux-compatibility`
-|Required
+|必需
 |`assets/inject/renderer-inject.js`
-|Stabilize Linux renderer injection: plugin nav unlock, plugin detail response normalization, Pure API synthetic account compatibility, no full refresh on delete, no debug suffix on Plugins label, floating Codex++ trigger overlap avoidance, Fast service-tier badge placement in the Linux composer footer, and Fast badge clickability during transient backend checks.
-|Needed while upstream renderer injection does not account for Linux Codex Desktop DOM and MCP response differences.
+|稳定 Linux renderer injection：plugin nav unlock、plugin detail response normalization、Pure API synthetic account compatibility、删除对话不触发 full refresh、Plugins label 不显示 debug suffix、floating Codex++ trigger overlap avoidance，把 Fast service-tier badge 正确放入 Linux composer footer，并避免后端短暂 checking 时阻断 Fast badge 点击。
+|当上游 renderer injection 尚未覆盖 Linux Codex Desktop DOM 和 MCP response 差异时需要。
 |xref:attachment$patches/060-renderer-linux-compatibility.patch[patch]
 
 |`070-linux-user-scripts-compatibility`
-|Required
+|必需
 |`crates/codex-plus-core/src/user_scripts.rs`
-|Wrap enabled user scripts with a Linux Codex Desktop location alias so marketplace scripts that expect the upstream `app://-/index.html` renderer URL still run on the Linux localhost webview.
-|Needed when user scripts such as `Codex Context Used Meter` treat the Linux `http://127.0.0.1:<port>/?mcpAppSandboxDevtools=1` page as a non-conversation window.
+|用 Linux Codex Desktop location alias 包裹已启用的用户脚本，让依赖上游 `app://-/index.html` renderer URL 的脚本市场脚本仍能在 Linux localhost webview 中运行。
+|当 `Codex Context Used Meter` 等用户脚本把 Linux `http://127.0.0.1:<port>/?mcpAppSandboxDevtools=1` 页面误判为非会话窗口时需要。
 |xref:attachment$patches/070-linux-user-scripts-compatibility.patch[patch]
 
 |`900-regression-tests`
-|Optional
+|可选
 |`crates/codex-plus-core/tests/*.rs`
-|Add regression coverage for the Linux path, CDP target selection, Linux launcher environment, helper private-network preflights, Pure API config, plugin details, delete stability, floating menu positioning, Fast badge composer placement, user-script location aliasing, and transient backend-check clickability.
-|Recommended for source builds and CI; can be disabled for a faster production-only patch.
+|为 Linux path、CDP target selection、Linux launcher environment、helper private-network 预检、Pure API config、plugin details、delete stability、floating menu positioning、Fast badge composer placement、user-script location aliasing 和后端短暂 checking 时的点击可用性添加回归覆盖。
+|推荐在源码构建和 CI 中启用；如果只需要更快的 production-only patch，可以禁用。
 |xref:attachment$patches/900-regression-tests.patch[patch]
 |===
 
-== Machine-readable manifest
+== 机器可读 manifest
 
-The manager script extracts the JSON block between the markers below.
+管理脚本会提取下面两个标记之间的 JSON block。
 
 // tag::snippet-manifest[]
 [source,json]
@@ -180,9 +180,9 @@ The manager script extracts the JSON block between the markers below.
 ----
 // end::snippet-manifest[]
 
-== Patch attachments
+== 补丁附件
 
-The full patch body for each snippet is stored as an Antora attachment and included below for auditability.
+每个片段的完整 patch body 都作为 Antora attachment 保存，并在下面引用，便于审计。
 
 [#snippet-010-linux-app-paths]
 === 010 Linux app paths

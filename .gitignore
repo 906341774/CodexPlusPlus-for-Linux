@@ -5,3 +5,12 @@ dist/
 *.log
 node_modules/
 target/
+.codex
+
+# 一些编写的给AI的提示词的临时文本
+.ai_prompts_draft/
+.aiIgnore/
+
+
+# 仓库管理token备忘
+_github_codex++_*.adoc

@@ -1,0 +1,93 @@
+= Recurring adaptation workflow
+:toc:
+:toclevels: 2
+
+English | xref:adapter-workflow_zh-CN.adoc[简体中文]
+
+This project is a Linux adaptation layer for upstream `BigPizzaV3/CodexPlusPlus`.
+It should behave like a platform port, not like a separate product.
+Every recurring update must therefore answer two questions:
+
+* Does the current adapter still apply cleanly to the pinned upstream version?
+* Do the original Codex++ features still produce their expected Linux UI and runtime effects?
+
+The machine-checkable feature contract is stored in xref:attachment$feature-matrix.json[`feature-matrix.json`].
+
+== Regular cadence
+
+Run the scheduled workflow at least weekly, and run it manually whenever upstream Codex++ publishes a release or materially changes launcher, manager, renderer injection, user scripts, install logic, or API profile handling.
+
+The GitHub Actions entry point is `.github/workflows/adaptation-regression.yml`.
+It is intentionally split into validation and release phases: scheduled runs validate, while publishing to a maintained fork remains an explicit maintainer action.
+
+== Update procedure
+
+. Record the current adapter state.
+  Tag the current repository before syncing new upstream code. Use the adapter version as the tag name when the repository version already matches the current upstream baseline.
+. Fetch or restore the pinned upstream Codex++ source.
+  If an older cached source tree is available, first reproduce the previous green test result there.
+. Run the local workflow contract.
++
+[source,bash]
+----
+HOME=/tmp/codexpp-workflow-home \
+XDG_DATA_HOME=/tmp/codexpp-workflow-data \
+XDG_CONFIG_HOME=/tmp/codexpp-workflow-config \
+XDG_CACHE_HOME=/tmp/codexpp-workflow-cache \
+pwsh -NoLogo -NoProfile -File scripts/Test-AdapterWorkflow.ps1
+----
+. For the common local smoke path, run the combined adapter regression entry.
++
+[source,bash]
+----
+./scripts/run-adapter-regression.sh
+----
+. Run the installer selftest.
++
+[source,bash]
+----
+HOME=/tmp/codexpp-installer-home \
+XDG_DATA_HOME=/tmp/codexpp-installer-data \
+XDG_CONFIG_HOME=/tmp/codexpp-installer-config \
+XDG_CACHE_HOME=/tmp/codexpp-installer-cache \
+pwsh -NoLogo -NoProfile -File scripts/Installer-and-Manager.ps1 selftest -NonInteractive -NoTui
+----
+. Apply all production snippets and regression snippets to a clean upstream source tree.
+  `git apply --check` must pass for every patch before building.
+. Run the white-box regression tests from `900-regression-tests`.
+  At minimum, run the focused Rust tests that cover path resolution, CDP target selection, launcher environment, Pure API config sync, renderer injection, Fast button placement, and user-script location aliasing.
+. Run the AlmaLinux minimal container install cycle.
+  The cycle must cover non-interactive install, update, uninstall, and the interactive prompt path where Enter accepts each configured default.
+. Run GUI validation.
+  Start Codex Desktop through the newly installed Codex++ Manager, then verify the feature matrix black-box checks by Computer Use screenshots and CDP DOM assertions.
+. Update the snippets, feature matrix, and workflow docs if any upstream change makes a patch unnecessary or insufficient.
+. Clean temporary source trees, container images, caches, and test files before committing.
+. Commit and push only after the feature matrix has been checked off for the target version.
+
+== Required GUI evidence
+
+The final validation report for a release should include screenshots or DOM assertions for these Linux-visible behaviors:
+
+* Codex++ Manager health checks show Linux launcher and manager entries as present.
+* Codex Desktop launches through Codex++ without a blank page.
+* Plugins navigation is clickable and has no debug suffix.
+* Plugin details open without an error page.
+* Pure API profile switching updates `$HOME/.codex/config.toml`.
+* Delete Conversation does not trigger a full page refresh.
+* The Fast service-tier badge appears in the Linux composer footer and remains clickable.
+* `Codex Context Used Meter` appears after the marketplace script is installed and enabled.
+
+== Release and push policy
+
+The repository may be pushed to the maintainer fork after all validation layers are green:
+
+* workflow contract check;
+* installer selftest;
+* patch apply check against clean upstream source;
+* white-box regression tests;
+* AlmaLinux minimal install/update/uninstall cycle;
+* GUI evidence for every feature in `feature-matrix.json`;
+* no temporary test files left in the repository, `$TMPDIR`, project work directories, or container cache.
+
+If GitHub Actions is used for publication, prefer a manually triggered release job with explicit `contents: write` permission and a repository secret such as `FORK_PUSH_TOKEN`.
+Scheduled jobs should report status but should not push unreviewed adaptations automatically.

@@ -1,0 +1,93 @@
+= 定期适配工作流
+:toc:
+:toclevels: 2
+
+简体中文 | xref:adapter-workflow.adoc[English]
+
+本项目是上游 `BigPizzaV3/CodexPlusPlus` 的 Linux 适配层。
+它的行为应当像一个平台移植版本，而不是另起炉灶的新产品。
+因此每次周期性更新都必须回答两个问题：
+
+* 当前适配片段是否仍能干净应用到固定的上游版本？
+* 官方 Codex++ 的原有功能在 Linux 上是否仍能产生预期的界面和运行时效果？
+
+可机器检查的功能契约保存在 xref:attachment$feature-matrix.json[`feature-matrix.json`]。
+
+== 固定周期
+
+至少每周运行一次定时工作流；当上游 Codex++ 发布新版本，或明显修改 launcher、manager、renderer injection、user scripts、安装逻辑、API profile 处理时，也应手动运行一次。
+
+GitHub Actions 入口是 `.github/workflows/adaptation-regression.yml`。
+该工作流刻意区分验证阶段和发布阶段：定时运行只做验证，推送到维护者 fork 必须是明确的维护者动作。
+
+== 更新步骤
+
+. 记录当前适配状态。
+  同步上游新代码前，先给当前仓库打 tag。当仓库版本已经对应当前上游基线时，tag 名直接使用适配项目版本号。
+. 获取或恢复固定的上游 Codex++ 源码。
+  如果本地仍有旧版本缓存，优先在旧源码树中复现之前的绿色测试结果。
+. 运行本地工作流契约检查。
++
+[source,bash]
+----
+HOME=/tmp/codexpp-workflow-home \
+XDG_DATA_HOME=/tmp/codexpp-workflow-data \
+XDG_CONFIG_HOME=/tmp/codexpp-workflow-config \
+XDG_CACHE_HOME=/tmp/codexpp-workflow-cache \
+pwsh -NoLogo -NoProfile -File scripts/Test-AdapterWorkflow.ps1
+----
+. 常见的本地冒烟检查可直接运行合并入口。
++
+[source,bash]
+----
+./scripts/run-adapter-regression.sh
+----
+. 运行安装脚本自检。
++
+[source,bash]
+----
+HOME=/tmp/codexpp-installer-home \
+XDG_DATA_HOME=/tmp/codexpp-installer-data \
+XDG_CONFIG_HOME=/tmp/codexpp-installer-config \
+XDG_CACHE_HOME=/tmp/codexpp-installer-cache \
+pwsh -NoLogo -NoProfile -File scripts/Installer-and-Manager.ps1 selftest -NonInteractive -NoTui
+----
+. 将所有生产片段和回归测试片段应用到干净的上游源码树。
+  每个 patch 在实际应用前都必须通过 `git apply --check`。
+. 运行 `900-regression-tests` 中的白盒回归测试。
+  至少覆盖路径识别、CDP target 选择、launcher 环境、Pure API 配置同步、renderer injection、Fast 按钮位置、用户脚本 location 别名。
+. 运行 AlmaLinux minimal 容器安装循环。
+  必须覆盖非交互 install、update、uninstall，以及交互式路径询问中直接回车接受默认值的流程。
+. 运行 GUI 验证。
+  通过新安装的 Codex++ Manager 启动 Codex Desktop，再用 Computer Use 截图和 CDP DOM 断言验证功能矩阵中的黑盒检查项。
+. 如果上游变化导致某个 patch 已不再必要或不再充分，必须同步更新 snippets、功能矩阵和工作流文档。
+. 提交前清理临时源码树、容器镜像、缓存和测试文件。
+. 只有目标版本的功能矩阵全部验收后，才提交并推送。
+
+== 必需 GUI 证据
+
+一次发布的最终验证报告应包含以下 Linux 可见行为的截图或 DOM 断言：
+
+* Codex++ Manager 健康检查中 Linux launcher 和 manager entry 显示存在。
+* Codex Desktop 能通过 Codex++ 启动，且不是空白页。
+* Plugins 导航可点击，且没有调试后缀。
+* 插件详情页打开后不会跳到错误页。
+* Pure API profile 切换会更新 `$HOME/.codex/config.toml`。
+* Delete Conversation 不触发整页刷新。
+* Fast service-tier badge 出现在 Linux composer footer 中，并保持可点击。
+* 安装并启用市场脚本后，`Codex Context Used Meter` 能在会话界面出现。
+
+== 发布与推送策略
+
+只有以下验证层全部通过后，才能推送到维护者 fork：
+
+* 工作流契约检查；
+* 安装脚本 selftest；
+* 干净上游源码上的 patch apply check；
+* 白盒回归测试；
+* AlmaLinux minimal install/update/uninstall 循环；
+* `feature-matrix.json` 中每个功能的 GUI 证据；
+* 仓库、`$TMPDIR`、项目 work 目录、容器缓存中没有残留测试文件。
+
+如果使用 GitHub Actions 发布，建议使用手动触发的 release job，明确声明 `contents: write` 权限，并通过 `FORK_PUSH_TOKEN` 之类的仓库 secret 推送。
+定时任务应报告状态，不应自动推送未经人工确认的新适配。

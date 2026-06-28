@@ -1,2 +1,8 @@
-* xref:index.adoc[Overview]
-* xref:snippets.adoc[Linux adaptation snippets]
+* English
+** xref:index.adoc[Overview]
+** xref:snippets.adoc[Linux adaptation snippets]
+** xref:adapter-workflow.adoc[Recurring adaptation workflow]
+* 简体中文
+** xref:index_zh-CN.adoc[概览]
+** xref:snippets_zh-CN.adoc[Linux 适配片段]
+** xref:adapter-workflow_zh-CN.adoc[定期适配工作流]

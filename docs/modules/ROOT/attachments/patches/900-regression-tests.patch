@@ -1,39 +1,98 @@
 diff --git a/crates/codex-plus-core/tests/cdp_bridge.rs b/crates/codex-plus-core/tests/cdp_bridge.rs
-index 396853f..e7e67e7 100644
+index f58386f..e075cef 100644
 --- a/crates/codex-plus-core/tests/cdp_bridge.rs
 +++ b/crates/codex-plus-core/tests/cdp_bridge.rs
-@@ -1,6 +1,8 @@
- use codex_plus_core::assets;
- use codex_plus_core::bridge::{self, BRIDGE_BINDING_NAME};
--use codex_plus_core::cdp::{CdpTarget, pick_page_target};
-+use codex_plus_core::cdp::{
-+    CdpTarget, injectable_page_targets, pick_page_target, pick_primary_page_target,
-+};
- use futures_util::{SinkExt, StreamExt};
- use serde_json::json;
- use std::future::Future;
-@@ -93,11 +95,31 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
+@@ -106,7 +106,7 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
      let script = assets::injection_script(57321);
  
      assert!(script.contains("function pluginPatchDisabledInRelayMode()"));
 -    assert!(script.contains("!codexPlusBackendSettingsLoaded"));
 +    assert!(script.contains("codexPlusBackendSettings.launchMode === \"relay\""));
-+    assert!(!script.contains("!codexPlusBackendSettingsLoaded"));
      assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
-+    assert!(script.contains("refreshPluginEntryUnlockLoop"));
      assert!(script.contains("clearPluginPatchArtifacts()"));
+ }
+@@ -147,10 +147,10 @@ fn injection_script_restores_legacy_plugin_sidebar_entry_unlock() {
+     assert!(script.contains("function pluginEntryButton()"));
+     assert!(script.contains("function enablePluginEntry()"));
+     assert!(script.contains("if (!codexPlusSettings().pluginEntryUnlock) return"));
+-    assert!(script.contains("pluginButton.addEventListener(\"click\", () => {"));
++    assert!(script.contains("installPluginEntryGuard(pluginButton);"));
+     assert!(script.contains("spoofChatGPTAuthMethod(pluginButton);"));
+-    assert!(script.contains("插件 - 已解锁"));
+-    assert!(script.contains("Plugins - Unlocked"));
++    assert!(script.contains("function clearPluginEntryUnlockLabel(button)"));
++    assert!(!script.contains("Plugins - Unlocked\" : \"插件 - 已解锁"));
+ }
+ 
+ #[test]
+@@ -428,6 +428,30 @@ fn injection_script_exposes_fast_service_tier_control() {
+     assert!(script.contains("fast"));
  }
  
 +#[test]
-+fn injection_script_keeps_plugin_entry_label_native() {
++fn linux_renderer_patch_places_fast_badge_in_current_linux_composer_footer() {
 +    let script = assets::injection_script(57321);
 +
-+    assert!(script.contains("function labelUnlockedPluginEntry(button) {\n    clearPluginEntryUnlockLabel(button);\n  }"));
-+    assert!(!script.contains("labelTextNode.nodeValue = /^Plugins/i.test(current) ? \"Plugins - Unlocked\" : \"插件 - 已解锁\";"));
++    assert!(script.contains("function codexServiceTierLinuxComposerFooters"));
++    assert!(script.contains("function codexServiceTierComposerFromIntelligenceTrigger"));
++    assert!(script.contains("function codexServiceTierComposerFromEditable"));
++    assert!(script.contains("[data-codex-intelligence-trigger=\"true\"]"));
++    assert!(script.contains("[data-codex-composer=\"true\"]"));
++    assert!(script.contains("_footer_"));
++    assert!(script.contains("codexServiceTierBestLinuxComposerFooter"));
 +}
 +
 +#[test]
-+fn injection_script_avoids_floating_menu_native_control_overlap() {
++fn linux_renderer_patch_keeps_fast_badge_clickable_during_backend_checking() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("function codexServiceTierBackendBlocksLocalOverride"));
++    assert!(script.contains("status !== \"checking\""));
++    assert!(script.contains("codexServiceTierBackendBlocksLocalOverride()"));
++    assert!(script.contains("codexPlusBackendStatus.status === \"checking\" && codexServiceTierState.status === \"loading\""));
++    assert!(script.contains("codexServiceTierState.status === \"loading\" && badge.dataset.tier === \"loading\""));
++}
++
+ #[test]
+ fn injection_script_restores_thread_scroll_positions() {
+     let script = assets::injection_script(57321);
+@@ -1262,3 +1286,43 @@ fn noop_handler() -> bridge::BridgeHandler {
+             as Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send>>
+     })
+ }
++
++#[test]
++fn linux_renderer_patch_keeps_plugin_label_native_and_normalizes_detail_payloads() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("function labelUnlockedPluginEntry(button) {\n    clearPluginEntryUnlockLabel(button);\n  }"));
++    assert!(!script.contains("Plugins - Unlocked\" : \"插件 - 已解锁"));
++    assert!(script.contains("function normalizeCodexPlusPluginDetail(plugin)"));
++    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"apps\")"));
++    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"skills\")"));
++    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"mcpServers\")"));
++    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"hooks\")"));
++}
++
++#[test]
++fn linux_renderer_patch_handles_pure_api_account_read_without_secrets() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("codexPlusAccountReadRequestIds"));
++    assert!(script.contains("patchAppServerModelMessages();"));
++    assert!(script.contains("request?.method === \"account/read\""));
++    assert!(script.contains("account_read_pure_api_compat_applied"));
++    assert!(script.contains("codexplusplus@local"));
++    let compat_block = script
++        .split("function codexPlusSyntheticAccountReadResult()")
++        .nth(1)
++        .and_then(|block| block.split("function patchMcpPluginReadResponseData").next())
++        .expect("account-read compatibility block should be present");
++    assert!(!compat_block.contains("sk-"));
++}
++
++#[test]
++fn linux_renderer_patch_avoids_floating_menu_native_control_overlap() {
 +    let script = assets::injection_script(57321);
 +
 +    assert!(script.contains("function avoidFloatingCodexPlusMenuNativeControlOverlap(menu)"));
@@ -41,204 +100,98 @@ index 396853f..e7e67e7 100644
 +    assert!(script.contains("rectsOverlap(menuRect, rect, 8)"));
 +    assert!(script.contains("updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));"));
 +}
-+
- #[test]
- fn injection_script_unlocks_nested_disabled_plugin_install_buttons() {
-     let script = assets::injection_script(57321);
-@@ -176,6 +198,41 @@ fn injection_script_unlocks_custom_model_catalog() {
-     assert!(script.contains("modelWhitelistUnlock"));
+diff --git a/crates/codex-plus-core/tests/bridge_routes.rs b/crates/codex-plus-core/tests/bridge_routes.rs
+index aa83775..3e02b50 100644
+--- a/crates/codex-plus-core/tests/bridge_routes.rs
++++ b/crates/codex-plus-core/tests/bridge_routes.rs
+@@ -614,6 +614,31 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
+     assert!(evaluated[0].contains("window.demo = true;"));
  }
  
 +#[test]
-+fn injection_script_patches_pure_api_account_read_errors_without_secrets() {
-+    let script = assets::injection_script(57321);
-+
-+    assert!(script.contains("codexPlusAccountReadRequestIds"));
-+    assert!(script.contains("patchAppServerModelMessages();"));
-+    assert!(script.contains("request?.method === \"account/read\""));
-+    assert!(script.contains("email and plan type are required for chatgpt authentication"));
-+    assert!(script.contains("account_read_compat_applied"));
-+    assert!(script.contains("accountType === \"apiKey\""));
-+    assert!(script.contains("account_read_pure_api_compat_applied"));
-+    assert!(script.contains("codexplusplus@local"));
-+    let compat_block = script
-+        .split("function codexPlusSyntheticAccountReadResult()")
-+        .nth(1)
-+        .and_then(|block| block.split("function patchMcpModelResponseData").next())
-+        .expect("account-read compatibility block should be present");
-+    assert!(!compat_block.contains("sk-"));
-+}
-+
-+#[test]
-+fn injection_script_normalizes_plugin_read_detail_arrays() {
-+    let script = assets::injection_script(57321);
-+
-+    assert!(script.contains("codexPlusPluginReadRequestIds"));
-+    assert!(script.contains("request?.method === \"plugin/read\""));
-+    assert!(script.contains("patchMcpPluginReadResponseData"));
-+    assert!(script.contains("normalizeCodexPlusPluginDetail"));
-+    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"apps\")"));
-+    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"skills\")"));
-+    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"mcpServers\")"));
-+    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"hooks\")"));
-+    assert!(script.contains("plugin_read_detail_compat_applied"));
-+}
-+
- #[test]
- fn injection_script_restores_thread_scroll_positions() {
-     let script = assets::injection_script(57321);
-@@ -327,6 +384,117 @@ fn pick_page_target_falls_back_to_first_injectable_page() {
-     assert_eq!(picked.id, "first");
- }
- 
-+#[test]
-+fn pick_primary_page_target_prefers_main_window_over_hotkey_window() {
-+    let targets = vec![
-+        target(
-+            "hotkey",
-+            "page",
-+            "127.0.0.1:5175/?initialRoute=%2Fhotkey-window&mcpAppSandboxDevtools=1",
-+            "http://127.0.0.1:5175/?initialRoute=%2Fhotkey-window&mcpAppSandboxDevtools=1",
-+            Some("ws://hotkey"),
-+        ),
-+        target(
-+            "main",
-+            "page",
-+            "127.0.0.1:5175/?mcpAppSandboxDevtools=1",
-+            "http://127.0.0.1:5175/?mcpAppSandboxDevtools=1",
-+            Some("ws://main"),
-+        ),
-+    ];
-+
-+    let picked = pick_primary_page_target(&targets).expect("main target should be selected");
-+
-+    assert_eq!(picked.id, "main");
-+}
-+
-+#[test]
-+fn injectable_page_targets_returns_all_live_codex_windows() {
-+    let targets = vec![
-+        target(
-+            "hotkey",
-+            "page",
-+            "127.0.0.1:5175/?initialRoute=%2Fhotkey-window&mcpAppSandboxDevtools=1",
-+            "http://127.0.0.1:5175/?initialRoute=%2Fhotkey-window&mcpAppSandboxDevtools=1",
-+            Some("ws://hotkey"),
-+        ),
-+        target(
-+            "main",
-+            "page",
-+            "127.0.0.1:5175/?mcpAppSandboxDevtools=1",
-+            "http://127.0.0.1:5175/?mcpAppSandboxDevtools=1",
-+            Some("ws://main"),
-+        ),
-+        target(
-+            "worker",
-+            "worker",
-+            "Codex",
-+            "http://127.0.0.1:5175/worker",
-+            Some("ws://worker"),
-+        ),
-+    ];
-+
-+    let picked = injectable_page_targets(&targets);
-+
-+    assert_eq!(
-+        picked
-+            .iter()
-+            .map(|target| target.id.as_str())
-+            .collect::<Vec<_>>(),
-+        vec!["hotkey", "main"]
++fn user_script_bundle_wraps_scripts_with_linux_codex_location_alias() {
++    let temp = tempfile::tempdir().unwrap();
++    let user_dir = temp.path().join("user");
++    std::fs::create_dir_all(&user_dir).unwrap();
++    std::fs::write(
++        user_dir.join("market-codex-context-used-meter.js"),
++        r#"window.__seenCodexLocation = new URL(location.href).href;"#,
++    )
++    .unwrap();
++    let manager = UserScriptManager::new(
++        temp.path().join("builtin"),
++        user_dir,
++        temp.path().join("user_scripts.json"),
 +    );
++
++    let bundle = manager.build_enabled_bundle().unwrap();
++
++    assert!(bundle.contains("codexPlusLinuxUserScriptLocation"));
++    assert!(bundle.contains("mcpAppSandboxDevtools"));
++    assert!(bundle.contains("app://-/index.html"));
++    assert!(bundle.contains("((location) => {"));
++    assert!(bundle.contains("window.__seenCodexLocation = new URL(location.href).href;"));
 +}
 +
-+#[test]
-+fn injectable_page_targets_returns_all_unlabeled_linux_webview_pages() {
-+    let targets = vec![
-+        target(
-+            "hotkey",
-+            "page",
-+            "127.0.0.1:5175/?initialRoute=%2Fhotkey-window&mcpAppSandboxDevtools=1",
-+            "http://127.0.0.1:5175/?initialRoute=%2Fhotkey-window&mcpAppSandboxDevtools=1",
-+            Some("ws://hotkey"),
-+        ),
-+        target(
-+            "main",
-+            "page",
-+            "127.0.0.1:5175/?mcpAppSandboxDevtools=1",
-+            "http://127.0.0.1:5175/?mcpAppSandboxDevtools=1",
-+            Some("ws://main"),
-+        ),
-+    ];
-+
-+    let picked = injectable_page_targets(&targets);
-+
-+    assert_eq!(
-+        picked
-+            .iter()
-+            .map(|target| target.id.as_str())
-+            .collect::<Vec<_>>(),
-+        vec!["hotkey", "main"]
-+    );
-+}
-+
-+#[test]
-+fn pick_primary_page_target_waits_when_only_hotkey_window_exists() {
-+    let targets = vec![target(
-+        "hotkey",
-+        "page",
-+        "127.0.0.1:5175/?initialRoute=%2Fhotkey-window",
-+        "http://127.0.0.1:5175/?initialRoute=/hotkey-window",
-+        Some("ws://hotkey"),
-+    )];
-+
-+    let error =
-+        pick_primary_page_target(&targets).expect_err("hotkey target should not be selected");
-+
-+    assert!(
-+        error
-+            .to_string()
-+            .contains("No injectable Codex page target found")
-+    );
-+}
-+
- #[test]
- fn pick_page_target_rejects_non_pages_and_pages_without_websocket() {
-     let targets = vec![
+ #[tokio::test]
+ async fn core_runtime_open_devtools_uses_inspector_url_opener() {
+     let opened = Arc::new(Mutex::new(Vec::<String>::new()));
 diff --git a/crates/codex-plus-core/tests/installers.rs b/crates/codex-plus-core/tests/installers.rs
-index c26f700..f85c679 100644
+index d20bf61..7ca5469 100644
 --- a/crates/codex-plus-core/tests/installers.rs
 +++ b/crates/codex-plus-core/tests/installers.rs
-@@ -1,7 +1,7 @@
- use codex_plus_core::install::{
-     InstallOptions, SILENT_BINARY, app_bundle_names, build_macos_app_bundle,
-     build_windows_entrypoint_plan, companion_binary_path_from_exe, default_install_root_strategy,
--    shortcut_names,
-+    desktop_entry_file_names, inspect_entrypoints_for_app, shortcut_names,
- };
- 
- #[test]
-@@ -72,6 +72,42 @@ fn macos_bundle_metadata_contains_silent_and_manager_apps() {
- fn installer_exports_expected_two_entrypoint_names() {
-     assert_eq!(shortcut_names(), ("Codex++.lnk", "Codex++ 管理工具.lnk"));
-     assert_eq!(app_bundle_names(), ("Codex++.app", "Codex++ 管理工具.app"));
-+    assert_eq!(
-+        desktop_entry_file_names(),
-+        ("codex-plus-plus.desktop", "codex-plus-plus-manager.desktop")
-+    );
+@@ -126,3 +126,107 @@ fn windows_default_install_root_uses_known_folder_before_userprofile_desktop() {
+         assert_eq!(strategy, "user-dirs-desktop");
+     }
+ }
++
++#[cfg(target_os = "linux")]
++fn linux_install_env_lock() -> &'static std::sync::Mutex<()> {
++    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
++    LOCK.get_or_init(|| std::sync::Mutex::new(()))
++}
++
++#[cfg(target_os = "linux")]
++struct EnvVarRestore {
++    key: &'static str,
++    old_value: Option<std::ffi::OsString>,
++}
++
++#[cfg(target_os = "linux")]
++impl Drop for EnvVarRestore {
++    fn drop(&mut self) {
++        if let Some(value) = self.old_value.take() {
++            unsafe { std::env::set_var(self.key, value) };
++        } else {
++            unsafe { std::env::remove_var(self.key) };
++        }
++    }
++}
++
++#[cfg(target_os = "linux")]
++fn set_xdg_data_home_for_test(path: &std::path::Path) -> EnvVarRestore {
++    let old_value = std::env::var_os("XDG_DATA_HOME");
++    unsafe { std::env::set_var("XDG_DATA_HOME", path) };
++    EnvVarRestore {
++        key: "XDG_DATA_HOME",
++        old_value,
++    }
 +}
 +
 +#[cfg(target_os = "linux")]
 +#[test]
 +fn linux_adapter_entrypoint_detection_uses_codex_app_install_dir() {
++    let _guard = linux_install_env_lock().lock().unwrap();
 +    let temp = tempfile::tempdir().unwrap();
++    let xdg_data_home = temp.path().join("empty-xdg-data");
++    let _restore = set_xdg_data_home_for_test(&xdg_data_home);
 +    let app_dir = temp.path().join("codex-app");
 +    let install_dir = app_dir.join(".codex-plusplus").join("install");
 +    std::fs::create_dir_all(&install_dir).unwrap();
 +    std::fs::write(install_dir.join("launch-codex-plus-plus"), "#!/bin/sh\n").unwrap();
 +    std::fs::write(install_dir.join("codex-plus-plus-manager"), "").unwrap();
 +
-+    let state = inspect_entrypoints_for_app(Some(&app_dir));
++    let state = codex_plus_core::install::inspect_entrypoints_for_app(Some(&app_dir));
 +
 +    assert!(state.silent_shortcut.installed);
 +    assert!(state.management_shortcut.installed);
@@ -258,73 +211,110 @@ index c26f700..f85c679 100644
 +            .unwrap()
 +            .ends_with(".codex-plusplus/install/codex-plus-plus-manager")
 +    );
- }
- 
- #[test]
++}
++
++#[cfg(target_os = "linux")]
++#[test]
++fn linux_adapter_entrypoint_detection_uses_synced_state_install_root() {
++    let _guard = linux_install_env_lock().lock().unwrap();
++    let temp = tempfile::tempdir().unwrap();
++    let data_home = temp.path().join("xdg-data");
++    let install_root = temp.path().join("external-codexpp");
++    let install_dir = install_root.join("install");
++    std::fs::create_dir_all(data_home.join("codex-plusplus")).unwrap();
++    std::fs::create_dir_all(&install_dir).unwrap();
++    std::fs::write(install_dir.join("launch-codex-plus-plus"), "#!/bin/sh\n").unwrap();
++    std::fs::write(install_dir.join("codex-plus-plus-manager"), "").unwrap();
++    std::fs::write(
++        data_home.join("codex-plusplus").join("state.json"),
++        format!(
++            r#"{{"linuxAdapterInstallRoot":"{}","appRoot":"/stale/codex-app"}}"#,
++            install_root.display()
++        ),
++    )
++    .unwrap();
++
++    let _restore = set_xdg_data_home_for_test(&data_home);
++    let state = codex_plus_core::install::inspect_entrypoints_for_app(None);
++
++    assert!(state.silent_shortcut.installed);
++    assert!(state.management_shortcut.installed);
++    assert_eq!(
++        state.silent_shortcut.path.as_deref(),
++        Some(install_dir.join("launch-codex-plus-plus").to_str().unwrap())
++    );
++    assert_eq!(
++        state.management_shortcut.path.as_deref(),
++        Some(install_dir.join("codex-plus-plus-manager").to_str().unwrap())
++    );
++}
 diff --git a/crates/codex-plus-core/tests/launcher.rs b/crates/codex-plus-core/tests/launcher.rs
-index 42eaa1c..fae856c 100644
+index 7a6550c..dd68901 100644
 --- a/crates/codex-plus-core/tests/launcher.rs
 +++ b/crates/codex-plus-core/tests/launcher.rs
-@@ -10,8 +10,8 @@ use codex_plus_core::app_paths::{
- use codex_plus_core::launcher::{
-     CodexLaunch, DefaultLaunchHooks, LaunchHooks, LaunchOptions, MacosCleanupPolicy,
-     build_codex_arguments, build_codex_command, build_macos_cleanup_command,
--    build_macos_open_command, build_packaged_activation, codex_process_environment_from,
--    launch_and_inject_with_hooks, with_temporary_proxy_environment,
-+    build_macos_open_command, build_packaged_activation, codex_process_environment_for_app_from,
-+    codex_process_environment_from, launch_and_inject_with_hooks, with_temporary_proxy_environment,
- };
- #[cfg(windows)]
- use codex_plus_core::launcher::{WindowsProcessControlStrategy, windows_process_control_strategy};
-@@ -91,6 +91,16 @@ fn app_paths_extracts_codex_version_from_macos_bundle_plist() {
-     assert_eq!(codex_app_version(&app).as_deref(), Some("26.513.3673"));
+@@ -368,6 +368,39 @@ async fn default_helper_serves_backend_status_over_http() {
  }
  
-+#[test]
-+fn app_paths_extracts_codex_version_from_linux_wrapper_version_file() {
-+    let temp = tempfile::tempdir().unwrap();
-+    std::fs::write(temp.path().join("version"), "42.0.1\n").unwrap();
+ #[tokio::test]
++async fn default_helper_allows_private_network_preflight() {
++    let hooks = DefaultLaunchHooks::default();
++    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
++    let port = listener.local_addr().unwrap().port();
++    drop(listener);
 +
-+    if cfg!(target_os = "linux") {
-+        assert_eq!(codex_app_version(temp.path()).as_deref(), Some("42.0.1"));
-+    }
++    hooks.start_helper(port).await.unwrap();
++    let client = reqwest::Client::builder().no_proxy().build().unwrap();
++    let response = client
++        .request(
++            reqwest::Method::OPTIONS,
++            format!("http://127.0.0.1:{port}/backend/status"),
++        )
++        .header("Origin", "http://127.0.0.1:5176")
++        .header("Access-Control-Request-Method", "POST")
++        .header("Access-Control-Request-Private-Network", "true")
++        .send()
++        .await
++        .unwrap();
++
++    assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
++    assert_eq!(
++        response
++            .headers()
++            .get("access-control-allow-private-network")
++            .and_then(|value| value.to_str().ok()),
++        Some("true")
++    );
++
++    hooks.shutdown_helper(port).await;
 +}
 +
- #[test]
- fn app_paths_user_data_candidates_include_local_and_roaming_variants() {
-     let local = PathBuf::from(r"C:\Users\me\AppData\Local");
-@@ -137,6 +147,17 @@ fn app_paths_build_macos_bundle_executable() {
-     );
- }
- 
-+#[test]
-+fn app_paths_builds_linux_start_script_executable() {
-+    let temp = tempfile::tempdir().unwrap();
-+    let start = temp.path().join("start.sh");
-+    std::fs::write(&start, "#!/bin/sh\n").unwrap();
-+
-+    if cfg!(target_os = "linux") {
-+        assert_eq!(build_codex_executable(temp.path()), start);
-+    }
-+}
-+
- #[test]
- fn app_paths_normalizes_executable_and_package_paths() {
++#[tokio::test]
+ async fn default_helper_accepts_diagnostic_log_events_over_http() {
      let temp = tempfile::tempdir().unwrap();
-@@ -183,10 +204,33 @@ fn launcher_builds_debug_arguments_and_commands() {
-     assert_eq!(command[2], "--remote-allow-origins=http://127.0.0.1:9229");
- }
+     let log_path = temp.path().join("codex-plus.log");
+@@ -1086,7 +1119,7 @@ impl LaunchHooks for FakeHooks {
+         Ok(())
+     }
  
+-    async fn ensure_injection(&self, debug_port: u16, helper_port: u16) -> bool {
++    async fn ensure_injection(&self, debug_port: u16, helper_port: u16, _app_dir: &std::path::Path) -> bool {
+         self.event(format!("inject:{debug_port}:{helper_port}"));
+         self.inject_error.is_none()
+     }
+@@ -1120,3 +1153,76 @@ impl LaunchHooks for FakeHooks {
+         }
+     }
+ }
++
 +#[test]
-+fn launcher_uses_linux_start_script_with_new_instance_when_present() {
++fn linux_start_script_command_uses_new_instance_separator() {
 +    let temp = tempfile::tempdir().unwrap();
 +    let start = temp.path().join("start.sh");
 +    std::fs::write(&start, "#!/bin/sh\n").unwrap();
 +
-+    let command = build_codex_command(temp.path(), 9229);
++    let command = codex_plus_core::launcher::build_codex_command(temp.path(), 9229, &[]);
 +
 +    if cfg!(target_os = "linux") {
-+        assert_eq!(command[0], start.to_string_lossy());
 +        assert_eq!(
 +            command,
 +            vec![
@@ -338,23 +328,9 @@ index 42eaa1c..fae856c 100644
 +    }
 +}
 +
- #[test]
- fn launcher_constructs_windows_packaged_activation_without_real_app() {
-     let app_dir = PathBuf::from(
--        r"C:\Program Files\WindowsApps\OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0\app",
-+        "C:/Program Files/WindowsApps/OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0/app",
-     );
- 
-     assert_eq!(
-@@ -297,10 +341,15 @@ fn ports_non_windows_keeps_requested_even_when_busy() {
- 
- #[test]
- fn proxy_uses_existing_environment_before_system_proxy() {
--    let env = HashMap::from([(
--        "HTTPS_PROXY".to_string(),
--        "http://env-proxy.example.test:8080".to_string(),
--    )]);
-+    let env = HashMap::from([
++#[test]
++fn linux_process_environment_strips_electron_node_pollution_and_preserves_proxy() {
++    let env = std::collections::HashMap::from([
 +        ("DISPLAY".to_string(), ":0".to_string()),
 +        (
 +            "HTTPS_PROXY".to_string(),
@@ -363,62 +339,18 @@ index 42eaa1c..fae856c 100644
 +        ("ELECTRON_RUN_AS_NODE".to_string(), "1".to_string()),
 +        ("ELECTRON_NO_ATTACH_CONSOLE".to_string(), "1".to_string()),
 +    ]);
-     assert!(has_proxy_environment(&env));
-     let process_env = codex_process_environment_from(&env, || {
-         panic!("system proxy detection should not run when env already has proxy")
-@@ -309,6 +358,106 @@ fn proxy_uses_existing_environment_before_system_proxy() {
-         process_env.get("HTTPS_PROXY").map(String::as_str),
-         Some("http://env-proxy.example.test:8080")
-     );
-+    if cfg!(target_os = "linux") {
-+        assert!(!process_env.contains_key("ELECTRON_RUN_AS_NODE"));
-+        assert!(!process_env.contains_key("ELECTRON_NO_ATTACH_CONSOLE"));
-+    }
-+}
 +
-+#[test]
-+fn linux_network_environment_preserves_existing_resolver_and_proxy_values() {
-+    let env = HashMap::from([
-+        ("DISPLAY".to_string(), ":0".to_string()),
-+        (
-+            "RES_OPTIONS".to_string(),
-+            "attempts:1 timeout:1".to_string(),
-+        ),
-+        ("LOCALDOMAIN".to_string(), "example.test".to_string()),
-+        ("NO_PROXY".to_string(), "127.0.0.1,localhost".to_string()),
-+        (
-+            "https_proxy".to_string(),
-+            "http://lower.example.test:8080".to_string(),
-+        ),
-+        ("NODE_OPTIONS".to_string(), "--use-env-proxy".to_string()),
-+        ("ELECTRON_RUN_AS_NODE".to_string(), "1".to_string()),
-+    ]);
-+    let process_env = codex_process_environment_from(&env, || {
++    let process_env = codex_plus_core::launcher::codex_process_environment_from(&env, || {
 +        panic!("system proxy detection should not run when env already has proxy")
 +    });
 +
++    assert_eq!(
++        process_env.get("HTTPS_PROXY").map(String::as_str),
++        Some("http://env-proxy.example.test:8080")
++    );
 +    if cfg!(target_os = "linux") {
-+        assert_eq!(
-+            process_env.get("RES_OPTIONS").map(String::as_str),
-+            Some("attempts:1 timeout:1")
-+        );
-+        assert_eq!(
-+            process_env.get("LOCALDOMAIN").map(String::as_str),
-+            Some("example.test")
-+        );
-+        assert_eq!(
-+            process_env.get("NO_PROXY").map(String::as_str),
-+            Some("127.0.0.1,localhost")
-+        );
-+        assert_eq!(
-+            process_env.get("https_proxy").map(String::as_str),
-+            Some("http://lower.example.test:8080")
-+        );
-+        assert_eq!(
-+            process_env.get("NODE_OPTIONS").map(String::as_str),
-+            Some("--use-env-proxy")
-+        );
 +        assert!(!process_env.contains_key("ELECTRON_RUN_AS_NODE"));
++        assert!(!process_env.contains_key("ELECTRON_NO_ATTACH_CONSOLE"));
 +    }
 +}
 +
@@ -427,7 +359,11 @@ index 42eaa1c..fae856c 100644
 +    let temp = tempfile::tempdir().unwrap();
 +    std::fs::write(temp.path().join("start.sh"), "#!/bin/sh\n").unwrap();
 +
-+    let process_env = codex_process_environment_for_app_from(temp.path(), &HashMap::new(), || None);
++    let process_env = codex_plus_core::launcher::codex_process_environment_for_app_from(
++        temp.path(),
++        &std::collections::HashMap::new(),
++        || None,
++    );
 +
 +    if cfg!(target_os = "linux") {
 +        assert_eq!(
@@ -440,196 +376,73 @@ index 42eaa1c..fae856c 100644
 +                .map(String::as_str),
 +            Some("5176-5185")
 +        );
-+    } else {
-+        assert!(!process_env.contains_key("CODEX_WEBVIEW_PORT"));
-+        assert!(!process_env.contains_key("CODEX_MULTI_LAUNCH_PORT_RANGE"));
 +    }
 +}
-+
-+#[test]
-+fn linux_start_script_environment_preserves_operator_webview_overrides() {
-+    let temp = tempfile::tempdir().unwrap();
-+    std::fs::write(temp.path().join("start.sh"), "#!/bin/sh\n").unwrap();
-+
-+    let env = HashMap::from([
-+        ("CODEX_WEBVIEW_PORT".to_string(), "5190".to_string()),
-+        (
-+            "CODEX_MULTI_LAUNCH_PORT_RANGE".to_string(),
-+            "5190-5192".to_string(),
-+        ),
-+    ]);
-+    let process_env = codex_process_environment_for_app_from(temp.path(), &env, || None);
-+
-+    assert_eq!(
-+        process_env.get("CODEX_WEBVIEW_PORT").map(String::as_str),
-+        Some("5190")
-+    );
-+    assert_eq!(
-+        process_env
-+            .get("CODEX_MULTI_LAUNCH_PORT_RANGE")
-+            .map(String::as_str),
-+        Some("5190-5192")
-+    );
- }
- 
- #[test]
-@@ -580,6 +729,54 @@ async fn launch_lifecycle_writes_failure_and_cleans_helper_when_injection_fails(
-     assert!(status.message.contains("inject failed"));
- }
- 
-+#[cfg(target_os = "linux")]
-+#[tokio::test]
-+async fn launch_lifecycle_keeps_linux_start_wrapper_alive_when_injection_fails() {
-+    let temp = tempfile::tempdir().unwrap();
-+    let app_dir = temp.path();
-+    let start = app_dir.join("start.sh");
-+    std::fs::write(&start, "#!/bin/sh\n").unwrap();
-+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
-+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
-+    let hooks = FakeHooks::new(events.clone())
-+        .with_launch_result(CodexLaunch::Process {
-+            command: vec![start.to_string_lossy().to_string()],
-+            wait_strategy: codex_plus_core::launcher::ProcessWaitStrategy::TrackedChild,
-+            macos_cleanup_policy: None,
-+        })
-+        .with_inject_error("inject failed");
-+
-+    let error = launch_and_inject_with_hooks(
-+        LaunchOptions {
-+            app_dir: Some(app_dir.to_path_buf()),
-+            debug_port: 9229,
-+            helper_port: 57321,
-+            status_store: status_store.clone(),
-+        },
-+        &hooks,
-+    )
-+    .await
-+    .unwrap_err();
-+
-+    assert!(error.to_string().contains("inject failed"));
-+    assert_eq!(
-+        *events.lock().unwrap(),
-+        vec![
-+            "select-debug:9229",
-+            "select-helper:57321",
-+            "load-settings",
-+            "start-helper:57321",
-+            "launch:9229",
-+            "inject:9229:57321",
-+            "shutdown-helper:57321",
-+            "status:failed",
-+        ]
-+    );
-+    let status = status_store.load_latest().unwrap().unwrap();
-+    assert_eq!(status.status, "failed");
-+    assert!(status.message.contains("inject failed"));
-+}
-+
- #[tokio::test]
- async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started() {
-     let temp = tempfile::tempdir().unwrap();
-@@ -862,7 +1059,10 @@ impl LaunchHooks for FakeHooks {
-     }
- 
-     async fn launch_codex(&self, app_dir: &Path, debug_port: u16) -> anyhow::Result<CodexLaunch> {
--        assert!(app_dir.ends_with("Codex.app"));
-+        assert!(
-+            app_dir.ends_with("Codex.app")
-+                || (cfg!(target_os = "linux") && app_dir.join("start.sh").exists())
-+        );
-         self.event(format!("launch:{debug_port}"));
-         if let Some(message) = &self.launch_error {
-             anyhow::bail!(message.clone());
 diff --git a/crates/codex-plus-core/tests/relay_config.rs b/crates/codex-plus-core/tests/relay_config.rs
-index 177d395..dd1e0e2 100644
+index 487e486..86586d4 100644
 --- a/crates/codex-plus-core/tests/relay_config.rs
 +++ b/crates/codex-plus-core/tests/relay_config.rs
-@@ -106,6 +106,30 @@ experimental_bearer_token = "sk-test-redacted"
-     assert!(status.has_bearer_token);
- }
- 
-+#[test]
-+fn reports_pure_api_configured_without_openai_auth_requirement() {
-+    let temp = tempfile::tempdir().unwrap();
-+    std::fs::write(
-+        temp.path().join("config.toml"),
-+        r#"model = "gpt-5"
-+model_provider = "CodexPlusPlus"
-+[model_providers.CodexPlusPlus]
-+name = "CodexPlusPlus"
-+wire_api = "responses"
-+requires_openai_auth = false
-+base_url = "https://wemx.cc"
-+experimental_bearer_token = "sk-test-redacted"
-+"#,
-+    )
-+    .unwrap();
-+
-+    let status = relay_config_status_from_home(temp.path());
-+
-+    assert!(status.configured);
-+    assert!(!status.requires_openai_auth);
-+    assert!(status.has_bearer_token);
-+}
-+
- #[test]
- fn apply_relay_config_updates_provider_table_and_preserves_other_config() {
-     let temp = tempfile::tempdir().unwrap();
-@@ -174,11 +198,56 @@ fn apply_pure_api_config_writes_openai_api_key_auth_json_and_provider() {
-     assert!(config.contains("[model_providers.CodexPlusPlus]"));
-     assert!(config.contains(r#"name = "CodexPlusPlus""#));
+@@ -356,7 +356,7 @@ fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
+     assert!(config.contains("[model_providers.custom]"));
+     assert!(config.contains(r#"name = "custom""#));
      assert!(config.contains(r#"wire_api = "responses""#));
 -    assert!(config.contains("requires_openai_auth = true"));
 +    assert!(config.contains("requires_openai_auth = false"));
      assert!(config.contains(r#"base_url = "http://192.168.188.245:3001/v1""#));
      assert!(config.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
  }
- 
+@@ -2321,3 +2321,54 @@ fn base64_url_no_pad(value: &str) -> String {
+     use base64::Engine;
+     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.as_bytes())
+ }
++
 +#[test]
-+fn apply_pure_api_config_preserves_hostname_base_url_without_port_rewrite() {
++fn pure_api_config_is_configured_without_openai_auth_requirement() {
 +    let temp = tempfile::tempdir().unwrap();
 +
-+    apply_pure_api_config_to_home(temp.path(), "https://wemx.cc", "sk-test-redacted").unwrap();
++    codex_plus_core::relay_config::apply_pure_api_config_to_home(
++        temp.path(),
++        "https://wemx.cc",
++        "sk-test-redacted",
++    )
++    .unwrap();
 +
++    let status = codex_plus_core::relay_config::relay_config_status_from_home(temp.path());
 +    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
++
++    assert!(status.configured);
++    assert!(!status.requires_openai_auth);
++    assert!(status.has_bearer_token);
++    assert!(config.contains("requires_openai_auth = false"));
 +    assert!(config.contains(r#"base_url = "https://wemx.cc""#));
-+    assert!(!config.contains("64.83.38.106"));
-+    assert!(!config.contains(":8080"));
 +}
 +
 +#[test]
-+fn apply_pure_api_config_upgrades_plain_http_public_hostname_to_https() {
++fn pure_api_config_preserves_direct_ip_and_explicit_http_port() {
 +    let temp = tempfile::tempdir().unwrap();
 +
-+    apply_pure_api_config_to_home(temp.path(), "http://wemx.cc", "sk-test-redacted").unwrap();
-+
-+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-+    assert!(config.contains(r#"base_url = "https://wemx.cc""#));
-+    assert!(!config.contains("64.83.38.106"));
-+    assert!(!config.contains(":8080"));
-+}
-+
-+#[test]
-+fn apply_pure_api_config_preserves_explicit_http_port_hostname() {
-+    let temp = tempfile::tempdir().unwrap();
-+
-+    apply_pure_api_config_to_home(temp.path(), "http://wemx.cc:8080", "sk-test-redacted").unwrap();
-+
-+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-+    assert!(config.contains(r#"base_url = "http://wemx.cc:8080""#));
-+}
-+
-+#[test]
-+fn apply_pure_api_config_preserves_direct_ip_base_url() {
-+    let temp = tempfile::tempdir().unwrap();
-+
-+    apply_pure_api_config_to_home(temp.path(), "http://64.83.38.106:8080", "sk-test-redacted")
-+        .unwrap();
++    codex_plus_core::relay_config::apply_pure_api_config_to_home(
++        temp.path(),
++        "http://64.83.38.106:8080",
++        "sk-test-redacted",
++    )
++    .unwrap();
 +
 +    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
 +    assert!(config.contains(r#"base_url = "http://64.83.38.106:8080""#));
 +}
 +
- #[test]
- fn apply_relay_config_points_model_provider_to_codexpp_before_tables() {
-     let temp = tempfile::tempdir().unwrap();
++#[test]
++fn pure_api_config_upgrades_plain_http_public_hostname_to_https() {
++    let temp = tempfile::tempdir().unwrap();
++
++    codex_plus_core::relay_config::apply_pure_api_config_to_home(
++        temp.path(),
++        "http://wemx.cc",
++        "sk-test-redacted",
++    )
++    .unwrap();
++
++    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
++    assert!(config.contains(r#"base_url = "https://wemx.cc""#));
++}

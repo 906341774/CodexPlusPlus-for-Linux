@@ -1,8 +1,8 @@
 diff --git a/apps/codex-plus-manager/src-tauri/src/commands.rs b/apps/codex-plus-manager/src-tauri/src/commands.rs
-index c7ade59..f511243 100644
+index be41a35..a40e5fe 100644
 --- a/apps/codex-plus-manager/src-tauri/src/commands.rs
 +++ b/apps/codex-plus-manager/src-tauri/src/commands.rs
-@@ -816,12 +816,13 @@ fn load_overview_payload() -> (
+@@ -2291,12 +2291,13 @@ fn load_overview_payload() -> (
      Option<LaunchStatus>,
  ) {
      let settings = SettingsStore::default().load().unwrap_or_default();
@@ -34,10 +34,10 @@ index e524db7..13b1803 100644
  
  pub fn install_entrypoints() -> InstallActionResult {
 diff --git a/crates/codex-plus-core/src/install/mod.rs b/crates/codex-plus-core/src/install/mod.rs
-index 2a201a1..3860b22 100644
+index 17058b3..787fb76 100644
 --- a/crates/codex-plus-core/src/install/mod.rs
 +++ b/crates/codex-plus-core/src/install/mod.rs
-@@ -73,15 +73,27 @@ pub fn shortcut_names() -> (&'static str, &'static str) {
+@@ -75,15 +75,27 @@ pub fn shortcut_names() -> (&'static str, &'static str) {
      ("Codex++.lnk", "Codex++ 管理工具.lnk")
  }
  
@@ -67,7 +67,7 @@ index 2a201a1..3860b22 100644
      }
  }
  
-@@ -212,8 +224,75 @@ fn entrypoint_candidates(root: &Option<PathBuf>, manager: bool) -> Vec<PathBuf>
+@@ -214,7 +226,104 @@ fn entrypoint_candidates(root: &Option<PathBuf>, manager: bool) -> Vec<PathBuf>
      } else if cfg!(target_os = "macos") {
          vec![root.join(format!("{name}.app"))]
      } else {
@@ -85,12 +85,9 @@ index 2a201a1..3860b22 100644
 +    let mut candidates = Vec::new();
 +    #[cfg(target_os = "linux")]
 +    {
++        candidates.extend(linux_adapter_state_entrypoint_candidates(manager));
 +        candidates.extend(linux_adapter_entrypoint_candidates(app_dir, manager));
-+        let inferred_app_dir = current_linux_adapter_app_dir();
-+        candidates.extend(linux_adapter_entrypoint_candidates(
-+            inferred_app_dir.as_deref(),
-+            manager,
-+        ));
++        candidates.extend(linux_desktop_entry_candidates(manager));
 +    }
 +    candidates.extend(entrypoint_candidates(root, manager));
 +    dedupe_paths(candidates)
@@ -111,7 +108,61 @@ index 2a201a1..3860b22 100644
 +    let Some(app_dir) = app_dir else {
 +        return Vec::new();
 +    };
-+    let install_dir = app_dir.join(".codex-plusplus").join("install");
++    linux_adapter_install_entrypoint_candidates(&app_dir.join(".codex-plusplus"), manager)
++}
++
++#[cfg(target_os = "linux")]
++fn linux_adapter_state_entrypoint_candidates(manager: bool) -> Vec<PathBuf> {
++    let Some(install_root) = linux_adapter_state_install_root() else {
++        return Vec::new();
++    };
++    linux_adapter_install_entrypoint_candidates(&install_root, manager)
++}
++
++#[cfg(target_os = "linux")]
++fn linux_adapter_state_install_root() -> Option<PathBuf> {
++    let state_path = linux_adapter_state_file()?;
++    let state_text = std::fs::read_to_string(state_path).ok()?;
++    let state: serde_json::Value = serde_json::from_str(&state_text).ok()?;
++    state
++        .get("linuxAdapterInstallRoot")
++        .and_then(serde_json::Value::as_str)
++        .filter(|value| !value.trim().is_empty())
++        .map(PathBuf::from)
++        .or_else(|| {
++            state
++                .get("appRoot")
++                .and_then(serde_json::Value::as_str)
++                .filter(|value| !value.trim().is_empty())
++                .map(|app_root| PathBuf::from(app_root).join(".codex-plusplus"))
++        })
++}
++
++#[cfg(target_os = "linux")]
++fn linux_adapter_state_file() -> Option<PathBuf> {
++    if let Some(value) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
++        return Some(PathBuf::from(value).join("codex-plusplus").join("state.json"));
++    }
++    directories::BaseDirs::new().map(|dirs| {
++        dirs.data_dir()
++            .join("codex-plusplus")
++            .join("state.json")
++    })
++}
++
++#[cfg(target_os = "linux")]
++fn linux_desktop_entry_candidates(manager: bool) -> Vec<PathBuf> {
++    let (silent, manager_entry) = desktop_entry_file_names();
++    let name = if manager { manager_entry } else { silent };
++    let Some(base_dirs) = directories::BaseDirs::new() else {
++        return Vec::new();
++    };
++    vec![base_dirs.data_dir().join("applications").join(name)]
++}
++
++#[cfg(target_os = "linux")]
++fn linux_adapter_install_entrypoint_candidates(install_root: &Path, manager: bool) -> Vec<PathBuf> {
++    let install_dir = install_root.join("install");
 +    if manager {
 +        vec![install_dir.join(MANAGER_BINARY)]
 +    } else {
@@ -119,28 +170,6 @@ index 2a201a1..3860b22 100644
 +            install_dir.join("launch-codex-plus-plus"),
 +            install_dir.join(SILENT_BINARY),
 +        ]
-+    }
-+}
-+
-+#[cfg(target_os = "linux")]
-+fn current_linux_adapter_app_dir() -> Option<PathBuf> {
-+    std::env::current_exe()
-+        .ok()
-+        .as_deref()
-+        .and_then(linux_adapter_app_dir_from_exe)
-+}
-+
-+#[cfg(target_os = "linux")]
-+fn linux_adapter_app_dir_from_exe(exe: &Path) -> Option<PathBuf> {
-+    let install_dir = exe.parent()?;
-+    if install_dir.file_name().and_then(|name| name.to_str()) != Some("install") {
-+        return None;
-+    }
-+    let state_dir = install_dir.parent()?;
-+    if state_dir.file_name().and_then(|name| name.to_str()) != Some(".codex-plusplus") {
-+        return None;
      }
-+    state_dir.parent().map(Path::to_path_buf)
  }
  
- pub fn option_or_current_exe(value: &Option<PathBuf>, binary: &str) -> PathBuf {

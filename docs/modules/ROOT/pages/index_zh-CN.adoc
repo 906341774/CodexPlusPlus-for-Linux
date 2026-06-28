@@ -1,0 +1,38 @@
+= CodexPlusPlus on Linux
+:toc:
+:toclevels: 2
+
+xref:index.adoc[English] | 简体中文
+
+这个 Antora 组件记录应用到 `BigPizzaV3/CodexPlusPlus` 的源码级 Linux 适配工作，便于在上游更新后重复执行、审计或按需禁用部分片段。
+
+生产安装器会读取 xref:snippets.adoc[] 中的机器可读片段清单，并按顺序应用其中引用的补丁附件。
+
+== 适配范围
+
+本适配面向 `ilysenko/codex-desktop-linux` 生成的非官方 Linux Codex Desktop 布局，尤其是下面的应用目录结构：
+
+[source,text]
+----
+$HOME/opt/codex-desktop-linux/codex-app/start.sh
+$HOME/opt/codex-desktop-linux/codex-app/.codex-plusplus/
+----
+
+适配器不会修改原始 Codex Desktop 源码树。它会构建适配后的 `Codex++` launcher 和 manager，然后把生成的二进制文件安装到 Linux Codex Desktop 应用目录下。
+
+== 主要输出
+
+* `scripts/Installer-and-Manager.ps1`：双语 PowerShell 管理器，用于安装、更新、卸载和应用片段。
+* xref:snippets.adoc[]：结构化文档和片段清单。
+* xref:adapter-workflow_zh-CN.adoc[]：定期上游同步、验证和 fork 推送工作流。
+* xref:attachment$feature-matrix.json[`feature-matrix.json`]：可机器检查的功能覆盖矩阵。
+* `docs/modules/ROOT/attachments/patches/*.patch`：管理脚本使用的源码补丁附件。
+
+== 运行模型
+
+. 准备或拉取原始 `BigPizzaV3/CodexPlusPlus` 源码。
+. 读取 Antora 片段清单。
+. 按清单顺序应用已启用的补丁片段。
+. 构建 `codex-plus-plus` 和 `codex-plus-plus-manager`。
+. 将二进制文件和 Linux launcher wrapper 安装到 `codex-app/.codex-plusplus/install`。
+. 通过 `Codex++` 启动 Codex Desktop，并把 Linux `codex-app` 目录作为 `--app-path` 传入。

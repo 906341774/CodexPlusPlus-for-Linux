@@ -1,48 +1,56 @@
 diff --git a/crates/codex-plus-core/src/launcher.rs b/crates/codex-plus-core/src/launcher.rs
-index 9470b54..0ce2905 100644
 --- a/crates/codex-plus-core/src/launcher.rs
 +++ b/crates/codex-plus-core/src/launcher.rs
-@@ -240,7 +240,9 @@ where
-             if helper_started {
-                 hooks.shutdown_helper(helper_port).await;
-             }
--            if let Some(launch) = &launched {
-+            if let Some(launch) = &launched
-+                && should_terminate_launch_on_startup_failure(launch)
-+            {
-                 hooks.terminate_codex(launch).await;
-             }
-             let message = error.to_string();
-@@ -357,7 +359,7 @@ impl LaunchHooks for DefaultLaunchHooks {
-                 else {
-                     unreachable!();
-                 };
--                let env = codex_process_environment();
-+                let env = codex_process_environment_for_app(app_dir);
-                 let process_id =
-                     activate_packaged_app_with_environment(app_user_model_id, arguments, &env)
-                         .await?;
-@@ -388,7 +390,8 @@ impl LaunchHooks for DefaultLaunchHooks {
-                 .ok_or_else(|| anyhow::anyhow!("macOS open command is empty"))?;
-             let child = Command::new(executable)
-                 .args(&command[1..])
--                .envs(codex_process_environment())
-+                .env_clear()
-+                .envs(codex_process_environment_for_app(app_dir))
-                 .stdout(Stdio::null())
-                 .stderr(Stdio::null())
-                 .spawn()
-@@ -408,7 +411,8 @@ impl LaunchHooks for DefaultLaunchHooks {
-         let mut child_command = Command::new(executable);
-         child_command
+@@ -1,3 +1,4 @@
++use std::collections::HashMap;
+ use std::net::SocketAddr;
+ use std::path::{Path, PathBuf};
+ use std::process::Stdio;
+@@ -507,6 +508,11 @@
              .args(&command[1..])
--            .envs(codex_process_environment())
-+            .env_clear()
-+            .envs(codex_process_environment_for_app(app_dir))
              .stdout(Stdio::null())
              .stderr(Stdio::null());
++        if cfg!(target_os = "linux") {
++            child_command
++                .env_clear()
++                .envs(codex_process_environment_for_app(app_dir));
++        }
          #[cfg(windows)]
-@@ -660,6 +664,10 @@ pub fn build_codex_command(app_dir: &Path, debug_port: u16) -> Vec<String> {
+         child_command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
+         let child = child_command
+@@ -742,11 +748,11 @@
+     );
+     let response = if method == "OPTIONS" {
+         format!(
+-            "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
++            "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Allow-Private-Network: true\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+         )
+     } else {
+         format!(
+-            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
++            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Allow-Private-Network: true\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+             body.len()
+         )
+     };
+@@ -1034,7 +1040,7 @@
+     body: &[u8],
+ ) -> anyhow::Result<()> {
+     let response = format!(
+-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
++        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Allow-Private-Network: true\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+         body.len()
+     );
+     stream.write_all(response.as_bytes()).await?;
+@@ -1049,7 +1055,7 @@
+     content_type: &str,
+ ) -> anyhow::Result<()> {
+     let response = format!(
+-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n\r\n"
++        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Allow-Private-Network: true\r\nConnection: close\r\n\r\n"
+     );
+     stream.write_all(response.as_bytes()).await?;
+     Ok(())
+@@ -1157,6 +1163,10 @@
              .to_string_lossy()
              .to_string(),
      ];
@@ -50,11 +58,11 @@ index 9470b54..0ce2905 100644
 +        command.push("--new-instance".to_string());
 +        command.push("--".to_string());
 +    }
-     command.extend(build_codex_arguments(debug_port));
+     command.extend(build_codex_arguments(debug_port, extra_args));
      command
  }
-@@ -677,11 +685,53 @@ pub fn codex_process_environment() -> HashMap<String, String> {
-     codex_process_environment_from(&env, crate::proxy::detect_system_proxy)
+@@ -1173,12 +1183,206 @@
+     })
  }
  
 +pub fn codex_process_environment_for_app(app_dir: &Path) -> HashMap<String, String> {
@@ -92,11 +100,11 @@ index 9470b54..0ce2905 100644
 +const LINUX_CODEX_PLUSPLUS_WEBVIEW_PORT: &str = "5176";
 +const LINUX_CODEX_PLUSPLUS_MULTI_LAUNCH_PORT_RANGE: &str = "5176-5185";
 +
- pub fn codex_process_environment_from(
-     env: &HashMap<String, String>,
-     detect_system_proxy: impl FnOnce() -> Option<String>,
- ) -> HashMap<String, String> {
-     let mut env = env.clone();
++pub fn codex_process_environment_from(
++    env: &HashMap<String, String>,
++    detect_system_proxy: impl FnOnce() -> Option<String>,
++) -> HashMap<String, String> {
++    let mut env = env.clone();
 +    if cfg!(target_os = "linux") {
 +        env.remove("ELECTRON_RUN_AS_NODE");
 +        env.remove("ELECTRON_NO_ATTACH_CONSOLE");
@@ -104,13 +112,16 @@ index 9470b54..0ce2905 100644
 +            hydrate_linux_network_environment(&mut env);
 +        }
 +    }
-     if crate::proxy::has_proxy_environment(&env) {
-         return env;
-     }
-@@ -695,12 +745,150 @@ pub fn codex_process_environment_from(
-     env
- }
- 
++    if crate::proxy::has_proxy_environment(&env) {
++        return env;
++    }
++    if let Some(proxy) = detect_system_proxy() {
++        env.insert("HTTPS_PROXY".to_string(), proxy.clone());
++        env.insert("HTTP_PROXY".to_string(), proxy);
++    }
++    env
++}
++
 +#[cfg(target_os = "linux")]
 +fn apply_linux_codex_plusplus_webview_environment(
 +    app_dir: &Path,
@@ -237,7 +248,6 @@ index 9470b54..0ce2905 100644
 +        .or_insert_with(|| value.to_string());
 +}
 +
-+#[cfg(target_os = "linux")]
  async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
      let mut last_error = None;
 -    for _ in 0..20 {
@@ -259,112 +269,3 @@ index 9470b54..0ce2905 100644
                  last_error = Some(error);
                  tokio::time::sleep(std::time::Duration::from_millis(500)).await;
              }
-@@ -709,6 +897,15 @@ async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()
-     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Codex injection failed")))
- }
- 
-+fn should_terminate_launch_on_startup_failure(launch: &CodexLaunch) -> bool {
-+    match launch {
-+        CodexLaunch::Process { command, .. } if cfg!(target_os = "linux") => command
-+            .first()
-+            .is_none_or(|executable| !executable.ends_with("/start.sh")),
-+        _ => true,
-+    }
-+}
-+
- pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> bool {
-     let healthy = match bridge_health_ok(debug_port).await {
-         Ok(healthy) => healthy,
-@@ -762,7 +959,7 @@ pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> boo
- 
- async fn bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
-     let targets = crate::cdp::list_targets(debug_port).await?;
--    let target = crate::cdp::pick_page_target(&targets)?;
-+    let target = crate::cdp::pick_primary_page_target(&targets)?;
-     let websocket_url = target
-         .web_socket_debugger_url
-         .as_deref()
-@@ -787,28 +984,66 @@ fn runtime_evaluate_result_is_true(result: &Value) -> bool {
- 
- async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
-     let targets = crate::cdp::list_targets(debug_port).await?;
--    let target = crate::cdp::pick_page_target(&targets)?;
--    let websocket_url = target
--        .web_socket_debugger_url
--        .as_deref()
--        .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
-+    let targets = crate::cdp::injectable_page_targets(&targets);
-+    if targets.is_empty() {
-+        anyhow::bail!("No injectable Codex page target found");
-+    }
-     let script = crate::assets::injection_script(helper_port);
-     let ctx = crate::routes::BridgeContext::core(Arc::new(crate::routes::CoreRuntimeService::new(
-         debug_port,
-         StatusStore::default(),
-     )));
--    crate::bridge::install_bridge(
--        websocket_url,
--        crate::bridge::BRIDGE_BINDING_NAME,
--        Arc::new(move |path, payload| {
--            let ctx = ctx.clone();
--            Box::pin(
--                async move { Ok(crate::routes::handle_bridge_request(ctx, &path, payload).await) },
--            )
--        }),
--        &[script],
--    )
--    .await
-+    let mut main_injected = false;
-+    let mut injected = 0usize;
-+    let mut last_error = None;
-+    for target in targets {
-+        let Some(websocket_url) = target.web_socket_debugger_url.as_deref() else {
-+            continue;
-+        };
-+        let result = crate::bridge::install_bridge(
-+            websocket_url,
-+            crate::bridge::BRIDGE_BINDING_NAME,
-+            Arc::new({
-+                let ctx = ctx.clone();
-+                move |path, payload| {
-+                    let ctx = ctx.clone();
-+                    Box::pin(async move {
-+                        Ok(crate::routes::handle_bridge_request(ctx, &path, payload).await)
-+                    })
-+                }
-+            }),
-+            std::slice::from_ref(&script),
-+        )
-+        .await;
-+        match result {
-+            Ok(()) => {
-+                injected += 1;
-+                if crate::cdp::is_primary_codex_window(&target) {
-+                    main_injected = true;
-+                }
-+                let _ = crate::diagnostic_log::append_diagnostic_log(
-+                    "bridge.target_injected",
-+                    serde_json::json!({
-+                        "debug_port": debug_port,
-+                        "helper_port": helper_port,
-+                        "target_id": &target.id,
-+                        "target_url": &target.url,
-+                        "primary": crate::cdp::is_primary_codex_window(&target)
-+                    }),
-+                );
-+            }
-+            Err(error) => {
-+                last_error = Some(error);
-+            }
-+        }
-+    }
-+    if main_injected {
-+        return Ok(());
-+    }
-+    if injected > 0 {
-+        anyhow::bail!("Codex++ injected only non-primary Codex page targets");
-+    }
-+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Codex injection failed")))
- }
- 
- pub fn build_macos_open_command(app_dir: &Path, debug_port: u16) -> Vec<String> {

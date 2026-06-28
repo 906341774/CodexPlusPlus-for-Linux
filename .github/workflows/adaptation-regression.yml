@@ -1,0 +1,98 @@
+name: Codex++ Linux adaptation regression
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_to_fork:
+        description: "Push the validated branch to the maintainer fork remote"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      fork_remote_url:
+        description: "Optional fork remote URL used only when release_to_fork is true"
+        required: false
+        type: string
+  schedule:
+    - cron: "17 3 * * 2"
+
+permissions:
+  contents: read
+
+jobs:
+  contract-and-selftest:
+    name: Workflow contract and installer selftest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout adapter repository
+        uses: actions/checkout@v4
+
+      - name: Check adaptation workflow contract
+        shell: bash
+        run: |
+          HOME="$RUNNER_TEMP/codexpp-workflow-home" \
+          XDG_DATA_HOME="$RUNNER_TEMP/codexpp-workflow-data" \
+          XDG_CONFIG_HOME="$RUNNER_TEMP/codexpp-workflow-config" \
+          XDG_CACHE_HOME="$RUNNER_TEMP/codexpp-workflow-cache" \
+          pwsh -NoLogo -NoProfile -File scripts/Test-AdapterWorkflow.ps1
+
+      - name: Run installer manifest selftest
+        shell: bash
+        run: |
+          HOME="$RUNNER_TEMP/codexpp-installer-home" \
+          XDG_DATA_HOME="$RUNNER_TEMP/codexpp-installer-data" \
+          XDG_CONFIG_HOME="$RUNNER_TEMP/codexpp-installer-config" \
+          XDG_CACHE_HOME="$RUNNER_TEMP/codexpp-installer-cache" \
+          pwsh -NoLogo -NoProfile -File scripts/Installer-and-Manager.ps1 selftest -NonInteractive -NoTui
+
+      - name: Report manual validation requirements
+        shell: bash
+        run: |
+          echo "This scheduled job validates repository contracts and snippet readability."
+          echo "Full release still requires upstream patch apply checks, AlmaLinux install/update/uninstall, and GUI evidence from docs/modules/ROOT/attachments/feature-matrix.json."
+
+  release-to-fork:
+    name: Push validated adapter branch to fork
+    runs-on: ubuntu-latest
+    needs: contract-and-selftest
+    if: github.event_name == 'workflow_dispatch' && inputs.release_to_fork == 'true'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout adapter repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.FORK_PUSH_TOKEN }}
+
+      - name: Configure maintainer fork remote
+        shell: bash
+        env:
+          FORK_REMOTE_URL: ${{ inputs.fork_remote_url }}
+          FORK_PUSH_TOKEN: ${{ secrets.FORK_PUSH_TOKEN }}
+        run: |
+          if [ -z "$FORK_PUSH_TOKEN" ]; then
+            echo "FORK_PUSH_TOKEN is required for release_to_fork=true" >&2
+            exit 1
+          fi
+          if [ -z "$FORK_REMOTE_URL" ]; then
+            echo "fork_remote_url is required for release_to_fork=true" >&2
+            exit 1
+          fi
+          case "$FORK_REMOTE_URL" in
+            https://github.com/*)
+              AUTH_REMOTE_URL="https://x-access-token:${FORK_PUSH_TOKEN}@${FORK_REMOTE_URL#https://}"
+              ;;
+            *)
+              echo "Use an HTTPS GitHub fork URL so FORK_PUSH_TOKEN can authenticate the push." >&2
+              exit 1
+              ;;
+          esac
+          git remote add maintainer-fork "$AUTH_REMOTE_URL"
+
+      - name: Push current branch to maintainer fork
+        shell: bash
+        run: |
+          git push maintainer-fork "HEAD:${GITHUB_REF_NAME}"

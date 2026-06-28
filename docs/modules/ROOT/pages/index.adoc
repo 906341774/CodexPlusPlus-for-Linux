@@ -1,6 +1,8 @@
-= Codex++ Linux Adapter
+= CodexPlusPlus on Linux
 :toc:
 :toclevels: 2
+
+English | xref:index_zh-CN.adoc[简体中文]
 
 This Antora component records the source-level Linux adaptation work applied to `BigPizzaV3/CodexPlusPlus` so it can be repeated, audited, or selectively disabled after upstream changes.
 
@@ -20,8 +22,10 @@ The adapter does not modify the original Codex Desktop source tree. It builds an
 
 == Main outputs
 
-* `scripts/Manage-CodexPlusPlusLinux.ps1`: bilingual PowerShell manager for install, update, uninstall, and snippet application.
+* `scripts/Installer-and-Manager.ps1`: bilingual PowerShell manager for install, update, uninstall, and snippet application.
 * xref:snippets.adoc[]: structured documentation and snippet manifest.
+* xref:adapter-workflow.adoc[]: recurring upstream update, validation, and fork-push workflow.
+* xref:attachment$feature-matrix.json[`feature-matrix.json`]: machine-checkable feature coverage matrix.
 * `docs/modules/ROOT/attachments/patches/*.patch`: source patch attachments used by the manager script.
 
 == Operational model

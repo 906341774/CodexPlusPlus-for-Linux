@@ -1,9 +1,13 @@
-= Codex++ Linux Adapter
+= CodexPlusPlus on Linux
 :toc:
 :toclevels: 2
 
-`Codex++ Linux Adapter` is a source-level Linux adaptation project for `BigPizzaV3/CodexPlusPlus`.
+English | link:README_zh-CN.adoc[简体中文]
+
+`CodexPlusPlus-on-Linux` is a source-level Linux adaptation project for `BigPizzaV3/CodexPlusPlus`.
 It records and reapplies the patches needed to make Codex++ work with the unofficial Linux Codex Desktop build produced by `ilysenko/codex-desktop-linux`.
+
+Project version: `1.2.3`, synchronized with upstream Codex++ `v1.2.3`.
 
 This repository is maintained as a fork/adaptation of:
 
@@ -11,14 +15,15 @@ This repository is maintained as a fork/adaptation of:
 * Linux Codex Desktop packaging reference: https://github.com/ilysenko/codex-desktop-linux
 
 License: GPL-3.0-or-later.
-See xref:LICENSE[].
+See link:LICENSE[LICENSE].
 
 == What this repository provides
 
 * An Antora documentation component under `docs/`.
 * A structured snippet manifest in `docs/modules/ROOT/pages/snippets.adoc`.
+* A recurring adaptation workflow in `docs/modules/ROOT/pages/adapter-workflow.adoc`.
 * Patch attachments in `docs/modules/ROOT/attachments/patches/`.
-* A bilingual PowerShell manager script: `scripts/Manage-CodexPlusPlusLinux.ps1`.
+* A bilingual PowerShell installer and manager script: `scripts/Installer-and-Manager.ps1`.
 
 The manager script can install, update, uninstall, and reapply the Linux adaptation from an original Codex++ source package.
 
@@ -88,7 +93,7 @@ Run the manager script with PowerShell:
 
 [source,powershell]
 ----
-pwsh ./scripts/Manage-CodexPlusPlusLinux.ps1 -Action install
+pwsh ./scripts/Installer-and-Manager.ps1 -Action install
 ----
 
 The script defaults are intentionally conservative:
@@ -99,6 +104,11 @@ The script defaults are intentionally conservative:
 * Regression test snippets: enabled
 * Update check prompt: disabled by default
 
+When desktop entries are enabled, the script creates the upstream-style user entries
+`$HOME/.local/share/applications/codex-plus-plus.desktop` and
+`$HOME/.local/share/applications/codex-plus-plus-manager.desktop`.
+They are named `Codex++` and `Codex++ Manager`, reuse the Linux Codex Desktop icon when available, and replace older adapter-branded `*-linux.desktop` entries.
+
 The script has a configuration block at the top.
 It supports shell-style path values such as `$HOME/opt/codex-desktop-linux`, `${HOME}/opt/codex-desktop-linux`, `$env:HOME/opt/codex-desktop-linux`, and `~/opt/codex-desktop-linux`.
 
@@ -106,7 +116,7 @@ It supports shell-style path values such as `$HOME/opt/codex-desktop-linux`, `${
 
 [source,powershell]
 ----
-pwsh ./scripts/Manage-CodexPlusPlusLinux.ps1 -Action update
+pwsh ./scripts/Installer-and-Manager.ps1 -Action update
 ----
 
 The update action fetches or copies a fresh upstream source, reapplies enabled snippets, rebuilds, and replaces the installed adapter binaries.
@@ -115,7 +125,7 @@ The update action fetches or copies a fresh upstream source, reapplies enabled s
 
 [source,powershell]
 ----
-pwsh ./scripts/Manage-CodexPlusPlusLinux.ps1 -Action uninstall
+pwsh ./scripts/Installer-and-Manager.ps1 -Action uninstall
 ----
 
 By default user scripts are preserved.
@@ -125,3 +135,4 @@ Change `$PreserveUserScriptsOnUninstall` in the script configuration block if a 
 
 Open `docs/modules/ROOT/pages/snippets.adoc` to inspect every adaptation snippet.
 Long patch bodies are kept in `docs/modules/ROOT/attachments/patches/` and included from the Antora page.
+Use `docs/modules/ROOT/pages/adapter-workflow.adoc` and `docs/modules/ROOT/attachments/feature-matrix.json` for the recurring upstream update, validation, and fork-push workflow.

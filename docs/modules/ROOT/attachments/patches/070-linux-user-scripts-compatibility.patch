@@ -1,0 +1,37 @@
+diff --git a/crates/codex-plus-core/src/user_scripts.rs b/crates/codex-plus-core/src/user_scripts.rs
+index 2be3db4..7ea8a74 100644
+--- a/crates/codex-plus-core/src/user_scripts.rs
++++ b/crates/codex-plus-core/src/user_scripts.rs
+@@ -298,9 +298,32 @@ fn wrap_script(script: &UserScriptFile, source: &str) -> String {
+ (() => {{
+   window.__codexPlusUserScripts = window.__codexPlusUserScripts || {{ scripts: {{}} }};
+   const key = {key};
++  const codexPlusLinuxUserScriptLocation = (() => {{
++    const actual = window.location;
++    if (!actual || !/^(127\.0\.0\.1|localhost)$/.test(actual.hostname || "") || !(actual.search || "").includes("mcpAppSandboxDevtools=1")) return actual;
++    const compat = new URL(`app://-/index.html${{actual.search || ""}}${{actual.hash || ""}}`);
++    return {{
++      href: compat.href,
++      protocol: compat.protocol,
++      host: compat.host,
++      hostname: compat.hostname,
++      port: compat.port,
++      pathname: compat.pathname,
++      search: compat.search,
++      hash: compat.hash,
++      origin: compat.origin,
++      ancestorOrigins: actual.ancestorOrigins,
++      assign: actual.assign ? actual.assign.bind(actual) : undefined,
++      reload: actual.reload ? actual.reload.bind(actual) : undefined,
++      replace: actual.replace ? actual.replace.bind(actual) : undefined,
++      toString() {{ return this.href; }},
++    }};
++  }})();
+   window.__codexPlusUserScripts.scripts[key] = {{ key, name: {name}, source: {source_name}, status: "loading", error: "", loadedAt: new Date().toISOString() }};
+   try {{
++    ((location) => {{
+ {source}
++    }})(codexPlusLinuxUserScriptLocation || window.location);
+     window.__codexPlusUserScripts.scripts[key].status = "loaded";
+     window.__codexPlusUserScripts.scripts[key].loadedAt = new Date().toISOString();
+   }} catch (error) {{

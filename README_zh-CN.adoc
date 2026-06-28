@@ -1,0 +1,138 @@
+= CodexPlusPlus on Linux
+:toc:
+:toclevels: 2
+
+link:README.adoc[English] | 简体中文
+
+`CodexPlusPlus-on-Linux` 是面向 `BigPizzaV3/CodexPlusPlus` 的源码级 Linux 适配项目。
+它记录并重新应用必要补丁，使 Codex++ 可以配合 `ilysenko/codex-desktop-linux` 生成的非官方 Linux Codex Desktop 构建使用。
+
+项目版本：`1.2.3`，与上游 Codex++ `v1.2.3` 同步。
+
+本仓库作为下列项目的 fork/适配版本维护：
+
+* Codex++ 上游项目： https://github.com/BigPizzaV3/CodexPlusPlus
+* Linux Codex Desktop 打包参考： https://github.com/ilysenko/codex-desktop-linux
+
+许可证：GPL-3.0-or-later。
+参见 link:LICENSE[LICENSE]。
+
+== 本仓库提供什么
+
+* `docs/` 下的 Antora 文档组件。
+* `docs/modules/ROOT/pages/snippets.adoc` 中的结构化片段清单。
+* `docs/modules/ROOT/pages/adapter-workflow_zh-CN.adoc` 中的定期适配工作流。
+* `docs/modules/ROOT/attachments/patches/` 中的补丁附件。
+* 双语 PowerShell 安装与管理脚本：`scripts/Installer-and-Manager.ps1`。
+
+管理脚本可从原始 Codex++ 源码包安装、更新、卸载并重新应用 Linux 适配。
+
+== 预期的 Linux Codex Desktop 布局
+
+默认情况下，脚本预期存在：
+
+[source,text]
+----
+$HOME/opt/codex-desktop-linux/codex-app/start.sh
+$HOME/opt/codex-desktop-linux/codex-app/version
+----
+
+默认 Codex++ 适配器安装路径为：
+
+[source,text]
+----
+$HOME/opt/codex-desktop-linux/codex-app/.codex-plusplus
+----
+
+== 先安装 Linux Codex Desktop
+
+安装本适配器之前，请先按照 https://github.com/ilysenko/codex-desktop-linux 的 `README.md` 操作。
+下面的命令是一个实用示例；当前平台所需依赖和要求请以该上游 README 为准。
+
+[source,shell,subs="attributes,macros"]
+----
+# Unofficial Linux Codex Desktop build, from:
+# https://github.com/ilysenko/codex-desktop-linux
+
+cd "$HOME/opt"
+git clone https://github.com/ilysenko/codex-desktop-linux.git
+cd codex-desktop-linux
+
+# Check native build requirements.
+make setup-native
+
+# Install missing dependencies reported by setup-native.
+# Example on Arch Linux:
+sudo pacman -S --needed ydotool
+
+# Arch Linux may provide ydotool as a user service.
+systemctl --user daemon-reload
+systemctl --user enable --now ydotool.service
+sudo usermod -a -G input "$USER"
+
+# Build the native app. The Computer Use UI entry is enabled by CODEX_LINUX_ENABLE_COMPUTER_USE_UI=1.
+CODEX_LINUX_FEATURES=conversation-mode,copilot-reasoning-effort,example-feature,open-target-discovery,read-aloud,read-aloud-mcp,remote-control-ui,remote-mobile-control,zed-opener \
+CODEX_LINUX_DISABLE_FEATURES= \
+PACKAGE_WITH_UPDATER=0 \
+CODEX_BOOTSTRAP_NONINTERACTIVE=1 \
+CODEX_LINUX_ENABLE_COMPUTER_USE_UI=1 \
+make build-app
+
+# Optional user-level launch integration.
+ln -s "$(pwd)/codex-app/start.sh" "$HOME/.local/bin/codex-desktop-linux"
+ln -s "$(pwd)/codex-app/.codex-linux/codex-desktop.png" "$HOME/.local/share/icons/codex-desktop.png"
+cp "contrib/user-local-install/files/.local/share/applications/codex-desktop.desktop" "$HOME/.local/share/applications/codex-desktop-linux.desktop"
+sed -i 's/^Exec=.*/Exec=codex-desktop-linux/' "$HOME/.local/share/applications/codex-desktop-linux.desktop"
+----
+
+如果要更新 Linux Codex Desktop 构建，请替换 `ilysenko/codex-desktop-linux` 使用的 `codex.dmg`，然后重新执行它的构建流程。
+
+== 安装适配后的 Codex++
+
+使用 PowerShell 运行管理脚本：
+
+[source,powershell]
+----
+pwsh ./scripts/Installer-and-Manager.ps1 -Action install
+----
+
+脚本默认值保持保守：
+
+* Codex Desktop 根目录：`$HOME/opt/codex-desktop-linux`
+* Codex++ 源码：拉取 `https://github.com/BigPizzaV3/CodexPlusPlus`
+* Codex++ 安装路径：`codex-app/.codex-plusplus`
+* 回归测试片段：启用
+* 更新检查提示：默认禁用
+
+启用 desktop entries 时，脚本会创建贴近上游行为的用户级入口
+`$HOME/.local/share/applications/codex-plus-plus.desktop` 和
+`$HOME/.local/share/applications/codex-plus-plus-manager.desktop`。
+它们的显示名称为 `Codex++` 和 `Codex++ Manager`，会在可用时复用 Linux Codex Desktop 图标，并替换旧的适配器品牌 `*-linux.desktop` 入口。
+
+脚本顶部有配置区。
+它支持 shell 风格路径值，例如 `$HOME/opt/codex-desktop-linux`、`${HOME}/opt/codex-desktop-linux`、`$env:HOME/opt/codex-desktop-linux` 和 `~/opt/codex-desktop-linux`。
+
+== 更新适配后的 Codex++
+
+[source,powershell]
+----
+pwsh ./scripts/Installer-and-Manager.ps1 -Action update
+----
+
+`update` 操作会拉取或复制一份新的上游源码，重新应用已启用片段，重新构建，并替换已安装的适配器二进制文件。
+
+== 卸载适配后的 Codex++
+
+[source,powershell]
+----
+pwsh ./scripts/Installer-and-Manager.ps1 -Action uninstall
+----
+
+默认会保留用户脚本。
+如果需要完整清理，请修改脚本配置区中的 `$PreserveUserScriptsOnUninstall`。
+
+== 文档
+
+打开 `docs/modules/ROOT/pages/snippets.adoc` 可以查看每个适配片段。
+较长的补丁正文保存在 `docs/modules/ROOT/attachments/patches/` 中，并由 Antora 页面引用。
+定期同步上游、验证功能并推送维护者 fork 时，请使用 `docs/modules/ROOT/pages/adapter-workflow_zh-CN.adoc` 和 `docs/modules/ROOT/attachments/feature-matrix.json`。

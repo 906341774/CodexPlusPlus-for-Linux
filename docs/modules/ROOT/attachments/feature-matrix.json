@@ -1,0 +1,162 @@
+{
+  "schemaVersion": 1,
+  "upstreamProject": "BigPizzaV3/CodexPlusPlus",
+  "adapterProject": "CodexPlusPlus-on-Linux",
+  "policy": {
+    "tagBeforeUpstreamSync": true,
+    "requirePatchNecessityAudit": true,
+    "requireWhiteBoxChecks": true,
+    "requireBlackBoxChecks": true,
+    "pushOnlyAfterMaintainerApproval": true
+  },
+  "features": [
+    {
+      "id": "linux-app-paths",
+      "name": "Linux Codex Desktop app path detection",
+      "patchIds": ["010-linux-app-paths"],
+      "whiteBoxChecks": [
+        "Installer selftest reads snippet manifest and patch attachments",
+        "Source marker: app_dir.join(\"start.sh\")",
+        "Source marker: app_dir.join(\"version\")"
+      ],
+      "blackBoxChecks": [
+        "In an AlmaLinux minimal container, install accepts a codex-app root containing start.sh and version",
+        "The installed launcher resolves the configured codex-app path without patching Codex Desktop files"
+      ]
+    },
+    {
+      "id": "cdp-main-window-injection",
+      "name": "CDP injection into the primary Linux webview target",
+      "patchIds": ["020-cdp-multi-target-injection"],
+      "whiteBoxChecks": [
+        "Regression test covers multi-target CDP selection",
+        "Source marker: bridge.context_target_injected"
+      ],
+      "blackBoxChecks": [
+        "Launch Codex Desktop through Codex++ and verify the main Codex page receives injected controls",
+        "Verify hotkey or secondary windows are not selected ahead of the main conversation window"
+      ]
+    },
+    {
+      "id": "launcher-environment",
+      "name": "Linux launcher environment and helper access",
+      "patchIds": ["030-linux-launcher-environment"],
+      "whiteBoxChecks": [
+        "Regression tests cover resolver and proxy environment preservation",
+        "Source marker: CODEX_WEBVIEW_PORT",
+        "Source marker: Access-Control-Allow-Private-Network"
+      ],
+      "blackBoxChecks": [
+        "Codex starts from the Codex++ Manager without Cannot access before initialization errors",
+        "The Codex webview can call the Codex++ helper over localhost without private-network preflight failure"
+      ]
+    },
+    {
+      "id": "entrypoint-health",
+      "name": "Linux entrypoint install and health detection",
+      "patchIds": ["040-linux-entrypoints-health"],
+      "whiteBoxChecks": [
+        "Regression tests cover Linux install roots and desktop entries",
+        "Source marker: linuxAdapterInstallRoot",
+        "Source marker: codex-plus-plus.desktop"
+      ],
+      "blackBoxChecks": [
+        "Overview health check reports static launch entry and management tool entry as present",
+        "Created desktop files use upstream-style Codex++ names and descriptions"
+      ]
+    },
+    {
+      "id": "pure-api-config-sync",
+      "name": "Pure API profile synchronization",
+      "patchIds": ["050-pure-api-config-sync"],
+      "whiteBoxChecks": [
+        "Regression tests cover config.toml updates when active API profile changes",
+        "Source marker: effective_codex_base_url",
+        "Source marker: requires_openai_auth: bool"
+      ],
+      "blackBoxChecks": [
+        "Switching API profiles in Codex++ rewrites $HOME/.codex/config.toml",
+        "Codex Desktop launched through Codex++ observes the selected BaseURL and API key"
+      ]
+    },
+    {
+      "id": "plugins-navigation",
+      "name": "Plugins navigation unlock",
+      "patchIds": ["060-renderer-linux-compatibility"],
+      "whiteBoxChecks": [
+        "Renderer injection contains plugin navigation unlock logic",
+        "Source marker: clearPluginEntryUnlockLabel"
+      ],
+      "blackBoxChecks": [
+        "The Plugins entry is clickable in the Linux Codex Desktop sidebar",
+        "The Plugins label does not show temporary Unlocked debug suffixes"
+      ]
+    },
+    {
+      "id": "plugins-detail",
+      "name": "Plugin detail response normalization",
+      "patchIds": ["060-renderer-linux-compatibility"],
+      "whiteBoxChecks": [
+        "Renderer injection contains normalizeCodexPlusPluginDetail",
+        "Regression tests cover plugin detail payload normalization"
+      ],
+      "blackBoxChecks": [
+        "Opening a marketplace plugin detail page does not jump to an error page",
+        "Plugin install and detail pages both work after relaunch"
+      ]
+    },
+    {
+      "id": "delete-conversation-stability",
+      "name": "Injected delete conversation controls do not refresh the app",
+      "patchIds": ["060-renderer-linux-compatibility"],
+      "whiteBoxChecks": [
+        "Renderer tests cover delete button event handling",
+        "Renderer injection prevents full page refresh for injected delete controls"
+      ],
+      "blackBoxChecks": [
+        "Deleting a conversation from the injected control does not show the Codex splash reload",
+        "Codex++ injection remains active after delete actions"
+      ]
+    },
+    {
+      "id": "fast-button",
+      "name": "Fast service-tier control in Linux composer footer",
+      "patchIds": ["060-renderer-linux-compatibility"],
+      "whiteBoxChecks": [
+        "Source marker: codexServiceTierLinuxComposerFooters",
+        "Source marker: codexServiceTierBackendBlocksLocalOverride"
+      ],
+      "blackBoxChecks": [
+        "When Fast mode is enabled in Codex++ Manager, the Fast badge appears in the Codex composer footer",
+        "The Fast badge remains clickable during transient backend-checking states"
+      ]
+    },
+    {
+      "id": "context-used-meter",
+      "name": "Codex Context Used Meter marketplace user script",
+      "patchIds": ["070-linux-user-scripts-compatibility", "900-regression-tests"],
+      "whiteBoxChecks": [
+        "Regression test: user_script_bundle_wraps_scripts_with_linux_codex_location_alias",
+        "Source marker: codexPlusLinuxUserScriptLocation",
+        "Bundle marker: app://-/index.html"
+      ],
+      "blackBoxChecks": [
+        "Install and enable Codex Context Used Meter from the script market",
+        "After launching Codex Desktop through Codex++ Manager, the context meter appears in the conversation UI"
+      ]
+    },
+    {
+      "id": "desktop-install-cycle",
+      "name": "Interactive and non-interactive install/update/uninstall cycle",
+      "patchIds": ["010-linux-app-paths", "030-linux-launcher-environment", "040-linux-entrypoints-health"],
+      "whiteBoxChecks": [
+        "Installer selftest succeeds with isolated HOME",
+        "Installer source and installed binary marker checks pass"
+      ],
+      "blackBoxChecks": [
+        "AlmaLinux minimal container validates non-interactive install, update, and uninstall",
+        "Interactive shell run asks each configured path before install/update/uninstall and accepts Enter as default"
+      ]
+    }
+  ]
+}

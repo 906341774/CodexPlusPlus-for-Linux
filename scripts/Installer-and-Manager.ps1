@@ -1,10 +1,15 @@
 #!/usr/bin/env pwsh
-#Requires -Version 7.2
+#Requires -Version 7.0
 
 [CmdletBinding()]
 param(
     [ValidateSet("install", "update", "uninstall", "list-snippets", "apply-snippets", "selftest")]
     [string]$Action = "install",
+
+    [string]$CodexDesktopRootPath,
+    [string]$CodexPlusPlusLocalSourcePath,
+    [string]$CodexPlusPlusReleasePackagePath,
+    [string]$CodexPlusPlusInstallPathValue,
 
     [switch]$NonInteractive,
     [switch]$NoTui,
@@ -52,6 +57,11 @@ $ErrorActionPreference = "Stop"
 # Upstream source URL used when no local source or package is configured.
 # 未指定本地源码或包时使用的上游源码地址。
 [string]$CodexPlusPlusGitHubRepo = 'https://github.com/BigPizzaV3/CodexPlusPlus'
+# Upstream version pinned by this adapter release.
+# 当前适配项目固定对应的上游 Codex++ 版本。
+[string]$CodexPlusPlusUpstreamVersion = '1.2.3'
+[string]$CodexPlusPlusReleaseTag = "v$CodexPlusPlusUpstreamVersion"
+[string]$CodexPlusPlusVersionZipUrl = "https://github.com/BigPizzaV3/CodexPlusPlus/archive/refs/tags/$CodexPlusPlusReleaseTag.zip"
 [string]$CodexPlusPlusMainZipUrl = 'https://github.com/BigPizzaV3/CodexPlusPlus/archive/refs/heads/main.zip'
 [string]$CodexPlusPlusMasterZipUrl = 'https://github.com/BigPizzaV3/CodexPlusPlus/archive/refs/heads/master.zip'
 
@@ -104,9 +114,21 @@ if ($env:CODEXPP_LINUX_RELEASE_PACKAGE) { $CodexPlusPlusReleasePackage = $env:CO
 if ($env:CODEXPP_LINUX_INSTALL_PATH) { $CodexPlusPlusInstallPath = $env:CODEXPP_LINUX_INSTALL_PATH }
 if ($env:CODEXPP_LINUX_DEPENDENCY_MODE) { $DependencyMode = $env:CODEXPP_LINUX_DEPENDENCY_MODE }
 if ($env:CODEXPP_LINUX_BUILD_MODE) { $BuildMode = $env:CODEXPP_LINUX_BUILD_MODE }
+if ($env:CODEXPP_LINUX_UPSTREAM_VERSION) {
+    $CodexPlusPlusUpstreamVersion = $env:CODEXPP_LINUX_UPSTREAM_VERSION
+    $CodexPlusPlusReleaseTag = "v$CodexPlusPlusUpstreamVersion"
+    $CodexPlusPlusVersionZipUrl = "https://github.com/BigPizzaV3/CodexPlusPlus/archive/refs/tags/$CodexPlusPlusReleaseTag.zip"
+}
 if ($env:CODEXPP_LINUX_INCLUDE_TEST_SNIPPETS) { $IncludeRegressionTestSnippets = [System.Convert]::ToBoolean($env:CODEXPP_LINUX_INCLUDE_TEST_SNIPPETS) }
 if ($env:CODEXPP_LINUX_CREATE_DESKTOP_ENTRIES) { $CreateDesktopEntries = [System.Convert]::ToBoolean($env:CODEXPP_LINUX_CREATE_DESKTOP_ENTRIES) }
 if ($env:CODEXPP_LINUX_PRESERVE_USER_SCRIPTS) { $PreserveUserScriptsOnUninstall = [System.Convert]::ToBoolean($env:CODEXPP_LINUX_PRESERVE_USER_SCRIPTS) }
+
+# EN: Explicit command-line path parameters override the script defaults and environment variables.
+# ZH: 明确传入的命令行路径参数优先级最高，会覆盖脚本配置区默认值和环境变量。
+if ($PSBoundParameters.ContainsKey('CodexDesktopRootPath')) { $CodexDesktopRoot = $CodexDesktopRootPath }
+if ($PSBoundParameters.ContainsKey('CodexPlusPlusLocalSourcePath')) { $CodexPlusPlusLocalSource = $CodexPlusPlusLocalSourcePath }
+if ($PSBoundParameters.ContainsKey('CodexPlusPlusReleasePackagePath')) { $CodexPlusPlusReleasePackage = $CodexPlusPlusReleasePackagePath }
+if ($PSBoundParameters.ContainsKey('CodexPlusPlusInstallPathValue')) { $CodexPlusPlusInstallPath = $CodexPlusPlusInstallPathValue }
 
 # =============================================================================
 # Localization / 本地化
@@ -131,7 +153,7 @@ function Test-ChineseLocale {
 $script:UseChinese = Test-ChineseLocale
 $script:Messages = @{
     zh = @{
-        Title = 'Codex++ Linux 适配管理器'
+        Title = 'CodexPlusPlus on Linux 安装与管理器'
         Total = '总流程'
         Step = '当前步骤'
         Log = '操作记录'
@@ -142,13 +164,18 @@ $script:Messages = @{
         ConfirmUninstall = '确认卸载适配后的 Codex++ 吗？'
         CheckUpdates = '是否检查 BigPizzaV3/CodexPlusPlus 更新？默认否'
         PurgeWork = '是否清理本次下载/构建临时文件？默认是'
+        PromptCodexDesktopRoot = '配置中的 Linux Codex Desktop 安装目录是：{0}。如需指定新路径请输入；直接回车保留该值'
+        PromptCodexPlusPlusLocalSource = '配置中的 Codex++ 本地源码仓库路径是：{0}。如需指定新路径请输入；直接回车保留该值'
+        PromptCodexPlusPlusReleasePackage = '配置中的 Codex++ release/DMG 包路径是：{0}。如需指定新路径请输入；直接回车保留该值'
+        PromptCodexPlusPlusInstallPath = '配置中的 Codex++ 适配安装路径是：{0}。如需指定新路径请输入；直接回车保留该值'
+        EmptyPath = '<未指定>'
         CodexMissing = '未检测到 Linux Codex Desktop。请先按照 ilysenko/codex-desktop-linux 的 README 安装。'
         SourceDmg = '检测到 DMG 包；Linux 上无法直接对 DMG 二进制包做源码注入，将改为获取源码。'
         SnippetAlready = '片段已存在，跳过'
         SnippetApply = '正在注入片段'
     }
     en = @{
-        Title = 'Codex++ Linux Adapter Manager'
+        Title = 'CodexPlusPlus on Linux Installer and Manager'
         Total = 'Overall'
         Step = 'Current step'
         Log = 'Operation log'
@@ -159,6 +186,11 @@ $script:Messages = @{
         ConfirmUninstall = 'Uninstall the adapted Codex++ now?'
         CheckUpdates = 'Check BigPizzaV3/CodexPlusPlus for updates? Default no'
         PurgeWork = 'Purge downloaded/build temporary files? Default yes'
+        PromptCodexDesktopRoot = 'Configured Codex Desktop root: {0}. Enter a new path, or press Enter to keep this value'
+        PromptCodexPlusPlusLocalSource = 'Configured Codex++ local source: {0}. Enter a new path, or press Enter to keep this value'
+        PromptCodexPlusPlusReleasePackage = 'Configured Codex++ release package: {0}. Enter a new path, or press Enter to keep this value'
+        PromptCodexPlusPlusInstallPath = 'Configured Codex++ install path: {0}. Enter a new path, or press Enter to keep this value'
+        EmptyPath = '<not set>'
         CodexMissing = 'Linux Codex Desktop was not detected. Install it first by following ilysenko/codex-desktop-linux README.'
         SourceDmg = 'A DMG package was detected. It is not source-patchable on Linux; the script will fetch source instead.'
         SnippetAlready = 'Snippet already applied, skipping'
@@ -211,7 +243,9 @@ function New-ProgressBar {
 function Render-AdapterTui {
     if (-not $script:IsInteractive) { return }
     $height = 16
-    $logs = $script:LogLines | Select-Object -Last 8
+    # EN: PowerShell returns a scalar for a single pipeline item; force an array before using Count.
+    # ZH: PowerShell 管道只有一个结果时会返回标量；使用 Count 前必须强制转成数组。
+    $logs = @($script:LogLines | Select-Object -Last 8)
     Write-Host "`e[2J`e[H" -NoNewline
     Write-Host "╔════════════════════════════════════════════════════════════════════╗"
     Write-Host ("║ {0,-66} ║" -f (T 'Title'))
@@ -267,6 +301,36 @@ function Confirm-AdapterAction {
     return $answer -match '^(y|yes|是|好|确定|確認)$'
 }
 
+function Read-ConfiguredPathOverride {
+    param(
+        [string]$PromptKey,
+        [string]$CurrentValue
+    )
+
+    # EN: Noninteractive runs must consume configured or parameter-supplied paths without waiting for stdin.
+    # ZH: 非交互运行必须直接使用配置区或命令行传入的路径，不能等待标准输入。
+    if ($NonInteractive) { return $CurrentValue }
+
+    # EN: Empty optional paths are shown explicitly so users know they are keeping an unset value.
+    # ZH: 可选路径为空时明确显示未指定，避免用户误以为脚本隐藏了某个默认路径。
+    $displayValue = if ([string]::IsNullOrWhiteSpace($CurrentValue)) { T 'EmptyPath' } else { $CurrentValue }
+    $answer = Read-Host ([string]::Format((T $PromptKey), $displayValue))
+
+    # EN: Pressing Enter keeps the current configured value exactly as-is, including shell-style path forms.
+    # ZH: 用户直接回车时原样保留当前配置值，包括 $HOME、${HOME}、$env:HOME 和 ~/ 等写法。
+    if ([string]::IsNullOrWhiteSpace($answer)) { return $CurrentValue }
+    return $answer.Trim()
+}
+
+function Read-OperationPathConfiguration {
+    # EN: Install, update, and uninstall all resolve paths from the same prompt sequence before doing work.
+    # ZH: 安装、更新、卸载在执行任何实际操作前，都按相同顺序确认路径配置。
+    $script:CodexDesktopRoot = Read-ConfiguredPathOverride 'PromptCodexDesktopRoot' $script:CodexDesktopRoot
+    $script:CodexPlusPlusLocalSource = Read-ConfiguredPathOverride 'PromptCodexPlusPlusLocalSource' $script:CodexPlusPlusLocalSource
+    $script:CodexPlusPlusReleasePackage = Read-ConfiguredPathOverride 'PromptCodexPlusPlusReleasePackage' $script:CodexPlusPlusReleasePackage
+    $script:CodexPlusPlusInstallPath = Read-ConfiguredPathOverride 'PromptCodexPlusPlusInstallPath' $script:CodexPlusPlusInstallPath
+}
+
 # =============================================================================
 # Path and process helpers / 路径与进程辅助
 # =============================================================================
@@ -309,6 +373,174 @@ function Resolve-AdapterInstallPath {
         return Expand-AdapterPath $raw
     }
     return [System.IO.Path]::GetFullPath((Join-Path $DesktopRoot $raw))
+}
+
+function Get-AdapterUserHome {
+    # EN: Prefer HOME so tests and container runs can isolate Codex++ user state.
+    # ZH: 优先使用 HOME，便于测试和容器运行隔离 Codex++ 用户状态。
+    if (-not [string]::IsNullOrWhiteSpace($env:HOME)) {
+        return [System.IO.Path]::GetFullPath($env:HOME)
+    }
+    return [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+}
+
+function Get-AdapterXdgDataHome {
+    # EN: Codex++ stores Linux user state under XDG data home when available.
+    # ZH: Linux 下 Codex++ 用户状态优先放在 XDG data home。
+    if (-not [string]::IsNullOrWhiteSpace($env:XDG_DATA_HOME)) {
+        return [System.IO.Path]::GetFullPath($env:XDG_DATA_HOME)
+    }
+    return Join-Path (Get-AdapterUserHome) '.local/share'
+}
+
+function Get-AdapterApplicationsDir {
+    # EN: Desktop entries are user data; honor XDG_DATA_HOME/HOME for containers and user-level installs.
+    # ZH: desktop entry 属于用户数据；遵循 XDG_DATA_HOME/HOME，便于容器测试和用户级安装隔离。
+    return Join-Path (Get-AdapterXdgDataHome) 'applications'
+}
+
+function New-AdapterJsonObject {
+    return [pscustomobject]@{}
+}
+
+function Backup-AdapterStateFile {
+    param([string]$PathValue)
+    if (-not (Test-Path $PathValue)) { return }
+    $backup = "$PathValue.codexpp-backup-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()).bak"
+    Copy-Item -LiteralPath $PathValue -Destination $backup -Force
+    Add-AdapterLog "Backed up unreadable state file: $backup"
+}
+
+function Read-AdapterJsonObject {
+    param([string]$PathValue)
+    if (-not (Test-Path $PathValue)) { return (New-AdapterJsonObject) }
+    try {
+        $json = [System.IO.File]::ReadAllText($PathValue)
+        if ([string]::IsNullOrWhiteSpace($json)) { return (New-AdapterJsonObject) }
+        $value = $json | ConvertFrom-Json
+        if ($null -eq $value -or $value -is [array]) {
+            Backup-AdapterStateFile $PathValue
+            return (New-AdapterJsonObject)
+        }
+        return $value
+    } catch {
+        # EN: Keep a backup instead of dumping or discarding user settings that may contain API keys.
+        # ZH: 状态文件可能包含 API Key；解析失败时只做备份，不打印内容也不直接丢弃。
+        Backup-AdapterStateFile $PathValue
+        return (New-AdapterJsonObject)
+    }
+}
+
+function Set-AdapterJsonProperty {
+    param(
+        [object]$ObjectValue,
+        [string]$Name,
+        [object]$Value
+    )
+    $ObjectValue | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+}
+
+function Write-AdapterJsonObject {
+    param(
+        [string]$PathValue,
+        [object]$ObjectValue
+    )
+    [void][System.IO.Directory]::CreateDirectory(([System.IO.Path]::GetDirectoryName($PathValue)))
+    $json = $ObjectValue | ConvertTo-Json -Depth 64
+    [System.IO.File]::WriteAllText($PathValue, "$json`n")
+}
+
+function Get-CodexPlusPlusSessionPath {
+    param([string]$FileName)
+    # EN: Codex++ upstream stores manager runtime state in the session-delete directory under HOME.
+    # ZH: Codex++ 上游把管理器运行状态放在 HOME 下的 session-delete 目录中。
+    return Join-Path (Join-Path (Get-AdapterUserHome) '.codex-session-delete') $FileName
+}
+
+function Sync-CodexSessionDeleteSettings {
+    param([string]$CodexAppDir)
+    $path = Get-CodexPlusPlusSessionPath 'settings.json'
+    $settings = Read-AdapterJsonObject $path
+    Set-AdapterJsonProperty $settings 'codexAppPath' ([System.IO.Path]::GetFullPath($CodexAppDir))
+    Write-AdapterJsonObject $path $settings
+    Add-AdapterLog "Synced Codex++ manager settings path: $path"
+}
+
+function Sync-CodexPlusPlusState {
+    param(
+        [string]$CodexAppDir,
+        [string]$InstallRoot,
+        [string]$SourceRoot,
+        [string]$CodexPlusPlusVersion,
+        [string]$CodexDesktopVersion
+    )
+    $path = Join-Path (Get-AdapterXdgDataHome) 'codex-plusplus/state.json'
+    $state = Read-AdapterJsonObject $path
+    Set-AdapterJsonProperty $state 'version' $CodexPlusPlusVersion
+    if (-not ($state.PSObject.Properties.Name -contains 'installedAt') -or [string]::IsNullOrWhiteSpace([string]$state.installedAt)) {
+        Set-AdapterJsonProperty $state 'installedAt' ([DateTimeOffset]::UtcNow.ToString('o'))
+    }
+    Set-AdapterJsonProperty $state 'appRoot' ([System.IO.Path]::GetFullPath($CodexAppDir))
+    Set-AdapterJsonProperty $state 'codexVersion' $CodexDesktopVersion
+    Set-AdapterJsonProperty $state 'sourceRoot' ([System.IO.Path]::GetFullPath($SourceRoot))
+    Set-AdapterJsonProperty $state 'linuxAdapterInstallRoot' ([System.IO.Path]::GetFullPath($InstallRoot))
+    $binDir = Join-Path $InstallRoot 'install'
+    $apps = Get-AdapterApplicationsDir
+    # EN: These explicit Linux paths help manager health checks and future diagnostics avoid stale upstream defaults.
+    # ZH: 明确写入这些 Linux 路径，避免管理器健康检查和后续诊断退回到上游默认旧路径。
+    Set-AdapterJsonProperty $state 'linuxCodexStartScript' ([System.IO.Path]::GetFullPath((Join-Path $CodexAppDir 'start.sh')))
+    Set-AdapterJsonProperty $state 'linuxAdapterLauncherPath' ([System.IO.Path]::GetFullPath((Join-Path $binDir 'launch-codex-plus-plus')))
+    Set-AdapterJsonProperty $state 'linuxAdapterManagerPath' ([System.IO.Path]::GetFullPath((Join-Path $binDir 'codex-plus-plus-manager')))
+    Set-AdapterJsonProperty $state 'linuxAdapterDesktopEntryPath' ([System.IO.Path]::GetFullPath((Join-Path $apps 'codex-plus-plus.desktop')))
+    Set-AdapterJsonProperty $state 'linuxAdapterManagerDesktopEntryPath' ([System.IO.Path]::GetFullPath((Join-Path $apps 'codex-plus-plus-manager.desktop')))
+    Write-AdapterJsonObject $path $state
+    Add-AdapterLog "Synced Codex++ state path: $path"
+}
+
+function Clear-CodexPlusPlusLatestStatus {
+    param([string]$CodexAppDir)
+    $path = Get-CodexPlusPlusSessionPath 'latest-status.json'
+    if (-not (Test-Path $path)) { return }
+
+    $shouldClear = $true
+    try {
+        $status = Read-AdapterJsonObject $path
+        $statusApp = [string]$status.codex_app
+        # EN: If the status belongs to a different app path, leave it alone.
+        # ZH: 如果最近启动状态属于不同的 Codex app 路径，则不主动清理。
+        if (-not [string]::IsNullOrWhiteSpace($statusApp)) {
+            $shouldClear = ([System.IO.Path]::GetFullPath($statusApp) -eq [System.IO.Path]::GetFullPath($CodexAppDir))
+        }
+    } catch {
+        # EN: Bad status JSON is non-authoritative runtime state, so clearing it is safer than surfacing stale failure UI.
+        # ZH: 损坏的 status JSON 只是运行状态；清理它比继续在界面展示陈旧失败更稳妥。
+        $shouldClear = $true
+    }
+
+    if ($shouldClear) {
+        Remove-Item -LiteralPath $path -Force
+        Add-AdapterLog "Cleared stale Codex++ launch status: $path"
+    }
+}
+
+function Sync-CodexPlusPlusUserState {
+    param(
+        [string]$CodexAppDir,
+        [string]$InstallRoot,
+        [string]$SourceRoot,
+        [string]$CodexPlusPlusVersion,
+        [string]$CodexDesktopVersion
+    )
+    # EN: Keep user-level Codex++ state aligned with the Codex Desktop chosen during install/update.
+    # ZH: 安装/更新时同步用户级 Codex++ 状态，使其指向用户本次选择的 Codex Desktop。
+    Sync-CodexSessionDeleteSettings -CodexAppDir $CodexAppDir
+    Sync-CodexPlusPlusState `
+        -CodexAppDir $CodexAppDir `
+        -InstallRoot $InstallRoot `
+        -SourceRoot $SourceRoot `
+        -CodexPlusPlusVersion $CodexPlusPlusVersion `
+        -CodexDesktopVersion $CodexDesktopVersion
+    Clear-CodexPlusPlusLatestStatus -CodexAppDir $CodexAppDir
 }
 
 function Test-CommandAvailable {
@@ -370,9 +602,11 @@ function Copy-DirectoryTree {
 
 function Find-ExtractedSourceRoot {
     param([string]$Directory)
-    $candidates = Get-ChildItem -LiteralPath $Directory -Directory | Where-Object {
+    # EN: A release archive often contains exactly one top-level source directory; keep it as an array under StrictMode.
+    # ZH: release 压缩包通常只有一个顶层源码目录；StrictMode 下要保持数组形态，避免单元素标量没有 Count。
+    $candidates = @(Get-ChildItem -LiteralPath $Directory -Directory | Where-Object {
         Test-Path (Join-Path $_.FullName 'Cargo.toml')
-    }
+    })
     if ($candidates.Count -eq 1) { return $candidates[0].FullName }
     if (Test-Path (Join-Path $Directory 'Cargo.toml')) { return $Directory }
     throw "Could not locate Codex++ source root in $Directory"
@@ -424,23 +658,28 @@ function Apply-SnippetPatch {
     if (-not (Test-Path $patchPath)) {
         throw "Patch attachment not found: $patchPath"
     }
+    # EN: The install work tree may live under another Git repository, such as CodexDesktop itself.
+    # ZH: 安装工作目录可能位于另一个 Git 仓库内部，例如 CodexDesktop 自身仓库。
+    $gitApplyEnvironment = @{
+        GIT_CEILING_DIRECTORIES = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($SourceRoot))
+    }
     Set-AdapterProgress -Total $script:TotalPercent -Step 20 -StepName (T 'SnippetApply') -Detail $Snippet.id
     $checkOk = $true
     try {
-        Invoke-External -FilePath 'git' -Arguments @('apply', '--check', $patchPath) -WorkingDirectory $SourceRoot | Out-Null
+        Invoke-External -FilePath 'git' -Arguments @('apply', '--check', $patchPath) -WorkingDirectory $SourceRoot -Environment $gitApplyEnvironment | Out-Null
     } catch {
         Add-AdapterLog "Patch check failed for $($Snippet.id): $($_.Exception.Message)"
         $checkOk = $false
     }
     if ($checkOk) {
-        Invoke-External -FilePath 'git' -Arguments @('apply', $patchPath) -WorkingDirectory $SourceRoot | Out-Null
+        Invoke-External -FilePath 'git' -Arguments @('apply', $patchPath) -WorkingDirectory $SourceRoot -Environment $gitApplyEnvironment | Out-Null
         Add-AdapterLog "Applied snippet: $($Snippet.id)"
         return
     }
 
     $reverseOk = $true
     try {
-        Invoke-External -FilePath 'git' -Arguments @('apply', '--reverse', '--check', $patchPath) -WorkingDirectory $SourceRoot | Out-Null
+        Invoke-External -FilePath 'git' -Arguments @('apply', '--reverse', '--check', $patchPath) -WorkingDirectory $SourceRoot -Environment $gitApplyEnvironment | Out-Null
     } catch {
         Add-AdapterLog "Reverse patch check failed for $($Snippet.id): $($_.Exception.Message)"
         $reverseOk = $false
@@ -450,6 +689,99 @@ function Apply-SnippetPatch {
         return
     }
     throw "Snippet $($Snippet.id) cannot be applied cleanly. Upstream may have changed this area."
+}
+
+function Assert-TextFileContains {
+    param(
+        [string]$PathValue,
+        [string]$Literal,
+        [string]$Label
+    )
+    if (-not (Test-Path $PathValue)) {
+        throw "Missing file while verifying Linux adaptation: $PathValue"
+    }
+    $text = [System.IO.File]::ReadAllText($PathValue)
+    if (-not $text.Contains($Literal)) {
+        throw "Linux adaptation verification failed: $Label was not found in $PathValue"
+    }
+}
+
+function Test-BinaryContainsAsciiLiteral {
+    param(
+        [string]$PathValue,
+        [string]$Literal
+    )
+    if (-not (Test-Path $PathValue)) { return $false }
+    $bytes = [System.IO.File]::ReadAllBytes($PathValue)
+    $needle = [System.Text.Encoding]::ASCII.GetBytes($Literal)
+    if ($needle.Length -eq 0) { return $true }
+    if ($bytes.Length -lt $needle.Length) { return $false }
+
+    for ($i = 0; $i -le $bytes.Length - $needle.Length; $i += 1) {
+        $matched = $true
+        for ($j = 0; $j -lt $needle.Length; $j += 1) {
+            if ($bytes[$i + $j] -ne $needle[$j]) {
+                $matched = $false
+                break
+            }
+        }
+        if ($matched) { return $true }
+    }
+    return $false
+}
+
+function Assert-BinaryContainsAsciiLiteral {
+    param(
+        [string]$PathValue,
+        [string]$Literal,
+        [string]$Label
+    )
+    if (-not (Test-BinaryContainsAsciiLiteral -PathValue $PathValue -Literal $Literal)) {
+        throw "Installed binary verification failed: $Label was not found in $PathValue"
+    }
+}
+
+function Assert-SourceLinuxAdaptationApplied {
+    param([string]$SourceRoot)
+    # EN: Fail before building if required Linux snippets did not actually modify the upstream source.
+    # ZH: 如果必需的 Linux 片段没有真实修改上游源码，则在构建前直接失败。
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/app_paths.rs') 'app_dir.join("start.sh")' 'Linux Codex start.sh resolver'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/app_paths.rs') 'app_dir.join("version")' 'Linux Codex version file resolver'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/launcher.rs') 'codex_process_environment_for_app(app_dir)' 'Linux launcher environment handoff'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/launcher.rs') '"--new-instance"' 'Linux start.sh new-instance argument'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/launcher.rs') 'CODEX_WEBVIEW_PORT' 'Linux Codex++ webview port environment'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/launcher.rs') 'Access-Control-Allow-Private-Network' 'Linux helper private-network CORS marker'
+    Assert-TextFileContains (Join-Path $SourceRoot 'apps/codex-plus-manager/src-tauri/src/commands.rs') 'inspect_entrypoints_for_app(codex_app_path.as_deref())' 'Linux manager overview entrypoint resolver'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/install/mod.rs') 'linuxAdapterInstallRoot' 'Linux adapter state install root'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/install/mod.rs') 'codex-plus-plus.desktop' 'Linux upstream-style desktop entry name'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/relay_config.rs') 'effective_codex_base_url' 'Pure API effective BaseURL normalization'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/relay_config.rs') 'requires_openai_auth: bool' 'Pure API configurable OpenAI auth requirement'
+    Assert-TextFileContains (Join-Path $SourceRoot 'assets/inject/renderer-inject.js') 'normalizeCodexPlusPluginDetail' 'Linux plugin detail response normalization'
+    Assert-TextFileContains (Join-Path $SourceRoot 'assets/inject/renderer-inject.js') 'codexPlusSyntheticAccountReadResult' 'Pure API synthetic account read compatibility'
+    Assert-TextFileContains (Join-Path $SourceRoot 'assets/inject/renderer-inject.js') 'clearPluginEntryUnlockLabel' 'Native Plugins label cleanup'
+    Assert-TextFileContains (Join-Path $SourceRoot 'assets/inject/renderer-inject.js') 'avoidFloatingCodexPlusMenuNativeControlOverlap' 'Floating Codex++ menu overlap avoidance'
+    Assert-TextFileContains (Join-Path $SourceRoot 'assets/inject/renderer-inject.js') 'codexServiceTierLinuxComposerFooters' 'Linux Fast badge composer placement'
+    Assert-TextFileContains (Join-Path $SourceRoot 'assets/inject/renderer-inject.js') 'codexServiceTierBackendBlocksLocalOverride' 'Linux Fast badge transient backend checking clickability'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/user_scripts.rs') 'codexPlusLinuxUserScriptLocation' 'Linux user script location alias'
+    Add-AdapterLog "Verified Linux adaptation markers in patched source."
+}
+
+function Assert-InstalledLinuxAdaptationApplied {
+    param([string]$InstallRoot)
+    $binDir = Join-Path $InstallRoot 'install'
+    $launcher = Join-Path $binDir 'codex-plus-plus'
+    $manager = Join-Path $binDir 'codex-plus-plus-manager'
+    # EN: Release binaries must carry these string markers; otherwise a stale unpatched build was installed.
+    # ZH: release 二进制必须包含这些字符串标记；否则说明安装进去了陈旧的未补丁构建。
+    Assert-BinaryContainsAsciiLiteral $launcher 'start.sh' 'Linux start.sh launcher marker'
+    Assert-BinaryContainsAsciiLiteral $launcher 'CODEX_WEBVIEW_PORT' 'Linux webview environment marker'
+    Assert-BinaryContainsAsciiLiteral $launcher 'Access-Control-Allow-Private-Network' 'Linux helper private-network CORS marker'
+    Assert-BinaryContainsAsciiLiteral $launcher 'codexServiceTierLinuxComposerFooters' 'Linux Fast badge composer marker'
+    Assert-BinaryContainsAsciiLiteral $launcher 'codexServiceTierBackendBlocksLocalOverride' 'Linux Fast badge transient backend checking marker'
+    Assert-BinaryContainsAsciiLiteral $launcher 'codexPlusLinuxUserScriptLocation' 'Linux user script location alias marker'
+    Assert-BinaryContainsAsciiLiteral $manager 'linuxAdapterInstallRoot' 'Linux state entrypoint marker'
+    Assert-BinaryContainsAsciiLiteral $manager 'codex-plus-plus.desktop' 'Linux desktop entry marker'
+    Add-AdapterLog "Verified Linux adaptation markers in installed binaries."
 }
 
 # =============================================================================
@@ -514,13 +846,20 @@ function Prepare-Source {
         }
     }
 
-    Add-AdapterLog "Fetching source from $CodexPlusPlusGitHubRepo"
+    Add-AdapterLog "Fetching source from $CodexPlusPlusGitHubRepo tag $CodexPlusPlusReleaseTag"
     $zip = Join-Path $downloadRoot 'CodexPlusPlus.zip'
     try {
-        Invoke-WebRequest -Uri $CodexPlusPlusMainZipUrl -OutFile $zip
+        Invoke-WebRequest -Uri $CodexPlusPlusVersionZipUrl -OutFile $zip
     } catch {
-        Add-AdapterLog "main.zip failed, trying master.zip"
-        Invoke-WebRequest -Uri $CodexPlusPlusMasterZipUrl -OutFile $zip
+        # EN: Falling back keeps the script usable, but the pinned tag is the supported patch baseline.
+        # ZH: 回退分支保证脚本可用，但固定 tag 才是当前补丁支持的基线。
+        Add-AdapterLog "$CodexPlusPlusReleaseTag.zip failed, trying main.zip"
+        try {
+            Invoke-WebRequest -Uri $CodexPlusPlusMainZipUrl -OutFile $zip
+        } catch {
+            Add-AdapterLog "main.zip failed, trying master.zip"
+            Invoke-WebRequest -Uri $CodexPlusPlusMasterZipUrl -OutFile $zip
+        }
     }
     $extractDir = Join-Path $downloadRoot 'source-zip'
     if (Test-Path $extractDir) { [System.IO.Directory]::Delete($extractDir, $true) }
@@ -590,6 +929,61 @@ function Ensure-Dependencies {
 # Build and install / 构建与安装
 # =============================================================================
 
+function Get-ManagerFrontendBuildInfo {
+    param([string]$ManagerDir)
+
+    $tauriConfig = Join-Path $ManagerDir 'src-tauri/tauri.conf.json'
+    $srcTauriDir = Join-Path $ManagerDir 'src-tauri'
+    $frontendDist = Join-Path $ManagerDir 'dist'
+    $beforeBuildCommand = 'npm run vite:build'
+
+    if (Test-Path $tauriConfig) {
+        $config = [System.IO.File]::ReadAllText($tauriConfig) | ConvertFrom-Json
+        if ($config.build.frontendDist) {
+            $rawDist = [string]$config.build.frontendDist
+            $frontendDist = if ([System.IO.Path]::IsPathRooted($rawDist)) {
+                $rawDist
+            } else {
+                [System.IO.Path]::GetFullPath((Join-Path $srcTauriDir $rawDist))
+            }
+        }
+        if ($config.build.beforeBuildCommand) {
+            $beforeBuildCommand = [string]$config.build.beforeBuildCommand
+        }
+    }
+
+    return [pscustomobject]@{
+        FrontendDist = [System.IO.Path]::GetFullPath($frontendDist)
+        BeforeBuildCommand = $beforeBuildCommand
+    }
+}
+
+function Invoke-ManagerFrontendBuild {
+    param([string]$ManagerDir)
+
+    $buildInfo = Get-ManagerFrontendBuildInfo $ManagerDir
+
+    # EN: `cargo build` invokes Tauri context generation, which requires frontendDist to exist.
+    # ZH: `cargo build` 会触发 Tauri context 生成，必须先确保 frontendDist 前端产物已经存在。
+    if ([string]::IsNullOrWhiteSpace($buildInfo.BeforeBuildCommand)) {
+        if (Test-Path $buildInfo.FrontendDist) { return }
+        throw "Manager frontendDist is missing and no beforeBuildCommand is configured: $($buildInfo.FrontendDist)"
+    }
+
+    Add-AdapterLog "Building manager frontend: $($buildInfo.BeforeBuildCommand)"
+    if (Test-CommandAvailable 'sh') {
+        Invoke-External -FilePath 'sh' -Arguments @('-lc', $buildInfo.BeforeBuildCommand) -WorkingDirectory $ManagerDir | Out-Null
+    } elseif ($buildInfo.BeforeBuildCommand -match '^npm\s+run\s+([A-Za-z0-9:_-]+)$') {
+        Invoke-External -FilePath 'npm' -Arguments @('run', $Matches[1]) -WorkingDirectory $ManagerDir | Out-Null
+    } else {
+        throw "Cannot run manager frontend build command without sh: $($buildInfo.BeforeBuildCommand)"
+    }
+
+    if (-not (Test-Path $buildInfo.FrontendDist)) {
+        throw "Manager frontend build did not create frontendDist: $($buildInfo.FrontendDist)"
+    }
+}
+
 function Invoke-CodexPlusPlusBuild {
     param([string]$SourceRoot)
     if ($SkipBuild) {
@@ -607,9 +1001,106 @@ function Invoke-CodexPlusPlusBuild {
         Invoke-External -FilePath 'npm' -Arguments @('run', 'check') -WorkingDirectory $managerDir | Out-Null
         Invoke-External -FilePath 'cargo' -Arguments @('test', '-p', 'codex-plus-core', '--test', 'cdp_bridge') -WorkingDirectory $SourceRoot | Out-Null
     }
+    Invoke-ManagerFrontendBuild $managerDir
     $buildArgs = @('build', '-p', 'codex-plus-launcher', '-p', 'codex-plus-manager')
     if ($BuildMode -eq 'release') { $buildArgs += '--release' }
     Invoke-External -FilePath 'cargo' -Arguments $buildArgs -WorkingDirectory $SourceRoot | Out-Null
+}
+
+function Quote-DesktopExecPath {
+    param([string]$PathValue)
+    return '"' + $PathValue.Replace('\', '\\').Replace('"', '\"') + '"'
+}
+
+function Install-ExecutableFile {
+    param(
+        [string]$Source,
+        [string]$Destination
+    )
+    $destinationDir = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($Destination))
+    [void][System.IO.Directory]::CreateDirectory($destinationDir)
+    $tempDestination = Join-Path $destinationDir (".{0}.tmp.{1}" -f ([System.IO.Path]::GetFileName($Destination)), $PID)
+
+    # EN: Linux returns ETXTBSY when copying over a running executable; copy to a sibling file first.
+    # ZH: Linux 上直接覆盖正在运行的可执行文件会触发 ETXTBSY；先复制到同目录临时文件。
+    Copy-Item -LiteralPath $Source -Destination $tempDestination -Force
+
+    # EN: A same-directory rename replaces the path while the old running inode remains valid for existing processes.
+    # ZH: 同目录 rename 会替换路径，同时旧 inode 仍可供已运行进程继续使用。
+    if (Test-CommandAvailable 'mv') {
+        Invoke-External -FilePath 'mv' -Arguments @('-f', $tempDestination, $Destination) | Out-Null
+    } else {
+        Move-Item -LiteralPath $tempDestination -Destination $Destination -Force
+    }
+}
+
+function Get-CodexDesktopIconPath {
+    param([string]$CodexAppDir)
+    $linuxIcon = Join-Path $CodexAppDir '.codex-linux/codex-desktop.png'
+    if (Test-Path $linuxIcon) {
+        return [System.IO.Path]::GetFullPath($linuxIcon)
+    }
+    return ''
+}
+
+function New-DesktopEntryText {
+    param(
+        [string]$Name,
+        [string]$Comment,
+        [string]$ExecPath,
+        [string]$IconPath
+    )
+    $iconLine = if ([string]::IsNullOrWhiteSpace($IconPath)) { '' } else { "Icon=$IconPath`n" }
+    # EN: Keep a final newline so tools do not concatenate following output with the last desktop key.
+    # ZH: 保留文件末尾换行，避免命令行工具把后续输出接到最后一个 desktop 键后面。
+    $text = @"
+[Desktop Entry]
+Type=Application
+Name=$Name
+Comment=$Comment
+Exec=$(Quote-DesktopExecPath $ExecPath)
+${iconLine}Terminal=false
+Categories=Development;
+"@
+    return "$text`n"
+}
+
+function Remove-DesktopEntryFiles {
+    param(
+        [string]$ApplicationsDir,
+        [string[]]$Names
+    )
+    foreach ($name in $Names) {
+        $path = Join-Path $ApplicationsDir $name
+        if (Test-Path $path) { Remove-Item -LiteralPath $path -Force }
+    }
+}
+
+function Install-DesktopEntries {
+    param(
+        [string]$InstallRoot,
+        [string]$CodexAppDir
+    )
+
+    # EN: Match Codex++ upstream-style Linux entry names instead of creating adapter-branded duplicates.
+    # ZH: 这里保持 Codex++ 原项目风格的 Linux 入口名称，不再创建带适配器品牌的重复快捷方式。
+    $apps = Get-AdapterApplicationsDir
+    [void][System.IO.Directory]::CreateDirectory($apps)
+    Remove-DesktopEntryFiles $apps @('codex-plus-plus-linux.desktop', 'codex-plus-plus-manager-linux.desktop')
+
+    $binDir = Join-Path $InstallRoot 'install'
+    $wrapper = [System.IO.Path]::GetFullPath((Join-Path $binDir 'launch-codex-plus-plus'))
+    $manager = [System.IO.Path]::GetFullPath((Join-Path $binDir 'codex-plus-plus-manager'))
+    $icon = Get-CodexDesktopIconPath $CodexAppDir
+
+    [System.IO.File]::WriteAllText(
+        (Join-Path $apps 'codex-plus-plus.desktop'),
+        (New-DesktopEntryText 'Codex++' 'Launch Codex Desktop with Codex++ injection' $wrapper $icon)
+    )
+    [System.IO.File]::WriteAllText(
+        (Join-Path $apps 'codex-plus-plus-manager.desktop'),
+        (New-DesktopEntryText 'Codex++ Manager' 'Manage Codex++ settings and diagnostics' $manager $icon)
+    )
 }
 
 function Install-AdaptedBinaries {
@@ -627,15 +1118,15 @@ function Install-AdaptedBinaries {
 
     $binDir = Join-Path $InstallRoot 'install'
     [void][System.IO.Directory]::CreateDirectory($binDir)
-    Copy-Item -LiteralPath $launcher -Destination (Join-Path $binDir 'codex-plus-plus') -Force
-    Copy-Item -LiteralPath $manager -Destination (Join-Path $binDir 'codex-plus-plus-manager') -Force
+    Install-ExecutableFile -Source $launcher -Destination (Join-Path $binDir 'codex-plus-plus')
+    Install-ExecutableFile -Source $manager -Destination (Join-Path $binDir 'codex-plus-plus-manager')
 
     $wrapper = Join-Path $binDir 'launch-codex-plus-plus'
     $launcherQuoted = Quote-ShSingle ([System.IO.Path]::GetFullPath((Join-Path $binDir 'codex-plus-plus')))
     $appQuoted = Quote-ShSingle ([System.IO.Path]::GetFullPath($CodexAppDir))
     $wrapperText = @"
 #!/bin/sh
-# Managed by the Codex++ Linux adapter.
+# Managed by CodexPlusPlus on Linux.
 exec $launcherQuoted --app-path $appQuoted "`$@"
 "@
     [System.IO.File]::WriteAllText($wrapper, $wrapperText)
@@ -644,27 +1135,12 @@ exec $launcherQuoted --app-path $appQuoted "`$@"
     }
 
     $readme = Join-Path $binDir 'README-linux-adapter.txt'
-    [System.IO.File]::WriteAllText($readme, "Managed by Codex++ Linux Adapter.`nLaunch with: $wrapper`n")
+    [System.IO.File]::WriteAllText($readme, "Managed by CodexPlusPlus on Linux.`nLaunch with: $wrapper`n")
+
+    Assert-InstalledLinuxAdaptationApplied -InstallRoot $InstallRoot
 
     if ($CreateDesktopEntries) {
-        $apps = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.local/share/applications'
-        [void][System.IO.Directory]::CreateDirectory($apps)
-        [System.IO.File]::WriteAllText((Join-Path $apps 'codex-plus-plus-linux.desktop'), @"
-[Desktop Entry]
-Type=Application
-Name=Codex++ Linux
-Exec=$wrapper
-Terminal=false
-Categories=Development;
-"@)
-        [System.IO.File]::WriteAllText((Join-Path $apps 'codex-plus-plus-manager-linux.desktop'), @"
-[Desktop Entry]
-Type=Application
-Name=Codex++ Manager Linux
-Exec=$(Join-Path $binDir 'codex-plus-plus-manager')
-Terminal=false
-Categories=Development;
-"@)
+        Install-DesktopEntries -InstallRoot $InstallRoot -CodexAppDir $CodexAppDir
     }
 }
 
@@ -685,11 +1161,13 @@ function Uninstall-AdaptedCodexPlusPlus {
         Remove-Item -LiteralPath $InstallRoot -Recurse -Force
         Add-AdapterLog "Removed install root: $InstallRoot"
     }
-    $apps = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.local/share/applications'
-    foreach ($name in @('codex-plus-plus-linux.desktop', 'codex-plus-plus-manager-linux.desktop')) {
-        $path = Join-Path $apps $name
-        if (Test-Path $path) { Remove-Item -LiteralPath $path -Force }
-    }
+    $apps = Get-AdapterApplicationsDir
+    Remove-DesktopEntryFiles $apps @(
+        'codex-plus-plus.desktop',
+        'codex-plus-plus-manager.desktop',
+        'codex-plus-plus-linux.desktop',
+        'codex-plus-plus-manager-linux.desktop'
+    )
 }
 
 function Show-InfoPanel {
@@ -723,6 +1201,8 @@ function Invoke-InstallOrUpdate {
     $codexRoot = Expand-AdapterPath $CodexDesktopRoot
     $installRoot = Resolve-AdapterInstallPath $codexRoot $CodexPlusPlusInstallPath
     $workRoot = Join-Path $installRoot $WorkDirName
+    Add-AdapterLog "Using Codex Desktop root: $codexRoot"
+    Add-AdapterLog "Using Codex++ install root: $installRoot"
     [void][System.IO.Directory]::CreateDirectory($workRoot)
 
     Invoke-AdapterStep 8 'Check Codex Desktop / 检查 Codex Desktop' {
@@ -751,12 +1231,19 @@ function Invoke-InstallOrUpdate {
             Set-AdapterProgress -Total 42 -Step $percent -StepName (T 'SnippetApply') -Detail $snippet.id
             Apply-SnippetPatch -SourceRoot $script:SourceRoot -Snippet $snippet
         }
+        Assert-SourceLinuxAdaptationApplied -SourceRoot $script:SourceRoot
     }
     Invoke-AdapterStep 72 'Build Codex++ / 构建 Codex++' {
         Invoke-CodexPlusPlusBuild $script:SourceRoot
     }
     Invoke-AdapterStep 90 'Install binaries / 安装二进制文件' {
         Install-AdaptedBinaries -SourceRoot $script:SourceRoot -InstallRoot $installRoot -CodexAppDir $script:CodexInfo.AppDir
+        Sync-CodexPlusPlusUserState `
+            -CodexAppDir $script:CodexInfo.AppDir `
+            -InstallRoot $installRoot `
+            -SourceRoot $script:SourceRoot `
+            -CodexPlusPlusVersion (Get-CodexPlusPlusVersion $script:SourceRoot) `
+            -CodexDesktopVersion $script:CodexInfo.Version
     }
     Invoke-AdapterStep 100 'Finalize / 收尾' {
         if (-not $KeepWorkDir -and (Confirm-AdapterAction (T 'PurgeWork') $true)) {
@@ -781,18 +1268,37 @@ function Invoke-SelfTest {
         $patchPath = Join-Path (Get-RepositoryRoot) ([string]$snippet.patch)
         if (-not (Test-Path $patchPath)) { throw "Missing patch: $patchPath" }
     }
+    $versionPath = Join-Path (Get-RepositoryRoot) 'VERSION'
+    if (Test-Path $versionPath) {
+        $projectVersion = [System.IO.File]::ReadAllText($versionPath).Trim()
+        if ($projectVersion -ne $CodexPlusPlusUpstreamVersion) {
+            throw "VERSION ($projectVersion) does not match pinned upstream version ($CodexPlusPlusUpstreamVersion)"
+        }
+    }
     Write-Host "Selftest OK: manifest and patch attachments are readable."
 }
 
 try {
     switch ($Action) {
-        'install' { Invoke-InstallOrUpdate -IsUpdate:$false }
-        'update' { Invoke-InstallOrUpdate -IsUpdate:$true }
+        'install' {
+            Read-OperationPathConfiguration
+            Invoke-InstallOrUpdate -IsUpdate:$false
+        }
+        'update' {
+            Read-OperationPathConfiguration
+            Invoke-InstallOrUpdate -IsUpdate:$true
+        }
         'uninstall' {
+            Read-OperationPathConfiguration
             $codexRoot = Expand-AdapterPath $CodexDesktopRoot
             $installRoot = Resolve-AdapterInstallPath $codexRoot $CodexPlusPlusInstallPath
+            Add-AdapterLog "Using Codex Desktop root: $codexRoot"
+            Add-AdapterLog "Using Codex++ install root: $installRoot"
             if (Confirm-AdapterAction (T 'ConfirmUninstall') $true) {
-                Invoke-AdapterStep 100 'Uninstall / 卸载' { Uninstall-AdaptedCodexPlusPlus $installRoot }
+                Invoke-AdapterStep 100 'Uninstall / 卸载' {
+                    Uninstall-AdaptedCodexPlusPlus $installRoot
+                    Clear-CodexPlusPlusLatestStatus -CodexAppDir (Join-Path $codexRoot 'codex-app')
+                }
             }
         }
         'list-snippets' { Invoke-ListSnippets }
