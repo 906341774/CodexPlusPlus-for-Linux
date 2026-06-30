@@ -1,113 +1,11 @@
-diff --git a/crates/codex-plus-core/tests/cdp_bridge.rs b/crates/codex-plus-core/tests/cdp_bridge.rs
-index f58386f..e075cef 100644
---- a/crates/codex-plus-core/tests/cdp_bridge.rs
-+++ b/crates/codex-plus-core/tests/cdp_bridge.rs
-@@ -106,7 +106,7 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
-     let script = assets::injection_script(57321);
- 
-     assert!(script.contains("function pluginPatchDisabledInRelayMode()"));
--    assert!(script.contains("!codexPlusBackendSettingsLoaded"));
-+    assert!(script.contains("codexPlusBackendSettings.launchMode === \"relay\""));
-     assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
-     assert!(script.contains("clearPluginPatchArtifacts()"));
- }
-@@ -147,10 +147,10 @@ fn injection_script_restores_legacy_plugin_sidebar_entry_unlock() {
-     assert!(script.contains("function pluginEntryButton()"));
-     assert!(script.contains("function enablePluginEntry()"));
-     assert!(script.contains("if (!codexPlusSettings().pluginEntryUnlock) return"));
--    assert!(script.contains("pluginButton.addEventListener(\"click\", () => {"));
-+    assert!(script.contains("installPluginEntryGuard(pluginButton);"));
-     assert!(script.contains("spoofChatGPTAuthMethod(pluginButton);"));
--    assert!(script.contains("插件 - 已解锁"));
--    assert!(script.contains("Plugins - Unlocked"));
-+    assert!(script.contains("function clearPluginEntryUnlockLabel(button)"));
-+    assert!(!script.contains("Plugins - Unlocked\" : \"插件 - 已解锁"));
- }
- 
- #[test]
-@@ -428,6 +428,30 @@ fn injection_script_exposes_fast_service_tier_control() {
-     assert!(script.contains("fast"));
- }
- 
-+#[test]
-+fn linux_renderer_patch_places_fast_badge_in_current_linux_composer_footer() {
-+    let script = assets::injection_script(57321);
-+
-+    assert!(script.contains("function codexServiceTierLinuxComposerFooters"));
-+    assert!(script.contains("function codexServiceTierComposerFromIntelligenceTrigger"));
-+    assert!(script.contains("function codexServiceTierComposerFromEditable"));
-+    assert!(script.contains("[data-codex-intelligence-trigger=\"true\"]"));
-+    assert!(script.contains("[data-codex-composer=\"true\"]"));
-+    assert!(script.contains("_footer_"));
-+    assert!(script.contains("codexServiceTierBestLinuxComposerFooter"));
-+}
-+
-+#[test]
-+fn linux_renderer_patch_keeps_fast_badge_clickable_during_backend_checking() {
-+    let script = assets::injection_script(57321);
-+
-+    assert!(script.contains("function codexServiceTierBackendBlocksLocalOverride"));
-+    assert!(script.contains("status !== \"checking\""));
-+    assert!(script.contains("codexServiceTierBackendBlocksLocalOverride()"));
-+    assert!(script.contains("codexPlusBackendStatus.status === \"checking\" && codexServiceTierState.status === \"loading\""));
-+    assert!(script.contains("codexServiceTierState.status === \"loading\" && badge.dataset.tier === \"loading\""));
-+}
-+
- #[test]
- fn injection_script_restores_thread_scroll_positions() {
-     let script = assets::injection_script(57321);
-@@ -1262,3 +1286,43 @@ fn noop_handler() -> bridge::BridgeHandler {
-             as Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send>>
-     })
- }
-+
-+#[test]
-+fn linux_renderer_patch_keeps_plugin_label_native_and_normalizes_detail_payloads() {
-+    let script = assets::injection_script(57321);
-+
-+    assert!(script.contains("function labelUnlockedPluginEntry(button) {\n    clearPluginEntryUnlockLabel(button);\n  }"));
-+    assert!(!script.contains("Plugins - Unlocked\" : \"插件 - 已解锁"));
-+    assert!(script.contains("function normalizeCodexPlusPluginDetail(plugin)"));
-+    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"apps\")"));
-+    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"skills\")"));
-+    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"mcpServers\")"));
-+    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"hooks\")"));
-+}
-+
-+#[test]
-+fn linux_renderer_patch_handles_pure_api_account_read_without_secrets() {
-+    let script = assets::injection_script(57321);
-+
-+    assert!(script.contains("codexPlusAccountReadRequestIds"));
-+    assert!(script.contains("patchAppServerModelMessages();"));
-+    assert!(script.contains("request?.method === \"account/read\""));
-+    assert!(script.contains("account_read_pure_api_compat_applied"));
-+    assert!(script.contains("codexplusplus@local"));
-+    let compat_block = script
-+        .split("function codexPlusSyntheticAccountReadResult()")
-+        .nth(1)
-+        .and_then(|block| block.split("function patchMcpPluginReadResponseData").next())
-+        .expect("account-read compatibility block should be present");
-+    assert!(!compat_block.contains("sk-"));
-+}
-+
-+#[test]
-+fn linux_renderer_patch_avoids_floating_menu_native_control_overlap() {
-+    let script = assets::injection_script(57321);
-+
-+    assert!(script.contains("function avoidFloatingCodexPlusMenuNativeControlOverlap(menu)"));
-+    assert!(script.contains("floatingMenuNativeControlRects(menuRect)"));
-+    assert!(script.contains("rectsOverlap(menuRect, rect, 8)"));
-+    assert!(script.contains("updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));"));
-+}
 diff --git a/crates/codex-plus-core/tests/bridge_routes.rs b/crates/codex-plus-core/tests/bridge_routes.rs
-index aa83775..3e02b50 100644
+index 38a1ab4..a9a21cc 100644
 --- a/crates/codex-plus-core/tests/bridge_routes.rs
 +++ b/crates/codex-plus-core/tests/bridge_routes.rs
-@@ -614,6 +614,31 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
+@@ -731,6 +731,31 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
      assert!(evaluated[0].contains("window.demo = true;"));
  }
- 
+
 +#[test]
 +fn user_script_bundle_wraps_scripts_with_linux_codex_location_alias() {
 +    let temp = tempfile::tempdir().unwrap();
@@ -136,14 +34,163 @@ index aa83775..3e02b50 100644
  #[tokio::test]
  async fn core_runtime_open_devtools_uses_inspector_url_opener() {
      let opened = Arc::new(Mutex::new(Vec::<String>::new()));
+diff --git a/crates/codex-plus-core/tests/cdp_bridge.rs b/crates/codex-plus-core/tests/cdp_bridge.rs
+index 47fbed0..dc8bcb9 100644
+--- a/crates/codex-plus-core/tests/cdp_bridge.rs
++++ b/crates/codex-plus-core/tests/cdp_bridge.rs
+@@ -212,7 +212,7 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
+     let script = assets::injection_script(57321);
+
+     assert!(script.contains("function pluginPatchDisabledInRelayMode()"));
+-    assert!(script.contains("!codexPlusBackendSettingsLoaded"));
++    assert!(script.contains("codexPlusBackendSettings.launchMode === \"relay\""));
+     assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
+     assert!(script.contains("clearPluginPatchArtifacts()"));
+ }
+@@ -234,23 +234,29 @@ fn injection_script_gates_legacy_and_modern_plugin_unlock_by_codex_version() {
+     let script = assets::injection_script(57321);
+
+     assert!(script.contains("const pluginUnlockStrategy = codexPluginUnlockStrategy()"));
++    assert!(script.contains("if ((pluginUnlockStrategy === \"legacy\" || pluginUnlockStrategy === \"unknown\") && settings.pluginMarketplaceUnlock)"));
++    assert!(script.contains("enablePluginEntry();"));
++    assert!(script.contains("refreshPluginEntryUnlockLoop();"));
+     assert!(script.contains("if ((pluginUnlockStrategy === \"modern\" || pluginUnlockStrategy === \"unknown\") && settings.pluginMarketplaceUnlock)"));
+     assert!(script.contains("plugin_unlock_strategy_selected"));
+     assert!(script.contains("window.__codexPluginUnlockStrategyLogged"));
+ }
+
+ #[test]
+-fn injection_script_removes_legacy_plugin_sidebar_entry_unlock() {
++fn injection_script_keeps_linux_plugin_sidebar_entry_unlock_without_debug_suffix() {
+     let script = assets::injection_script(57321);
+
+-    assert!(!script.contains("pluginEntryUnlock"));
+     assert!(!script.contains("codexAppPluginEntryUnlock"));
+-    assert!(!script.contains("function spoofChatGPTAuthMethod(element)"));
+-    assert!(!script.contains("auth.setAuthMethod(\"chatgpt\")"));
+-    assert!(!script.contains("function pluginEntryButton()"));
+-    assert!(!script.contains("function enablePluginEntry()"));
+-    assert!(!script.contains("插件 - 已解锁"));
+-    assert!(!script.contains("Plugins - Unlocked"));
++    assert!(!script.contains("data-codex-plus-setting=\"pluginEntryUnlock\""));
++    assert!(script.contains("function spoofChatGPTAuthMethod(element)"));
++    assert!(script.contains("auth.setAuthMethod(\"chatgpt\")"));
++    assert!(script.contains("function pluginEntryButton()"));
++    assert!(script.contains("function enablePluginEntry()"));
++    assert!(script.contains("if (!codexPlusSettings().pluginMarketplaceUnlock) return"));
++    assert!(script.contains("installPluginEntryGuard(pluginButton);"));
++    assert!(script.contains("function clearPluginEntryUnlockLabel(button)"));
++    assert!(script.contains("function labelUnlockedPluginEntry(button) {\n    clearPluginEntryUnlockLabel(button);\n  }"));
++    assert!(!script.contains("\"Plugins - Unlocked\" : \"插件 - 已解锁\""));
+ }
+
+ #[test]
+@@ -591,7 +597,9 @@ fn injection_script_exposes_fast_service_tier_control() {
+     assert!(script.contains("codexServiceTierBadgeFooterGroup"));
+     assert!(script.contains("codexServiceTierFindComposerEl"));
+     assert!(script.contains("codexServiceTierVisibleComposerFooters"));
++    assert!(script.contains("codexServiceTierLinuxComposerFooters"));
+     assert!(script.contains("codexServiceTierBestComposerFooter"));
++    assert!(script.contains("codexServiceTierBestLinuxComposerFooter"));
+     assert!(script.contains("codexServiceTierComposerCandidates"));
+     assert!(script.contains("codexServiceTierComposerScore"));
+     assert!(script.contains("data-codex-service-tier-badge"));
+@@ -606,6 +614,30 @@ fn injection_script_exposes_fast_service_tier_control() {
+     assert!(script.contains("fast"));
+ }
+
++#[test]
++fn linux_renderer_patch_places_fast_badge_in_current_linux_composer_footer() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("function codexServiceTierLinuxComposerFooters"));
++    assert!(script.contains("function codexServiceTierComposerFromIntelligenceTrigger"));
++    assert!(script.contains("function codexServiceTierComposerFromEditable"));
++    assert!(script.contains("[data-codex-intelligence-trigger=\"true\"]"));
++    assert!(script.contains("[data-codex-composer=\"true\"]"));
++    assert!(script.contains("_footer_"));
++    assert!(script.contains("const linuxBestFooter = codexServiceTierBestLinuxComposerFooter();"));
++}
++
++#[test]
++fn linux_renderer_patch_keeps_fast_badge_clickable_during_backend_checking() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("function codexServiceTierBackendBlocksLocalOverride()"));
++    assert!(script.contains("status !== \"ok\" && status !== \"checking\""));
++    assert!(script.contains("if (codexServiceTierBackendBlocksLocalOverride())"));
++    assert!(script.contains("codexPlusBackendStatus.status === \"checking\" && codexServiceTierState.status === \"loading\""));
++    assert!(script.contains("codexServiceTierState.status === \"loading\" && badge.dataset.tier === \"loading\""));
++}
++
+ #[test]
+ fn injection_script_prompts_for_markdown_export_path_when_supported() {
+     let script = assets::injection_script(57321);
+@@ -1649,3 +1681,55 @@ fn noop_handler() -> bridge::BridgeHandler {
+             as Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send>>
+     })
+ }
++
++#[test]
++fn linux_renderer_patch_keeps_plugin_label_native_and_normalizes_detail_payloads() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("function labelUnlockedPluginEntry(button) {\n    clearPluginEntryUnlockLabel(button);\n  }"));
++    assert!(!script.contains("\"Plugins - Unlocked\" : \"插件 - 已解锁\""));
++    assert!(script.contains("function normalizeCodexPlusPluginDetail(plugin)"));
++    assert!(script.contains("function ensureCodexPlusArrayProperty(target, property)"));
++    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"apps\")"));
++    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"skills\")"));
++    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"mcpServers\")"));
++    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"hooks\")"));
++    assert!(script.contains("function patchMcpPluginReadResponseData(data)"));
++    assert!(script.contains("plugin_read_detail_compat_applied"));
++}
++
++#[test]
++fn linux_renderer_patch_handles_pure_api_account_read_without_secrets() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("codexPlusAccountReadRequestIds"));
++    assert!(script.contains("message.request.method === \"account/read\""));
++    assert!(script.contains("function codexPlusSyntheticAccountReadResult()"));
++    assert!(script.contains("account_read_pure_api_compat_applied"));
++    assert!(script.contains("codexplusplus@local"));
++    let compat_block = script
++        .split("function codexPlusSyntheticAccountReadResult()")
++        .nth(1)
++        .and_then(|block| block.split("function patchMcpModelResponseData").next())
++        .expect("account-read compatibility block should be present");
++    assert!(!compat_block.contains("sk-"));
++}
++
++#[test]
++fn linux_renderer_patch_avoids_floating_menu_native_control_overlap() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("function rectsOverlap(first, second, padding = 0)"));
++    assert!(script.contains("function floatingMenuNativeControlRects(menuRect)"));
++    assert!(script.contains("function avoidFloatingCodexPlusMenuNativeControlOverlap(menu)"));
++    assert!(script.contains("rectsOverlap(menuRect, rect, 8)"));
++    assert!(script.contains("updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));"));
++}
++
++#[test]
++fn linux_renderer_patch_observes_delete_button_attribute_changes_without_reload() {
++    let script = assets::injection_script(57321);
++
++    assert!(!script.contains("window.location.reload()"));
++    assert!(script.contains("attributeFilter: [\"class\", \"disabled\", \"aria-disabled\", \"data-disabled\", \"aria-current\"]"));
++}
 diff --git a/crates/codex-plus-core/tests/installers.rs b/crates/codex-plus-core/tests/installers.rs
-index d20bf61..7ca5469 100644
+index 7cd4e79..cdc9294 100644
 --- a/crates/codex-plus-core/tests/installers.rs
 +++ b/crates/codex-plus-core/tests/installers.rs
-@@ -126,3 +126,107 @@ fn windows_default_install_root_uses_known_folder_before_userprofile_desktop() {
+@@ -191,3 +191,110 @@ fn windows_default_install_root_uses_known_folder_before_userprofile_desktop() {
          assert_eq!(strategy, "user-dirs-desktop");
      }
  }
++
 +
 +#[cfg(target_os = "linux")]
 +fn linux_install_env_lock() -> &'static std::sync::Mutex<()> {
@@ -188,7 +235,8 @@ index d20bf61..7ca5469 100644
 +    let app_dir = temp.path().join("codex-app");
 +    let install_dir = app_dir.join(".codex-plusplus").join("install");
 +    std::fs::create_dir_all(&install_dir).unwrap();
-+    std::fs::write(install_dir.join("launch-codex-plus-plus"), "#!/bin/sh\n").unwrap();
++    std::fs::write(install_dir.join("launch-codex-plus-plus"), "#!/bin/sh
++").unwrap();
 +    std::fs::write(install_dir.join("codex-plus-plus-manager"), "").unwrap();
 +
 +    let state = codex_plus_core::install::inspect_entrypoints_for_app(Some(&app_dir));
@@ -223,7 +271,8 @@ index d20bf61..7ca5469 100644
 +    let install_dir = install_root.join("install");
 +    std::fs::create_dir_all(data_home.join("codex-plusplus")).unwrap();
 +    std::fs::create_dir_all(&install_dir).unwrap();
-+    std::fs::write(install_dir.join("launch-codex-plus-plus"), "#!/bin/sh\n").unwrap();
++    std::fs::write(install_dir.join("launch-codex-plus-plus"), "#!/bin/sh
++").unwrap();
 +    std::fs::write(install_dir.join("codex-plus-plus-manager"), "").unwrap();
 +    std::fs::write(
 +        data_home.join("codex-plusplus").join("state.json"),
@@ -249,13 +298,22 @@ index d20bf61..7ca5469 100644
 +    );
 +}
 diff --git a/crates/codex-plus-core/tests/launcher.rs b/crates/codex-plus-core/tests/launcher.rs
-index 7a6550c..dd68901 100644
+index 26e2c57..f54f4ea 100644
 --- a/crates/codex-plus-core/tests/launcher.rs
 +++ b/crates/codex-plus-core/tests/launcher.rs
-@@ -368,6 +368,39 @@ async fn default_helper_serves_backend_status_over_http() {
+@@ -12,6 +12,7 @@ use codex_plus_core::launcher::{
+     build_codex_arguments, build_codex_arguments_for_settings,
+     build_codex_arguments_with_native_menu_inspector, build_codex_command,
+     build_codex_command_with_native_menu_inspector, build_macos_cleanup_command,
++    codex_process_environment_for_app_from, codex_process_environment_from,
+     build_macos_open_command, build_macos_open_command_with_native_menu_inspector,
+     build_packaged_activation, build_packaged_activation_with_native_menu_inspector,
+     launch_and_inject_with_hooks,
+@@ -544,6 +545,39 @@ async fn default_helper_serves_backend_status_over_http() {
+     hooks.shutdown_helper(port).await;
  }
- 
- #[tokio::test]
+
++#[tokio::test]
 +async fn default_helper_allows_private_network_preflight() {
 +    let hooks = DefaultLaunchHooks::default();
 +    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -288,31 +346,21 @@ index 7a6550c..dd68901 100644
 +    hooks.shutdown_helper(port).await;
 +}
 +
-+#[tokio::test]
+ #[tokio::test]
  async fn default_helper_accepts_diagnostic_log_events_over_http() {
      let temp = tempfile::tempdir().unwrap();
-     let log_path = temp.path().join("codex-plus.log");
-@@ -1086,7 +1119,7 @@ impl LaunchHooks for FakeHooks {
-         Ok(())
-     }
- 
--    async fn ensure_injection(&self, debug_port: u16, helper_port: u16) -> bool {
-+    async fn ensure_injection(&self, debug_port: u16, helper_port: u16, _app_dir: &std::path::Path) -> bool {
-         self.event(format!("inject:{debug_port}:{helper_port}"));
-         self.inject_error.is_none()
-     }
-@@ -1120,3 +1153,76 @@ impl LaunchHooks for FakeHooks {
-         }
-     }
+@@ -1289,6 +1323,81 @@ async fn default_launch_hooks_provider_sync_enabled_returns_explicit_error() {
+     );
  }
-+
+
 +#[test]
 +fn linux_start_script_command_uses_new_instance_separator() {
 +    let temp = tempfile::tempdir().unwrap();
 +    let start = temp.path().join("start.sh");
-+    std::fs::write(&start, "#!/bin/sh\n").unwrap();
++    std::fs::write(&start, "#!/bin/sh
++").unwrap();
 +
-+    let command = codex_plus_core::launcher::build_codex_command(temp.path(), 9229, &[]);
++    let command = build_codex_command(temp.path(), 9229, &[]);
 +
 +    if cfg!(target_os = "linux") {
 +        assert_eq!(
@@ -340,7 +388,7 @@ index 7a6550c..dd68901 100644
 +        ("ELECTRON_NO_ATTACH_CONSOLE".to_string(), "1".to_string()),
 +    ]);
 +
-+    let process_env = codex_plus_core::launcher::codex_process_environment_from(&env, || {
++    let process_env = codex_process_environment_from(&env, || {
 +        panic!("system proxy detection should not run when env already has proxy")
 +    });
 +
@@ -357,9 +405,10 @@ index 7a6550c..dd68901 100644
 +#[test]
 +fn linux_start_script_environment_uses_codex_plusplus_webview_range() {
 +    let temp = tempfile::tempdir().unwrap();
-+    std::fs::write(temp.path().join("start.sh"), "#!/bin/sh\n").unwrap();
++    std::fs::write(temp.path().join("start.sh"), "#!/bin/sh
++").unwrap();
 +
-+    let process_env = codex_plus_core::launcher::codex_process_environment_for_app_from(
++    let process_env = codex_process_environment_for_app_from(
 +        temp.path(),
 +        &std::collections::HashMap::new(),
 +        || None,
@@ -378,11 +427,15 @@ index 7a6550c..dd68901 100644
 +        );
 +    }
 +}
++
+ #[derive(Clone)]
+ struct FakeHooks {
+     events: Arc<Mutex<Vec<String>>>,
 diff --git a/crates/codex-plus-core/tests/relay_config.rs b/crates/codex-plus-core/tests/relay_config.rs
-index 487e486..86586d4 100644
+index e97fd4d..2f21612 100644
 --- a/crates/codex-plus-core/tests/relay_config.rs
 +++ b/crates/codex-plus-core/tests/relay_config.rs
-@@ -356,7 +356,7 @@ fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
+@@ -467,7 +467,7 @@ fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
      assert!(config.contains("[model_providers.custom]"));
      assert!(config.contains(r#"name = "custom""#));
      assert!(config.contains(r#"wire_api = "responses""#));
@@ -391,23 +444,18 @@ index 487e486..86586d4 100644
      assert!(config.contains(r#"base_url = "http://192.168.188.245:3001/v1""#));
      assert!(config.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
  }
-@@ -2321,3 +2321,54 @@ fn base64_url_no_pad(value: &str) -> String {
-     use base64::Engine;
-     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.as_bytes())
+@@ -2301,6 +2301,48 @@ requires_openai_auth = true
+     assert!(!config.contains("[model_providers.custom]"));
  }
+
 +
 +#[test]
 +fn pure_api_config_is_configured_without_openai_auth_requirement() {
 +    let temp = tempfile::tempdir().unwrap();
 +
-+    codex_plus_core::relay_config::apply_pure_api_config_to_home(
-+        temp.path(),
-+        "https://wemx.cc",
-+        "sk-test-redacted",
-+    )
-+    .unwrap();
++    apply_pure_api_config_to_home(temp.path(), "https://wemx.cc", "sk-test-redacted").unwrap();
 +
-+    let status = codex_plus_core::relay_config::relay_config_status_from_home(temp.path());
++    let status = relay_config_status_from_home(temp.path());
 +    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
 +
 +    assert!(status.configured);
@@ -421,7 +469,7 @@ index 487e486..86586d4 100644
 +fn pure_api_config_preserves_direct_ip_and_explicit_http_port() {
 +    let temp = tempfile::tempdir().unwrap();
 +
-+    codex_plus_core::relay_config::apply_pure_api_config_to_home(
++    apply_pure_api_config_to_home(
 +        temp.path(),
 +        "http://64.83.38.106:8080",
 +        "sk-test-redacted",
@@ -436,13 +484,12 @@ index 487e486..86586d4 100644
 +fn pure_api_config_upgrades_plain_http_public_hostname_to_https() {
 +    let temp = tempfile::tempdir().unwrap();
 +
-+    codex_plus_core::relay_config::apply_pure_api_config_to_home(
-+        temp.path(),
-+        "http://wemx.cc",
-+        "sk-test-redacted",
-+    )
-+    .unwrap();
++    apply_pure_api_config_to_home(temp.path(), "http://wemx.cc", "sk-test-redacted").unwrap();
 +
 +    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
 +    assert!(config.contains(r#"base_url = "https://wemx.cc""#));
 +}
++
+ #[cfg(windows)]
+ #[test]
+ fn apply_relay_profile_to_home_with_switch_rules_does_not_preserve_computer_use_guard_config_by_default()

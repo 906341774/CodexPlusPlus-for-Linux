@@ -1,20 +1,29 @@
 diff --git a/assets/inject/renderer-inject.js b/assets/inject/renderer-inject.js
-index 9b7fc76..99e053a 100644
+index 7c46728..cd53858 100644
 --- a/assets/inject/renderer-inject.js
 +++ b/assets/inject/renderer-inject.js
-@@ -75,6 +75,8 @@
+@@ -344,6 +344,8 @@
    const codexThreadScrollListenerVersion = "4";
    const codexThreadScrollUserIntentVersion = "dispatcher:2";
    const codexForcePluginInstallRefreshIntervalMs = 1000;
 +  const codexPluginEntryUnlockVersion = "2";
 +  const codexPluginEntryRefreshIntervalMs = 1000;
+   const codexPlusImageOverlayId = "codex-plus-image-overlay";
    window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
    const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
-   clearTimeout(window.__codexProjectMoveProjectionTimer);
-@@ -1385,8 +1387,13 @@
+@@ -1697,7 +1699,7 @@
+   }
+
+   function setCodexServiceTierControlMode(mode) {
+-    if (codexPlusBackendStatus.status !== "ok") {
++    if (codexServiceTierBackendBlocksLocalOverride()) {
+       showToast("后端未连接，无法切换服务模式", null);
+       refreshCodexServiceTierControls();
+       return;
+@@ -1771,8 +1773,13 @@
      };
    }
- 
+
 +  function codexServiceTierBackendBlocksLocalOverride() {
 +    const status = codexPlusBackendStatus.status;
 +    return !!status && status !== "ok" && status !== "checking";
@@ -26,28 +35,28 @@ index 9b7fc76..99e053a 100644
      if (codexPlusBackendStatus.status && codexPlusBackendStatus.status !== "ok") return { tier: "failed", label: "未连接", disabled: true, title: "服务模式：后端未连接，无法切换" };
      if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: "服务模式：正在读取" };
      if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: "服务模式：读取失败" };
-@@ -1492,7 +1499,7 @@
+@@ -1891,7 +1898,7 @@
    }
- 
+
    function setCodexThreadServiceTierMode(mode) {
 -    if (codexPlusBackendStatus.status !== "ok") {
 +    if (codexServiceTierBackendBlocksLocalOverride()) {
        showToast("后端未连接，无法切换服务模式", null);
        refreshCodexServiceTierControls();
        return;
-@@ -1506,7 +1513,7 @@
+@@ -1914,7 +1921,7 @@
    }
- 
+
    function toggleCodexServiceTierFromBadge() {
 -    if (codexPlusBackendStatus.status !== "ok") {
 +    if (codexServiceTierBackendBlocksLocalOverride()) {
        showToast("后端未连接，无法切换服务模式", null);
        refreshCodexServiceTierControls();
        return;
-@@ -2314,6 +2316,51 @@
+@@ -2811,6 +2818,50 @@
      return !!button.closest?.('[class*="ms-auto"][class*="shrink-0"][class*="items-center"]');
    }
- 
+
 +  function rectsOverlap(first, second, padding = 0) {
 +    return first.left < second.right + padding &&
 +      first.right > second.left - padding &&
@@ -92,77 +101,74 @@ index 9b7fc76..99e053a 100644
 +      setCssPropIfChanged(menu, "--codex-plus-menu-right", `${Math.ceil(nextRight)}px`);
 +    }
 +  }
-+
    function updateFloatingCodexPlusMenuPosition(menu) {
      if (!menu?.classList?.contains(codexPlusMenuFloatingClass)) return;
      const header = document.querySelector(selectors.appHeader) || document.querySelector("header");
-@@ -2330,6 +2377,7 @@
+@@ -2827,6 +2878,7 @@
        setCssPropIfChanged(menu, "--codex-plus-menu-top", `${anchor.rect.top}px`);
        setCssPropIfChanged(menu, "--codex-plus-menu-height", `${anchor.rect.height}px`);
        setCssPropIfChanged(menu, "--codex-plus-menu-right", `${Math.max(0, window.innerWidth - anchor.rect.left + gap)}px`);
 +      avoidFloatingCodexPlusMenuNativeControlOverlap(menu);
        return;
      }
- 
-@@ -2339,6 +2387,7 @@
+
+@@ -2836,6 +2888,7 @@
        setCssPropIfChanged(menu, "--codex-plus-menu-height", `${headerRect.height}px`);
      }
      menu.style.removeProperty("--codex-plus-menu-right");
 +    avoidFloatingCodexPlusMenuNativeControlOverlap(menu);
    }
- 
+
    function installCodexPlusMenu() {
-@@ -2677,17 +2726,12 @@
-   function pluginEntryButton() {
-     const byIcon = document.querySelector(`${selectors.pluginNavButton} ${selectors.pluginSvgPath}`)?.closest("button");
-     if (byIcon) return byIcon;
--    return Array.from(document.querySelectorAll(selectors.pluginNavButton))
--      .find((button) => /^(插件|Plugins)(\s+-\s+.*)?$/i.test((button.textContent || "").trim())) || null;
-+    return pluginEntryCandidates()
-+      .find((button) => isPluginEntryLabel(button.textContent || button.innerText)) || null;
+@@ -3342,6 +3395,14 @@
+       };
+     }
+     if (message.type === "mcp-request" && message.request && typeof message.request === "object") {
++      if (message.request.method === "account/read" && message.request.id != null) {
++        codexPlusAccountReadRequestIds.add(String(message.request.id));
++        return message;
++      }
++      if (message.request.method === "plugin/read" && message.request.id != null) {
++        codexPlusPluginReadRequestIds.add(String(message.request.id));
++        return message;
++      }
+       const requestMethod = appServerModelRequestMethod(String(message.request.method || ""), message.request.params);
+       if (requestMethod !== "list-plugins" && requestMethod !== "install-plugin") return message;
+       const requestParams = patchPluginMarketplaceRequestParams(
+@@ -3486,6 +3547,8 @@
+       window.addEventListener("message", (event) => {
+         try {
+           patchPluginMarketplaceResponseData(event?.data);
++          patchMcpPluginReadResponseData(event?.data);
++          patchMcpAccountReadResponseData(event?.data);
+         } catch (error) {
+           sendCodexPlusDiagnostic("plugin_marketplace_response_message_patch_failed", {
+             errorName: error?.name || "",
+@@ -3537,8 +3600,159 @@
+     void patch();
    }
- 
-   function labelUnlockedPluginEntry(button) {
--    const labelTextNode = Array.from(button.querySelectorAll("span, div")).reverse()
--      .flatMap((node) => Array.from(node.childNodes))
--      .find((node) => node.nodeType === 3 && /^(插件|Plugins)( - 已解锁| - Unlocked)?$/i.test((node.nodeValue || "").trim()));
--    if (!labelTextNode) return;
--    const current = (labelTextNode.nodeValue || "").trim();
--    labelTextNode.nodeValue = /^Plugins/i.test(current) ? "Plugins - Unlocked" : "插件 - 已解锁";
-+    clearPluginEntryUnlockLabel(button);
-   }
- 
-   function clearPluginEntryUnlockLabel(button) {
-@@ -2704,28 +2748,112 @@
-     const pluginButton = pluginEntryButton();
-     if (!pluginButton) return;
-     const spoofed = spoofChatGPTAuthMethod(pluginButton);
--    pluginButton.disabled = false;
--    pluginButton.removeAttribute("disabled");
--    pluginButton.style.display = "";
--    pluginButton.querySelectorAll("*").forEach((node) => {
--      node.style.display = "";
--    });
-+    pluginEntryUnlockNodes(pluginButton).forEach(clearPluginEntryDisabledState);
-     labelUnlockedPluginEntry(pluginButton);
--    const reactPropsKey = Object.keys(pluginButton).find((key) => key.startsWith("__reactProps"));
--    if (reactPropsKey) {
--      pluginButton[reactPropsKey].disabled = false;
--    }
--    if (pluginButton.dataset.codexPluginEnabled !== "true") {
--      pluginButton.dataset.codexPluginEnabled = "true";
--      pluginButton.addEventListener("click", () => {
--        spoofChatGPTAuthMethod(pluginButton);
--      }, true);
--    }
-+    installPluginEntryGuard(pluginButton);
-+    pluginButton.dataset.codexPluginEnabled = codexPluginEntryUnlockVersion;
-     sendCodexPlusDiagnostic("plugin_entry_unlock_applied", { spoofed });
-   }
- 
-   function pluginPatchDisabledInRelayMode() {
--    return !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.launchMode === "relay";
-+    return codexPlusBackendSettings.launchMode === "relay";
+
++  function reactFiberFrom(element) {
++    const fiberKey = Object.keys(element).find((key) => key.startsWith("__reactFiber"));
++    return fiberKey ? element[fiberKey] : null;
++  }
++
++  function authContextValueFrom(element) {
++    for (let fiber = reactFiberFrom(element); fiber; fiber = fiber.return) {
++      for (const value of [fiber.memoizedProps?.value, fiber.pendingProps?.value]) {
++        if (value && typeof value === "object" && typeof value.setAuthMethod === "function" && "authMethod" in value) {
++          return value;
++        }
++      }
++    }
++    return null;
++  }
++
++  function spoofChatGPTAuthMethod(element) {
++    const auth = authContextValueFrom(element);
++    if (!auth || auth.authMethod === "chatgpt") return false;
++    auth.setAuthMethod("chatgpt");
++    return true;
 +  }
 +
 +  function normalizePluginEntryLabel(text) {
@@ -178,6 +184,25 @@ index 9b7fc76..99e053a 100644
 +      ...document.querySelectorAll(selectors.pluginNavButton),
 +      ...document.querySelectorAll('nav[role="navigation"] button, nav button'),
 +    ]));
++  }
++
++  function pluginEntryButton() {
++    const byIcon = document.querySelector(`${selectors.pluginNavButton} ${selectors.pluginSvgPath}`)?.closest("button");
++    if (byIcon) return byIcon;
++    return pluginEntryCandidates()
++      .find((button) => isPluginEntryLabel(button.textContent || button.innerText)) || null;
++  }
++
++  function clearPluginEntryUnlockLabel(button) {
++    const labelTextNode = Array.from(button.querySelectorAll("span, div")).reverse()
++      .flatMap((node) => Array.from(node.childNodes))
++      .find((node) => node.nodeType === 3 && /^(插件 - 已解锁|Plugins - Unlocked)$/i.test((node.nodeValue || "").trim()));
++    if (!labelTextNode) return;
++    labelTextNode.nodeValue = /^Plugins/i.test((labelTextNode.nodeValue || "").trim()) ? "Plugins" : "插件";
++  }
++
++  function labelUnlockedPluginEntry(button) {
++    clearPluginEntryUnlockLabel(button);
 +  }
 +
 +  function pluginEntryUnlockNodes(button) {
@@ -244,8 +269,21 @@ index 9b7fc76..99e053a 100644
 +    }, true);
 +  }
 +
++  function enablePluginEntry() {
++    if (pluginPatchDisabledInRelayMode()) return;
++    if (!codexPlusSettings().pluginMarketplaceUnlock) return;
++    const pluginButton = pluginEntryButton();
++    if (!pluginButton) return;
++    const spoofed = spoofChatGPTAuthMethod(pluginButton);
++    pluginEntryUnlockNodes(pluginButton).forEach(clearPluginEntryDisabledState);
++    labelUnlockedPluginEntry(pluginButton);
++    installPluginEntryGuard(pluginButton);
++    pluginButton.dataset.codexPluginEnabled = codexPluginEntryUnlockVersion;
++    sendCodexPlusDiagnostic("plugin_entry_unlock_applied", { spoofed });
++  }
++
 +  function refreshPluginEntryUnlockLoop() {
-+    const shouldRun = !pluginPatchDisabledInRelayMode() && codexPlusSettings().pluginEntryUnlock;
++    const shouldRun = !pluginPatchDisabledInRelayMode() && codexPlusSettings().pluginMarketplaceUnlock;
 +    if (!shouldRun) {
 +      clearInterval(window.__codexPluginEntryRefreshTimer);
 +      window.__codexPluginEntryRefreshTimer = null;
@@ -253,69 +291,47 @@ index 9b7fc76..99e053a 100644
 +    }
 +    if (window.__codexPluginEntryRefreshTimer) return;
 +    window.__codexPluginEntryRefreshTimer = setInterval(() => {
-+      if (!codexPlusSettings().pluginEntryUnlock || pluginPatchDisabledInRelayMode()) {
++      if (!codexPlusSettings().pluginMarketplaceUnlock || pluginPatchDisabledInRelayMode()) {
 +        clearInterval(window.__codexPluginEntryRefreshTimer);
 +        window.__codexPluginEntryRefreshTimer = null;
 +        return;
 +      }
 +      enablePluginEntry();
 +    }, codexPluginEntryRefreshIntervalMs);
++  }
+   function pluginPatchDisabledInRelayMode() {
+-    return !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.launchMode === "relay";
++    return codexPlusBackendSettings.launchMode === "relay";
    }
- 
+
    function pluginInstallCandidates() {
-@@ -2821,6 +2949,8 @@
+@@ -3634,6 +3848,13 @@
    }
- 
+
    function clearPluginPatchArtifacts() {
 +    clearInterval(window.__codexPluginEntryRefreshTimer);
 +    window.__codexPluginEntryRefreshTimer = null;
-     const pluginButton = pluginEntryButton();
-     if (pluginButton) {
-       delete pluginButton.dataset.codexPluginEnabled;
-@@ -3717,6 +3847,8 @@
-   let codexModelCatalogLoadedAt = 0;
-   let codexModelCatalogPromise = null;
++    const pluginButton = pluginEntryButton();
++    if (pluginButton) {
++      delete pluginButton.dataset.codexPluginEnabled;
++      clearPluginEntryUnlockLabel(pluginButton);
++    }
+     pluginInstallCandidates().forEach(clearForcedInstallButtonLabel);
+   }
+
+@@ -4668,6 +4889,8 @@
+   let codexModelWhitelistRefreshTimer = 0;
+   let codexModelWhitelistRefreshUntil = 0;
    const codexPlusModelListRequestIds = new Set();
 +  const codexPlusAccountReadRequestIds = new Set();
 +  const codexPlusPluginReadRequestIds = new Set();
- 
-   function codexPlusModelUnlockEnabled() {
-     return !!codexPlusSettings().modelWhitelistUnlock;
-@@ -4006,7 +4138,13 @@
-           request.params = { ...(request.params || {}), includeHidden: true };
-           if (request.id != null) codexPlusModelListRequestIds.add(String(request.id));
-         }
--        if (event?.type === "message") patchMcpModelResponseData(event.data);
-+        if (event?.type === "codex-message-from-view" && detail?.type === "mcp-request" && request?.method === "account/read" && request.id != null) {
-+          codexPlusAccountReadRequestIds.add(String(request.id));
-+        }
-+        if (event?.type === "codex-message-from-view" && detail?.type === "mcp-request" && request?.method === "plugin/read" && request.id != null) {
-+          codexPlusPluginReadRequestIds.add(String(request.id));
-+        }
-+        if (event?.type === "message") patchMcpResponseData(event.data);
-       } catch (error) {
-         window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
-         window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
-@@ -4016,7 +4154,7 @@
- 
-     window.addEventListener("message", (event) => {
-       try {
--        patchMcpModelResponseData(event?.data);
-+        patchMcpResponseData(event?.data);
-       } catch (error) {
-         window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
-         window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
-@@ -4024,6 +4162,99 @@
+
+   if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) {
+     window.__codexPlusServiceTierTest = {
+@@ -5045,6 +5268,91 @@
      }, true);
    }
- 
-+  function patchMcpResponseData(data) {
-+    let changed = patchMcpAccountReadResponseData(data);
-+    if (patchMcpPluginReadResponseData(data)) changed = true;
-+    if (patchMcpModelResponseData(data)) changed = true;
-+    return changed;
-+  }
-+
+
 +  function ensureCodexPlusArrayProperty(target, property) {
 +    if (!target || typeof target !== "object") return false;
 +    if (Array.isArray(target[property])) return false;
@@ -401,12 +417,11 @@ index 9b7fc76..99e053a 100644
 +    }
 +    return false;
 +  }
-+
    function patchMcpModelResponseData(data) {
      if (data?.type !== "mcp-response") return false;
      const message = data.message || data.response;
-@@ -5863,16 +6094,21 @@
- 
+@@ -7017,16 +7325,21 @@
+
    function isCurrentSessionRow(row, ref) {
      if (row.getAttribute("aria-current") === "page" || row.getAttribute("aria-current") === "true") return true;
 +    const currentThreadId = locationThreadId();
@@ -428,9 +443,9 @@ index 9b7fc76..99e053a 100644
 -    return !!ref.session_id && window.location.href.includes(ref.session_id);
 +    return true;
    }
- 
+
    function releaseDeleteFocus(row, button) {
-@@ -5887,7 +6123,7 @@
+@@ -7041,7 +7354,7 @@
      const shouldReload = isCurrentSessionRow(row, ref);
      row.remove();
      if (shouldReload) {
@@ -438,11 +453,11 @@ index 9b7fc76..99e053a 100644
 +      showToast("当前会话已删除，请从左侧选择其他会话。", null);
      }
    }
- 
-@@ -6788,12 +7024,59 @@
+
+@@ -7752,12 +8065,58 @@
        });
    }
- 
+
 +  function codexServiceTierLinuxFooterClassMatch(element) {
 +    return /\b_footer_[A-Za-z0-9_-]*_\d+\b/.test(String(element?.className || ""));
 +  }
@@ -488,7 +503,6 @@ index 9b7fc76..99e053a 100644
 +        return (rightRect.bottom - leftRect.bottom) || (rightRect.width - leftRect.width);
 +      })[0] || null;
 +  }
-+
    function codexServiceTierVisibleComposerFooters(root = document) {
      const footers = [
        ...(root?.matches?.(".composer-footer") ? [root] : []),
@@ -500,7 +514,7 @@ index 9b7fc76..99e053a 100644
        .filter(codexServiceTierBadgeVisibleElement)
        .sort((left, right) => {
          const leftRect = left.getBoundingClientRect();
-@@ -6821,6 +7104,12 @@
+@@ -7785,6 +8144,12 @@
      const candidates = new Set();
      const threadComposer = conversationViewFindComposerEl();
      if (threadComposer && codexServiceTierBadgeVisibleElement(threadComposer)) candidates.add(threadComposer);
@@ -513,15 +527,7 @@ index 9b7fc76..99e053a 100644
      codexServiceTierVisibleComposerFooters().forEach((footer) => {
        candidates.add(footer);
        let node = footer.parentElement;
-@@ -7132,6 +7421,7 @@
-     installStyle();
-     installCodexServiceTierDispatcherPatch();
-     installCodexPlusMenu();
-+    updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));
-     scheduleBackendHeartbeat();
-     installDeleteButtonEventDelegation();
-     updateThreadScrollHandlers();
-@@ -7178,14 +7468,14 @@
+@@ -7853,14 +8218,14 @@
      badge.addEventListener("click", (event) => {
        event.preventDefault();
        event.stopPropagation();
@@ -538,26 +544,32 @@ index 9b7fc76..99e053a 100644
        toggleCodexServiceTierFromBadge();
      });
    }
-@@ -7720,8 +8010,10 @@
-   }
-
+@@ -8097,6 +8462,7 @@
+     installCodexServiceTierDispatcherPatch();
+     installCodexPlusMenu();
+     localizeCodexMenus();
++    updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));
+     scheduleBackendHeartbeat();
+     installDeleteButtonEventDelegation();
+     updateThreadScrollHandlers();
+@@ -8699,11 +9065,16 @@
    function scanDeferred() {
-+    patchAppServerModelMessages();
      if (pluginPatchDisabledInRelayMode()) {
        clearPluginPatchArtifacts();
 +      refreshPluginEntryUnlockLoop();
        refreshForcePluginInstallUnlockLoop();
      } else {
        const pluginUnlockStrategy = codexPluginUnlockStrategy();
-@@ -7730,6 +8022,7 @@
-       if ((pluginUnlockStrategy === "legacy" || pluginUnlockStrategy === "unknown") && settings.pluginEntryUnlock) {
-         enablePluginEntry();
-       }
+       const settings = codexPlusSettings();
+       logCodexPluginUnlockStrategy(pluginUnlockStrategy);
++      if ((pluginUnlockStrategy === "legacy" || pluginUnlockStrategy === "unknown") && settings.pluginMarketplaceUnlock) {
++        enablePluginEntry();
++      }
 +      refreshPluginEntryUnlockLoop();
        if ((pluginUnlockStrategy === "modern" || pluginUnlockStrategy === "unknown") && settings.pluginMarketplaceUnlock) {
+         const marketplaceRequestPatchStrategy = codexPluginMarketplaceRequestPatchStrategy();
          installPluginBuildFlavorFilterPatch();
-         installPluginMarketplaceRequestPatch();
-@@ -7781,6 +8074,10 @@
+@@ -8764,6 +9135,10 @@
        '[class*="user-message"]',
        '[class*="UserMessage"]',
        ".composer-footer",
@@ -567,11 +579,13 @@ index 9b7fc76..99e053a 100644
 +      'nav[role="navigation"]',
        selectors.appHeader,
        selectors.archiveNav,
-       ...(pluginPatchDisabledInRelayMode() ? [] : [selectors.disabledInstallButton]),
-@@ -7861,5 +8158,5 @@
+       codexMenuLocalizationScopeSelector(),
+@@ -8848,7 +9223,7 @@
    window.addEventListener("resize", window.__codexPlusResizeHandler);
    window.__codexSessionDeleteObserver?.disconnect();
    window.__codexSessionDeleteObserver = new MutationObserver(scheduleScan);
 -  window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, { childList: true, subtree: true });
 +  window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "disabled", "aria-disabled", "data-disabled", "aria-current"] });
  })();
+
+ // === 粘贴修复 (CodexPlusPlus 页面增强) ===

@@ -1,8 +1,8 @@
 diff --git a/apps/codex-plus-launcher/src/main.rs b/apps/codex-plus-launcher/src/main.rs
-index bb1b7f8..5aec452 100644
+index abc4307..6a5df1f 100644
 --- a/apps/codex-plus-launcher/src/main.rs
 +++ b/apps/codex-plus-launcher/src/main.rs
-@@ -324,6 +324,10 @@ impl LauncherRuntimeService {
+@@ -511,6 +511,10 @@ impl LauncherRuntimeService {
      fn set_websocket_url(&self, websocket_url: &str) {
          *self.websocket_url.lock().unwrap() = Some(websocket_url.to_string());
      }
@@ -11,9 +11,9 @@ index bb1b7f8..5aec452 100644
 +        self.websocket_url.lock().unwrap().clone()
 +    }
  }
- 
+
  #[async_trait::async_trait]
-@@ -431,10 +435,21 @@ async fn inject_with_context(
+@@ -657,10 +661,21 @@ async fn inject_with_context(
      runtime: Arc<LauncherRuntimeService>,
  ) -> anyhow::Result<()> {
      let mut last_error = None;
@@ -36,11 +36,11 @@ index bb1b7f8..5aec452 100644
                  last_error = Some(error);
                  tokio::time::sleep(std::time::Duration::from_millis(500)).await;
              }
-@@ -450,12 +465,10 @@ async fn try_inject_with_context(
+@@ -676,12 +691,10 @@ async fn try_inject_with_context(
      runtime: Arc<LauncherRuntimeService>,
  ) -> anyhow::Result<()> {
      let targets = codex_plus_core::cdp::list_targets(debug_port).await?;
--    let target = codex_plus_core::cdp::pick_page_target(&targets)?;
+-    let target = codex_plus_core::cdp::pick_injectable_codex_page_target(&targets)?;
 -    let websocket_url = target
 -        .web_socket_debugger_url
 -        .as_deref()
@@ -50,10 +50,10 @@ index bb1b7f8..5aec452 100644
 +    if targets.is_empty() {
 +        anyhow::bail!("No injectable Codex page target found");
 +    }
-     let script = codex_plus_core::assets::injection_script(helper_port);
-     let user_bundle = runtime
-         .user_scripts
-@@ -466,18 +479,63 @@ async fn try_inject_with_context(
+     let settings = codex_plus_core::settings::SettingsStore::default()
+         .load()
+         .unwrap_or_default();
+@@ -695,18 +708,60 @@ async fn try_inject_with_context(
      } else {
          vec![script, user_bundle]
      };
@@ -84,10 +84,7 @@ index bb1b7f8..5aec452 100644
 +                move |path, payload| {
 +                    let ctx = ctx.clone();
 +                    Box::pin(async move {
-+                        Ok(
-+                            codex_plus_core::routes::handle_bridge_request(ctx, &path, payload)
-+                                .await,
-+                        )
++                        Ok(codex_plus_core::routes::handle_bridge_request(ctx, &path, payload).await)
 +                    })
 +                }
 +            }),
@@ -127,47 +124,59 @@ index bb1b7f8..5aec452 100644
 +    }
 +    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Codex injection failed")))
  }
- 
+
  fn default_codex_db_path() -> PathBuf {
 diff --git a/crates/codex-plus-core/src/cdp.rs b/crates/codex-plus-core/src/cdp.rs
-index 4b2eb55..90088bf 100644
+index a561c28..23614b5 100644
 --- a/crates/codex-plus-core/src/cdp.rs
 +++ b/crates/codex-plus-core/src/cdp.rs
-@@ -39,26 +39,45 @@ pub async fn list_targets(debug_port: u16) -> anyhow::Result<Vec<CdpTarget>> {
+@@ -58,35 +58,50 @@ async fn query_targets_url(client: &reqwest::Client, url: &str) -> anyhow::Resul
  }
- 
+
  pub fn pick_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
--    let pages = targets.iter().filter(|target| {
+-    let mut first_page = None;
+-    for target in targets
+-        .iter()
+-        .filter(|target| is_injectable_page_target(target))
+-    {
+-        first_page.get_or_insert(target);
+-        if is_codex_page_target(target) {
+-            return Ok(target.clone());
+-        }
+-    }
 +    injectable_page_targets(targets)
 +        .first()
 +        .cloned()
++        .ok_or_else(|| anyhow::anyhow!("No injectable page target found"))
++}
+
+-    if let Some(target) = first_page {
+-        return Ok(target.clone());
+-    }
++pub fn pick_injectable_codex_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
++    injectable_page_targets(targets)
++        .into_iter()
++        .find(is_codex_page_target)
 +        .ok_or_else(|| anyhow::anyhow!("No injectable Codex page target found"))
 +}
-+
+
+-    bail!("No injectable page target found")
 +pub fn pick_primary_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
 +    injectable_page_targets(targets)
 +        .into_iter()
 +        .find(is_primary_codex_window)
 +        .ok_or_else(|| anyhow::anyhow!("No injectable Codex page target found"))
-+}
-+
+ }
+
+-pub fn pick_injectable_codex_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
 +pub fn injectable_page_targets(targets: &[CdpTarget]) -> Vec<CdpTarget> {
 +    let mut codex_pages = Vec::new();
 +    let mut fallback_pages = Vec::new();
-+    for target in targets.iter().filter(|target| {
-         target.target_type == "page"
-             && target
-                 .web_socket_debugger_url
-                 .as_deref()
-                 .is_some_and(|url| !url.is_empty())
--    });
--
--    let mut first_page = None;
--    for target in pages {
--        first_page.get_or_insert(target);
-+    }) {
-         let haystack = format!("{} {}", target.title, target.url).to_lowercase();
-         if haystack.contains("codex") {
+     for target in targets
+         .iter()
+         .filter(|target| is_injectable_page_target(target))
+     {
+         if is_codex_page_target(target) {
 -            return Ok(target.clone());
 +            codex_pages.push(target.clone());
 +        } else {
@@ -177,11 +186,7 @@ index 4b2eb55..90088bf 100644
 +    codex_pages.extend(fallback_pages);
 +    codex_pages
 +}
- 
--    if let Some(target) = first_page {
--        return Ok(target.clone());
--    }
--
+
 -    bail!("No injectable Codex page target found")
 +pub fn is_primary_codex_window(target: &CdpTarget) -> bool {
 +    let url = target.url.to_lowercase();
@@ -191,3 +196,5 @@ index 4b2eb55..90088bf 100644
 +        && !title.contains("initialroute=%2fhotkey-window")
 +        && !title.contains("initialroute=/hotkey-window")
  }
+
+ pub fn is_injectable_page_target(target: &CdpTarget) -> bool {

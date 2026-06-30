@@ -243,51 +243,58 @@ Date: 2026-07-01
 
 |010-linux-app-paths
 |applies
-|Still needed for Linux `codex-app/start.sh` and `version` detection.
+|Still required for Linux `codex-app/start.sh` and `version` discovery.
 
 |020-cdp-multi-target-injection
-|conflict
-|Conflicts in `apps/codex-plus-launcher/src/main.rs` and `crates/codex-plus-core/src/cdp.rs`; needs rebase against upstream CDP/launcher changes.
+|rebased and applies
+|Rebased for v1.2.25 launcher/CDP changes; keeps multi-target Linux webview injection and main-window preference.
 
 |030-linux-launcher-environment
 |applies
-|Still applies after `010`.
+|Still required for Linux launch environment cleanup, proxy/resolver preservation, and safe webview port range.
 
 |040-linux-entrypoints-health
 |applies
-|Still applies after `030`.
+|Still required for Linux launcher/manager entrypoint health detection, including adapter state install roots.
 
 |050-pure-api-config-sync
-|conflict
-|Conflicts in `Cargo.lock` and `crates/codex-plus-core/Cargo.toml`; upstream relay/provider work needs deeper review before deciding necessity.
+|rebased and applies
+|Rebased for v1.2.25 relay config changes; Pure API writes `requires_openai_auth = false` and normalizes plain public host HTTP URLs to HTTPS.
 
 |060-renderer-linux-compatibility
-|conflict
-|Conflicts in `assets/inject/renderer-inject.js`; upstream added Stepwise, plugin, menu, locale and renderer changes, so this requires manual rebase.
+|rebased and applies
+|Rebased for v1.2.25 renderer changes; covers plugin navigation/detail compatibility, Pure API account/read compatibility, Fast badge Linux placement, delete button stability, and floating menu overlap avoidance.
 
 |070-linux-user-scripts-compatibility
 |applies
-|Still applies after prior compatible patches.
+|Still required for Linux user-script `location` aliasing, including Codex Context Used Meter.
 
 |900-regression-tests
-|conflict
-|Expected after production patch conflicts; tests must be regenerated after production patches are rebased.
+|regenerated and applies
+|Regenerated from the rebased source tree and covers launcher, installer, relay config, renderer, CDP, and user-script Linux contracts.
 |===
 
-== Current conclusion
+== Verification completed in this session
 
-The first upstream-mainline attempt is not release-ready. The maintenance workflow is functioning: latest upstream was fixed to `v1.2.25`, source trees were prepared outside Git, compatibility patch directories were introduced, and incompatible patches were identified before build/install. The next engineering step is to rebase `020`, `050`, `060`, and `900` against `v1.2.25` before running AlmaLinux/GUI validation.
+* Confirmed upstream latest semantic release is `v1.2.25`, tag commit `9c5c6e1776f806d75f29108d9ee7e048fcb0fb97`, published 2026-06-30T16:54:40Z.
+* Replayed compatibility patches `010`, `020`, `030`, `040`, `050`, `060`, `070`, and `900` from a clean `v1.2.25` checkout with `git apply --check` and `git apply`; all patches applied cleanly.
+* Ran `node --check assets/inject/renderer-inject.js` after rebasing renderer compatibility.
+* Ran `cargo test -p codex-plus-core --test cdp_bridge -- --nocapture`: 67 passed.
+* Ran `cargo test -p codex-plus-core --test bridge_routes -- --nocapture`: 26 passed.
+* Ran `cargo test -p codex-plus-core --test installers -- --nocapture`: 11 passed.
+* Ran `cargo test -p codex-plus-core --test launcher -- --nocapture`: 57 passed.
+* Ran `cargo test -p codex-plus-core --test relay_config pure_api_config_ -- --nocapture`: 4 passed.
+* Ran `pwsh -NoLogo -NoProfile -File scripts/Test-AdapterWorkflow.ps1`: adapter workflow contract OK.
+* Ran `scripts/run-adapter-regression.sh`: adapter workflow contract and installer selftest OK.
+* Ran `pwsh -NoLogo -NoProfile -File scripts/Installer-and-Manager.ps1 -Action selftest -NonInteractive -NoTui`: manifest and patch attachments readable.
+* Observed existing upstream/library warnings about unused variables and Windows-only constants; they did not fail the verified test targets.
 
 == Test environment status
 
-* Podman binary is present: `podman version 5.8.3`.
-* Default Podman storage is blocked on this NFS-backed home directory: `configure storage: a network file system with user namespaces is not supported`.
-* The requested XFS loop image exists at `$HOME/.local/share/podman-loop-storage/containers-storage.xfs`, but this session cannot mount it because elevated mount operations are unavailable.
-* AlmaLinux container install/update/uninstall and GUI validation were therefore not executed in this first attempt.
+* Podman binary was previously confirmed present, but rootless Podman storage is blocked on this NFS-backed home directory with `configure storage: a network file system with user namespaces is not supported`.
+* The requested XFS loop-image storage path exists under `$HOME/.local/share/podman-loop-storage/containers-storage.xfs`, but this restricted session cannot perform the mount operation needed to use it.
+* AlmaLinux 9 minimal container install/update/uninstall and GUI validation were not executed in this session because the required Podman storage mount cannot be completed without host-level privileges.
 
-== Immediate next steps
+== Current conclusion
 
-. Mount the user-level XFS loop storage for Podman outside this restricted session.
-. Rebase conflicting patches `020`, `050`, `060`, and `900` against Codex++ `v1.2.25`.
-. Re-run `scripts/Installer-and-Manager.ps1 apply-snippets` or install/update against the fixed local `CodexPlusPlus/src`.
-. Build and validate inside the AlmaLinux 9 minimal container, then perform Computer Use GUI checks for every feature in `feature-matrix.json`.
+The v1.2.25 patch set is source-level ready for the Linux adapter workflow: all required compatibility patches now replay cleanly from upstream `v1.2.25`, and the Rust/JavaScript regression targets that cover the adapted behavior pass. Final release validation still needs a host session where the user-level XFS Podman storage is already mounted, so the scripted AlmaLinux install/update/uninstall and Computer Use GUI checks can run end to end.

@@ -7,7 +7,7 @@ link:README.adoc[English] | 简体中文
 `CodexPlusPlus-on-Linux` 是面向 `BigPizzaV3/CodexPlusPlus` 的源码级 Linux 适配项目。
 它记录并重新应用必要补丁，使 Codex++ 可以配合 `ilysenko/codex-desktop-linux` 生成的非官方 Linux Codex Desktop 构建使用。
 
-项目版本：`1.2.3`，与上游 Codex++ `v1.2.3` 同步。
+项目版本：`1.2.25`，与上游 Codex++ `v1.2.25` 同步。
 
 本仓库作为下列项目的 fork/适配版本维护：
 

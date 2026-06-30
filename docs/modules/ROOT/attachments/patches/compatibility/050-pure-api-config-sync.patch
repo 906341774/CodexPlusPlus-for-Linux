@@ -1,29 +1,29 @@
 diff --git a/Cargo.lock b/Cargo.lock
+index 4d99b26..2375d04 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -369,6 +369,7 @@
+@@ -426,6 +426,7 @@ dependencies = [
   "tokio-tungstenite",
   "toml 0.8.2",
   "toml_edit 0.22.27",
 + "url",
+  "uuid",
   "windows 0.58.0",
- ]
- 
-diff --git a/crates/codex-plus-core/Cargo.toml b/crates/codex-plus-core/Cargo.toml
---- a/crates/codex-plus-core/Cargo.toml
-+++ b/crates/codex-plus-core/Cargo.toml
-@@ -20,6 +20,7 @@
- tokio-tungstenite.workspace = true
- toml.workspace = true
- toml_edit.workspace = true
-+url.workspace = true
- 
- [target.'cfg(windows)'.dependencies]
- windows = { version = "0.58", features = [
+  "zip",
 diff --git a/apps/codex-plus-manager/src/App.tsx b/apps/codex-plus-manager/src/App.tsx
+index 4941ca5..57ac24f 100644
 --- a/apps/codex-plus-manager/src/App.tsx
 +++ b/apps/codex-plus-manager/src/App.tsx
-@@ -4499,7 +4499,7 @@
+@@ -6041,7 +6041,7 @@ function buildRelayConfigToml(
+   profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol">,
+   options: { includeBearerToken: boolean },
+ ): string {
+-  const baseUrl = profile.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
++  const baseUrl = profile.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : effectiveCodexBaseUrl(profile.baseUrl);
+   const apiKey = profile.apiKey.trim();
+   const rootLines = [
+     profile.model.trim() ? `model = "${tomlString(profile.model.trim())}"` : null,
+@@ -6053,13 +6053,32 @@ function buildRelayConfigToml(
      "[model_providers.custom]",
      'name = "custom"',
      'wire_api = "responses"',
@@ -32,18 +32,65 @@ diff --git a/apps/codex-plus-manager/src/App.tsx b/apps/codex-plus-manager/src/A
      `base_url = "${tomlString(baseUrl)}"`,
      options.includeBearerToken && apiKey ? `experimental_bearer_token = "${tomlString(apiKey)}"` : null,
      "",
+   ].filter((line): line is string => line !== null).join("\n");
+ }
+
++function effectiveCodexBaseUrl(raw: string): string {
++  const trimmed = raw.trim();
++  try {
++    const parsed = new URL(trimmed);
++    const hostname = parsed.hostname.replace(/\.$/, "").toLowerCase();
++    const isPublicDnsHost = hostname && hostname !== "localhost" && !hostname.endsWith(".local") && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname) && !hostname.includes(":");
++    if (parsed.protocol === "http:" && !parsed.port && isPublicDnsHost) {
++      parsed.protocol = "https:";
++      const normalized = parsed.toString();
++      return !trimmed.endsWith("/") && parsed.pathname === "/" && !parsed.search && !parsed.hash && normalized.endsWith("/")
++        ? normalized.slice(0, -1)
++        : normalized;
++    }
++  } catch {
++    return trimmed;
++  }
++  return trimmed;
++}
++
+ function buildRelayAuthJson(profile: Pick<RelayProfile, "apiKey">): string {
+   return `${JSON.stringify({ OPENAI_API_KEY: profile.apiKey.trim() }, null, 2)}\n`;
+ }
+@@ -6144,7 +6163,7 @@ function applyRelayProfilePatchToFiles(
+     next.baseUrl = patch.upstreamBaseUrl || "";
+   }
+   if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch) {
+-    const baseUrlForConfig = next.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : next.upstreamBaseUrl || next.baseUrl;
++    const baseUrlForConfig = next.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : effectiveCodexBaseUrl(next.upstreamBaseUrl || next.baseUrl);
+     next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig);
+     next.configContents = removeRootTomlKey(next.configContents, CHAT_UPSTREAM_BASE_URL_KEY);
+   }
+diff --git a/crates/codex-plus-core/Cargo.toml b/crates/codex-plus-core/Cargo.toml
+index 2e5609e..370d132 100644
+--- a/crates/codex-plus-core/Cargo.toml
++++ b/crates/codex-plus-core/Cargo.toml
+@@ -23,6 +23,7 @@ tokio = { workspace = true, features = ["net"] }
+ tokio-tungstenite.workspace = true
+ toml.workspace = true
+ toml_edit.workspace = true
++url.workspace = true
+ uuid.workspace = true
+ zip.workspace = true
+
 diff --git a/crates/codex-plus-core/src/relay_config.rs b/crates/codex-plus-core/src/relay_config.rs
+index dd432a5..7b30be5 100644
 --- a/crates/codex-plus-core/src/relay_config.rs
 +++ b/crates/codex-plus-core/src/relay_config.rs
-@@ -5,6 +5,7 @@
+@@ -5,6 +5,7 @@ use std::collections::HashSet;
  use std::path::{Path, PathBuf};
  use std::time::{SystemTime, UNIX_EPOCH};
  use toml_edit::{DocumentMut, Item, Table, TableLike};
 +use url::Host;
- 
+
  use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol};
- 
-@@ -219,7 +220,6 @@
+
+@@ -217,7 +218,6 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
          .unwrap_or(false);
      RelayConfigStatus {
          configured: root_provider.is_some()
@@ -51,7 +98,7 @@ diff --git a/crates/codex-plus-core/src/relay_config.rs b/crates/codex-plus-core
              && (has_bearer_token || codex_auth_api_key(&auth_contents).is_some())
              && has_base_url,
          requires_openai_auth,
-@@ -249,7 +249,7 @@
+@@ -247,7 +247,7 @@ pub fn apply_relay_config_to_home_with_protocol(
      protocol: RelayProtocol,
      proxy_port: u16,
  ) -> anyhow::Result<RelayApplyResult> {
@@ -60,7 +107,7 @@ diff --git a/crates/codex-plus-core/src/relay_config.rs b/crates/codex-plus-core
      if base_url.is_empty() {
          anyhow::bail!("中转 Base URL 不能为空");
      }
-@@ -257,8 +257,8 @@
+@@ -255,8 +255,8 @@ pub fn apply_relay_config_to_home_with_protocol(
      if bearer_token.is_empty() {
          anyhow::bail!("中转 Key 不能为空");
      }
@@ -71,7 +118,7 @@ diff --git a/crates/codex-plus-core/src/relay_config.rs b/crates/codex-plus-core
      let auth_contents = serde_json::to_string_pretty(&json!({
          "OPENAI_API_KEY": bearer_token
      }))?;
-@@ -425,7 +425,7 @@
+@@ -469,7 +469,7 @@ pub fn apply_pure_api_config_to_home_with_protocol(
      protocol: RelayProtocol,
      proxy_port: u16,
  ) -> anyhow::Result<RelayApplyResult> {
@@ -80,7 +127,7 @@ diff --git a/crates/codex-plus-core/src/relay_config.rs b/crates/codex-plus-core
      if base_url.is_empty() {
          anyhow::bail!("中转 Base URL 不能为空");
      }
-@@ -433,8 +433,8 @@
+@@ -477,8 +477,8 @@ pub fn apply_pure_api_config_to_home_with_protocol(
      if bearer_token.is_empty() {
          anyhow::bail!("中转 Key 不能为空");
      }
@@ -91,10 +138,10 @@ diff --git a/crates/codex-plus-core/src/relay_config.rs b/crates/codex-plus-core
      let auth_contents = serde_json::to_string_pretty(&json!({
          "OPENAI_API_KEY": bearer_token
      }))?;
-@@ -516,6 +516,35 @@
+@@ -582,6 +582,35 @@ fn relay_profile_test_payload(protocol: RelayProtocol, model: &str) -> Value {
      }
  }
- 
+
 +fn effective_codex_base_url(base_url: &str) -> String {
 +    let trimmed = base_url.trim();
 +    let Ok(mut parsed) = url::Url::parse(trimmed) else {
@@ -124,10 +171,10 @@ diff --git a/crates/codex-plus-core/src/relay_config.rs b/crates/codex-plus-core
 +    !matches!(domain.as_str(), "" | "localhost") && !domain.ends_with(".local")
 +}
 +
- pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResult> {
-     clear_relay_config_to_home_with_auth(home, None)
- }
-@@ -1977,6 +2006,7 @@
+ fn codex_base_url_for_protocol(base_url: &str, protocol: RelayProtocol, proxy_port: u16) -> String {
+     match protocol {
+         RelayProtocol::Responses => base_url.to_string(),
+@@ -2456,6 +2485,7 @@ fn upsert_model_provider_config(
      contents: &str,
      base_url: &str,
      bearer_token: &str,
@@ -135,7 +182,7 @@ diff --git a/crates/codex-plus-core/src/relay_config.rs b/crates/codex-plus-core
  ) -> anyhow::Result<String> {
      let mut doc = parse_toml_document(contents)?;
      let provider_id = active_or_default_provider_id(&doc);
-@@ -1991,7 +2021,7 @@
+@@ -2470,7 +2500,7 @@ fn upsert_model_provider_config(
      let provider = ensure_provider_table(&mut doc, &provider_id)?;
      provider["name"] = toml_edit::value(provider_id.as_str());
      provider["wire_api"] = toml_edit::value("responses");
@@ -143,4 +190,4 @@ diff --git a/crates/codex-plus-core/src/relay_config.rs b/crates/codex-plus-core
 +    provider["requires_openai_auth"] = toml_edit::value(requires_openai_auth);
      provider["base_url"] = toml_edit::value(base_url);
      provider["experimental_bearer_token"] = toml_edit::value(bearer_token);
- 
+
