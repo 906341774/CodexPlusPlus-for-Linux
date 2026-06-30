@@ -7,6 +7,10 @@ English | xref:snippets_zh-CN.adoc[简体中文]
 This page is both documentation and installer input.
 The table is intended for maintainers; the JSON manifest is parsed by `scripts/Installer-and-Manager.ps1`.
 
+== Patch categories
+
+Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility/` are required for the Linux port. Enhancement patches under `docs/modules/ROOT/attachments/patches/enhancements/` are optional and reserved for future user-selectable features.
+
 == Snippet table
 
 [cols="1,1,2,3,2,2", options="header"]
@@ -18,56 +22,56 @@ The table is intended for maintainers; the JSON manifest is parsed by `scripts/I
 |`Cargo.lock`, `crates/codex-plus-core/Cargo.toml`, `crates/codex-plus-core/src/app_paths.rs`
 |Recognize Linux `codex-app/start.sh` as the Codex executable and read the Linux wrapper `version` file.
 |Needed when upstream does not natively identify the `ilysenko/codex-desktop-linux` app layout.
-|xref:attachment$patches/010-linux-app-paths.patch[patch]
+|xref:attachment$patches/compatibility/010-linux-app-paths.patch[patch]
 
 |`020-cdp-multi-target-injection`
 |Required
 |`crates/codex-plus-core/src/cdp.rs`, `apps/codex-plus-launcher/src/main.rs`
 |Inject all live Codex webview page targets while preferring the primary window over the hotkey window.
 |Needed when Linux webview exposes several unlabeled CDP page targets or the first target is not the main window.
-|xref:attachment$patches/020-cdp-multi-target-injection.patch[patch]
+|xref:attachment$patches/compatibility/020-cdp-multi-target-injection.patch[patch]
 
 |`030-linux-launcher-environment`
 |Required
 |`crates/codex-plus-core/src/launcher.rs`
 |Launch Linux Codex Desktop through `start.sh`, preserve resolver/proxy environment, remove Electron poison variables, set safe webview ports, allow Chromium private-network helper preflights, and keep the Linux wrapper alive after injection failure.
 |Needed for the hacked Linux Codex Desktop wrapper, reliable DNS/proxy behavior in desktop sessions, and Codex webview access to the Codex++ helper.
-|xref:attachment$patches/030-linux-launcher-environment.patch[patch]
+|xref:attachment$patches/compatibility/030-linux-launcher-environment.patch[patch]
 
 |`040-linux-entrypoints-health`
 |Required
 |`crates/codex-plus-core/src/install/mod.rs`, `apps/codex-plus-manager/src-tauri/src/commands.rs`, `apps/codex-plus-manager/src-tauri/src/install.rs`
 |Make manager health checks detect adapter-local Linux launcher and manager binaries under `codex-app/.codex-plusplus/install`, while preserving upstream-style Codex++ desktop entry names.
 |Needed when the manager reports static launch entry or management tool entry as missing on Linux.
-|xref:attachment$patches/040-linux-entrypoints-health.patch[patch]
+|xref:attachment$patches/compatibility/040-linux-entrypoints-health.patch[patch]
 
 |`050-pure-api-config-sync`
 |Required
 |`crates/codex-plus-core/src/relay_config.rs`, `apps/codex-plus-manager/src/App.tsx`
 |Make Pure API mode write `requires_openai_auth = false`, preserve hostname BaseURL values, upgrade plain HTTP public hostnames to HTTPS, and re-apply `$HOME/.codex/config.toml` whenever the active API profile changes.
 |Needed when switching API profiles in Codex++ does not update Codex Desktop immediately.
-|xref:attachment$patches/050-pure-api-config-sync.patch[patch]
+|xref:attachment$patches/compatibility/050-pure-api-config-sync.patch[patch]
 
 |`060-renderer-linux-compatibility`
 |Required
 |`assets/inject/renderer-inject.js`
 |Stabilize Linux renderer injection: plugin nav unlock, plugin detail response normalization, Pure API synthetic account compatibility, no full refresh on delete, no debug suffix on Plugins label, floating Codex++ trigger overlap avoidance, Fast service-tier badge placement in the Linux composer footer, and Fast badge clickability during transient backend checks.
 |Needed while upstream renderer injection does not account for Linux Codex Desktop DOM and MCP response differences.
-|xref:attachment$patches/060-renderer-linux-compatibility.patch[patch]
+|xref:attachment$patches/compatibility/060-renderer-linux-compatibility.patch[patch]
 
 |`070-linux-user-scripts-compatibility`
 |Required
 |`crates/codex-plus-core/src/user_scripts.rs`
 |Wrap enabled user scripts with a Linux Codex Desktop location alias so marketplace scripts that expect the upstream `app://-/index.html` renderer URL still run on the Linux localhost webview.
 |Needed when user scripts such as `Codex Context Used Meter` treat the Linux `http://127.0.0.1:<port>/?mcpAppSandboxDevtools=1` page as a non-conversation window.
-|xref:attachment$patches/070-linux-user-scripts-compatibility.patch[patch]
+|xref:attachment$patches/compatibility/070-linux-user-scripts-compatibility.patch[patch]
 
 |`900-regression-tests`
 |Optional
 |`crates/codex-plus-core/tests/*.rs`
 |Add regression coverage for the Linux path, CDP target selection, Linux launcher environment, helper private-network preflights, Pure API config, plugin details, delete stability, floating menu positioning, Fast badge composer placement, user-script location aliasing, and transient backend-check clickability.
 |Recommended for source builds and CI; can be disabled for a faster production-only patch.
-|xref:attachment$patches/900-regression-tests.patch[patch]
+|xref:attachment$patches/compatibility/900-regression-tests.patch[patch]
 |===
 
 == Machine-readable manifest
@@ -83,7 +87,7 @@ The manager script extracts the JSON block between the markers below.
     "required": true,
     "defaultEnabled": true,
     "kind": "production",
-    "patch": "docs/modules/ROOT/attachments/patches/010-linux-app-paths.patch",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/010-linux-app-paths.patch",
     "targets": [
       "Cargo.lock",
       "crates/codex-plus-core/Cargo.toml",
@@ -96,7 +100,7 @@ The manager script extracts the JSON block between the markers below.
     "required": true,
     "defaultEnabled": true,
     "kind": "production",
-    "patch": "docs/modules/ROOT/attachments/patches/020-cdp-multi-target-injection.patch",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/020-cdp-multi-target-injection.patch",
     "targets": [
       "crates/codex-plus-core/src/cdp.rs",
       "apps/codex-plus-launcher/src/main.rs"
@@ -108,7 +112,7 @@ The manager script extracts the JSON block between the markers below.
     "required": true,
     "defaultEnabled": true,
     "kind": "production",
-    "patch": "docs/modules/ROOT/attachments/patches/030-linux-launcher-environment.patch",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/030-linux-launcher-environment.patch",
     "targets": [
       "crates/codex-plus-core/src/launcher.rs"
     ],
@@ -119,7 +123,7 @@ The manager script extracts the JSON block between the markers below.
     "required": true,
     "defaultEnabled": true,
     "kind": "production",
-    "patch": "docs/modules/ROOT/attachments/patches/040-linux-entrypoints-health.patch",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/040-linux-entrypoints-health.patch",
     "targets": [
       "crates/codex-plus-core/src/install/mod.rs",
       "apps/codex-plus-manager/src-tauri/src/commands.rs",
@@ -132,7 +136,7 @@ The manager script extracts the JSON block between the markers below.
     "required": true,
     "defaultEnabled": true,
     "kind": "production",
-    "patch": "docs/modules/ROOT/attachments/patches/050-pure-api-config-sync.patch",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/050-pure-api-config-sync.patch",
     "targets": [
       "crates/codex-plus-core/src/relay_config.rs",
       "apps/codex-plus-manager/src/App.tsx"
@@ -144,7 +148,7 @@ The manager script extracts the JSON block between the markers below.
     "required": true,
     "defaultEnabled": true,
     "kind": "production",
-    "patch": "docs/modules/ROOT/attachments/patches/060-renderer-linux-compatibility.patch",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/060-renderer-linux-compatibility.patch",
     "targets": [
       "assets/inject/renderer-inject.js"
     ],
@@ -155,7 +159,7 @@ The manager script extracts the JSON block between the markers below.
     "required": true,
     "defaultEnabled": true,
     "kind": "production",
-    "patch": "docs/modules/ROOT/attachments/patches/070-linux-user-scripts-compatibility.patch",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/070-linux-user-scripts-compatibility.patch",
     "targets": [
       "crates/codex-plus-core/src/user_scripts.rs"
     ],
@@ -166,7 +170,7 @@ The manager script extracts the JSON block between the markers below.
     "required": false,
     "defaultEnabled": true,
     "kind": "test",
-    "patch": "docs/modules/ROOT/attachments/patches/900-regression-tests.patch",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/900-regression-tests.patch",
     "targets": [
       "crates/codex-plus-core/tests/bridge_routes.rs",
       "crates/codex-plus-core/tests/cdp_bridge.rs",
@@ -189,7 +193,7 @@ The full patch body for each snippet is stored as an Antora attachment and inclu
 
 [source,diff]
 ----
-include::attachment$patches/010-linux-app-paths.patch[]
+include::attachment$patches/compatibility/010-linux-app-paths.patch[]
 ----
 
 [#snippet-020-cdp-multi-target-injection]
@@ -197,7 +201,7 @@ include::attachment$patches/010-linux-app-paths.patch[]
 
 [source,diff]
 ----
-include::attachment$patches/020-cdp-multi-target-injection.patch[]
+include::attachment$patches/compatibility/020-cdp-multi-target-injection.patch[]
 ----
 
 [#snippet-030-linux-launcher-environment]
@@ -205,7 +209,7 @@ include::attachment$patches/020-cdp-multi-target-injection.patch[]
 
 [source,diff]
 ----
-include::attachment$patches/030-linux-launcher-environment.patch[]
+include::attachment$patches/compatibility/030-linux-launcher-environment.patch[]
 ----
 
 [#snippet-040-linux-entrypoints-health]
@@ -213,7 +217,7 @@ include::attachment$patches/030-linux-launcher-environment.patch[]
 
 [source,diff]
 ----
-include::attachment$patches/040-linux-entrypoints-health.patch[]
+include::attachment$patches/compatibility/040-linux-entrypoints-health.patch[]
 ----
 
 [#snippet-050-pure-api-config-sync]
@@ -221,7 +225,7 @@ include::attachment$patches/040-linux-entrypoints-health.patch[]
 
 [source,diff]
 ----
-include::attachment$patches/050-pure-api-config-sync.patch[]
+include::attachment$patches/compatibility/050-pure-api-config-sync.patch[]
 ----
 
 [#snippet-060-renderer-linux-compatibility]
@@ -229,7 +233,7 @@ include::attachment$patches/050-pure-api-config-sync.patch[]
 
 [source,diff]
 ----
-include::attachment$patches/060-renderer-linux-compatibility.patch[]
+include::attachment$patches/compatibility/060-renderer-linux-compatibility.patch[]
 ----
 
 [#snippet-070-linux-user-scripts-compatibility]
@@ -237,7 +241,7 @@ include::attachment$patches/060-renderer-linux-compatibility.patch[]
 
 [source,diff]
 ----
-include::attachment$patches/070-linux-user-scripts-compatibility.patch[]
+include::attachment$patches/compatibility/070-linux-user-scripts-compatibility.patch[]
 ----
 
 [#snippet-900-regression-tests]
@@ -245,5 +249,5 @@ include::attachment$patches/070-linux-user-scripts-compatibility.patch[]
 
 [source,diff]
 ----
-include::attachment$patches/900-regression-tests.patch[]
+include::attachment$patches/compatibility/900-regression-tests.patch[]
 ----

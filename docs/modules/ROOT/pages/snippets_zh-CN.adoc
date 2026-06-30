@@ -7,6 +7,10 @@ xref:snippets.adoc[English] | 简体中文
 本页面同时是文档和安装器输入。
 表格面向维护者；JSON manifest 由 `scripts/Installer-and-Manager.ps1` 解析。
 
+== 补丁分类
+
+`docs/modules/ROOT/attachments/patches/compatibility/` 下的兼容性补丁是 Linux 移植必需补丁。`docs/modules/ROOT/attachments/patches/enhancements/` 下的增强功能补丁是预留给未来用户可选功能的目录。
+
 == 片段表
 
 [cols="1,1,2,3,2,2", options="header"]
@@ -18,56 +22,56 @@ xref:snippets.adoc[English] | 简体中文
 |`Cargo.lock`, `crates/codex-plus-core/Cargo.toml`, `crates/codex-plus-core/src/app_paths.rs`
 |识别 Linux `codex-app/start.sh` 作为 Codex 可执行入口，并读取 Linux wrapper 的 `version` 文件。
 |当上游尚不能原生识别 `ilysenko/codex-desktop-linux` 应用布局时需要。
-|xref:attachment$patches/010-linux-app-paths.patch[patch]
+|xref:attachment$patches/compatibility/010-linux-app-paths.patch[patch]
 
 |`020-cdp-multi-target-injection`
 |必需
 |`crates/codex-plus-core/src/cdp.rs`, `apps/codex-plus-launcher/src/main.rs`
 |注入所有存活的 Codex webview page target，同时优先选择主窗口而不是 hotkey window。
 |当 Linux webview 暴露多个未标记 CDP page target，或第一个 target 不是主窗口时需要。
-|xref:attachment$patches/020-cdp-multi-target-injection.patch[patch]
+|xref:attachment$patches/compatibility/020-cdp-multi-target-injection.patch[patch]
 
 |`030-linux-launcher-environment`
 |必需
 |`crates/codex-plus-core/src/launcher.rs`
 |通过 `start.sh` 启动 Linux Codex Desktop，保留 resolver/proxy 环境，移除会污染 Electron 的变量，设置安全 webview 端口，允许 Chromium private-network helper 预检，并在注入失败后保持 Linux wrapper 存活。
 |适配 hacked Linux Codex Desktop wrapper、保证桌面会话中的 DNS/proxy 行为稳定，以及让 Codex webview 能访问 Codex++ helper 时需要。
-|xref:attachment$patches/030-linux-launcher-environment.patch[patch]
+|xref:attachment$patches/compatibility/030-linux-launcher-environment.patch[patch]
 
 |`040-linux-entrypoints-health`
 |必需
 |`crates/codex-plus-core/src/install/mod.rs`, `apps/codex-plus-manager/src-tauri/src/commands.rs`, `apps/codex-plus-manager/src-tauri/src/install.rs`
 |让 manager health check 能检测 `codex-app/.codex-plusplus/install` 下的 adapter-local Linux launcher 和 manager 二进制文件，同时保留贴近上游 Codex++ 风格的 desktop entry 名称。
 |当 manager 在 Linux 上把 static launch entry 或 management tool entry 报告为 missing 时需要。
-|xref:attachment$patches/040-linux-entrypoints-health.patch[patch]
+|xref:attachment$patches/compatibility/040-linux-entrypoints-health.patch[patch]
 
 |`050-pure-api-config-sync`
 |必需
 |`crates/codex-plus-core/src/relay_config.rs`, `apps/codex-plus-manager/src/App.tsx`
 |让 Pure API mode 写入 `requires_openai_auth = false`，保留 hostname BaseURL，把普通 HTTP public hostnames 升级到 HTTPS，并在 active API profile 改变时重新应用 `$HOME/.codex/config.toml`。
 |当在 Codex++ 中切换 API profiles 不能立即更新 Codex Desktop 时需要。
-|xref:attachment$patches/050-pure-api-config-sync.patch[patch]
+|xref:attachment$patches/compatibility/050-pure-api-config-sync.patch[patch]
 
 |`060-renderer-linux-compatibility`
 |必需
 |`assets/inject/renderer-inject.js`
 |稳定 Linux renderer injection：plugin nav unlock、plugin detail response normalization、Pure API synthetic account compatibility、删除对话不触发 full refresh、Plugins label 不显示 debug suffix、floating Codex++ trigger overlap avoidance，把 Fast service-tier badge 正确放入 Linux composer footer，并避免后端短暂 checking 时阻断 Fast badge 点击。
 |当上游 renderer injection 尚未覆盖 Linux Codex Desktop DOM 和 MCP response 差异时需要。
-|xref:attachment$patches/060-renderer-linux-compatibility.patch[patch]
+|xref:attachment$patches/compatibility/060-renderer-linux-compatibility.patch[patch]
 
 |`070-linux-user-scripts-compatibility`
 |必需
 |`crates/codex-plus-core/src/user_scripts.rs`
 |用 Linux Codex Desktop location alias 包裹已启用的用户脚本，让依赖上游 `app://-/index.html` renderer URL 的脚本市场脚本仍能在 Linux localhost webview 中运行。
 |当 `Codex Context Used Meter` 等用户脚本把 Linux `http://127.0.0.1:<port>/?mcpAppSandboxDevtools=1` 页面误判为非会话窗口时需要。
-|xref:attachment$patches/070-linux-user-scripts-compatibility.patch[patch]
+|xref:attachment$patches/compatibility/070-linux-user-scripts-compatibility.patch[patch]
 
 |`900-regression-tests`
 |可选
 |`crates/codex-plus-core/tests/*.rs`
 |为 Linux path、CDP target selection、Linux launcher environment、helper private-network 预检、Pure API config、plugin details、delete stability、floating menu positioning、Fast badge composer placement、user-script location aliasing 和后端短暂 checking 时的点击可用性添加回归覆盖。
 |推荐在源码构建和 CI 中启用；如果只需要更快的 production-only patch，可以禁用。
-|xref:attachment$patches/900-regression-tests.patch[patch]
+|xref:attachment$patches/compatibility/900-regression-tests.patch[patch]
 |===
 
 == 机器可读 manifest
@@ -83,7 +87,7 @@ xref:snippets.adoc[English] | 简体中文
     "required": true,
     "defaultEnabled": true,
     "kind": "production",
-    "patch": "docs/modules/ROOT/attachments/patches/010-linux-app-paths.patch",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/010-linux-app-paths.patch",
     "targets": [
       "Cargo.lock",
       "crates/codex-plus-core/Cargo.toml",
@@ -96,7 +100,7 @@ xref:snippets.adoc[English] | 简体中文
     "required": true,
     "defaultEnabled": true,
     "kind": "production",
-    "patch": "docs/modules/ROOT/attachments/patches/020-cdp-multi-target-injection.patch",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/020-cdp-multi-target-injection.patch",
     "targets": [
       "crates/codex-plus-core/src/cdp.rs",
       "apps/codex-plus-launcher/src/main.rs"
@@ -108,7 +112,7 @@ xref:snippets.adoc[English] | 简体中文
     "required": true,
     "defaultEnabled": true,
     "kind": "production",
-    "patch": "docs/modules/ROOT/attachments/patches/030-linux-launcher-environment.patch",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/030-linux-launcher-environment.patch",
     "targets": [
       "crates/codex-plus-core/src/launcher.rs"
     ],
@@ -119,7 +123,7 @@ xref:snippets.adoc[English] | 简体中文
     "required": true,
     "defaultEnabled": true,
     "kind": "production",
-    "patch": "docs/modules/ROOT/attachments/patches/040-linux-entrypoints-health.patch",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/040-linux-entrypoints-health.patch",
     "targets": [
       "crates/codex-plus-core/src/install/mod.rs",
       "apps/codex-plus-manager/src-tauri/src/commands.rs",
@@ -132,7 +136,7 @@ xref:snippets.adoc[English] | 简体中文
     "required": true,
     "defaultEnabled": true,
     "kind": "production",
-    "patch": "docs/modules/ROOT/attachments/patches/050-pure-api-config-sync.patch",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/050-pure-api-config-sync.patch",
     "targets": [
       "crates/codex-plus-core/src/relay_config.rs",
       "apps/codex-plus-manager/src/App.tsx"
@@ -144,7 +148,7 @@ xref:snippets.adoc[English] | 简体中文
     "required": true,
     "defaultEnabled": true,
     "kind": "production",
-    "patch": "docs/modules/ROOT/attachments/patches/060-renderer-linux-compatibility.patch",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/060-renderer-linux-compatibility.patch",
     "targets": [
       "assets/inject/renderer-inject.js"
     ],
@@ -155,7 +159,7 @@ xref:snippets.adoc[English] | 简体中文
     "required": true,
     "defaultEnabled": true,
     "kind": "production",
-    "patch": "docs/modules/ROOT/attachments/patches/070-linux-user-scripts-compatibility.patch",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/070-linux-user-scripts-compatibility.patch",
     "targets": [
       "crates/codex-plus-core/src/user_scripts.rs"
     ],
@@ -166,7 +170,7 @@ xref:snippets.adoc[English] | 简体中文
     "required": false,
     "defaultEnabled": true,
     "kind": "test",
-    "patch": "docs/modules/ROOT/attachments/patches/900-regression-tests.patch",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/900-regression-tests.patch",
     "targets": [
       "crates/codex-plus-core/tests/bridge_routes.rs",
       "crates/codex-plus-core/tests/cdp_bridge.rs",
@@ -189,7 +193,7 @@ xref:snippets.adoc[English] | 简体中文
 
 [source,diff]
 ----
-include::attachment$patches/010-linux-app-paths.patch[]
+include::attachment$patches/compatibility/010-linux-app-paths.patch[]
 ----
 
 [#snippet-020-cdp-multi-target-injection]
@@ -197,7 +201,7 @@ include::attachment$patches/010-linux-app-paths.patch[]
 
 [source,diff]
 ----
-include::attachment$patches/020-cdp-multi-target-injection.patch[]
+include::attachment$patches/compatibility/020-cdp-multi-target-injection.patch[]
 ----
 
 [#snippet-030-linux-launcher-environment]
@@ -205,7 +209,7 @@ include::attachment$patches/020-cdp-multi-target-injection.patch[]
 
 [source,diff]
 ----
-include::attachment$patches/030-linux-launcher-environment.patch[]
+include::attachment$patches/compatibility/030-linux-launcher-environment.patch[]
 ----
 
 [#snippet-040-linux-entrypoints-health]
@@ -213,7 +217,7 @@ include::attachment$patches/030-linux-launcher-environment.patch[]
 
 [source,diff]
 ----
-include::attachment$patches/040-linux-entrypoints-health.patch[]
+include::attachment$patches/compatibility/040-linux-entrypoints-health.patch[]
 ----
 
 [#snippet-050-pure-api-config-sync]
@@ -221,7 +225,7 @@ include::attachment$patches/040-linux-entrypoints-health.patch[]
 
 [source,diff]
 ----
-include::attachment$patches/050-pure-api-config-sync.patch[]
+include::attachment$patches/compatibility/050-pure-api-config-sync.patch[]
 ----
 
 [#snippet-060-renderer-linux-compatibility]
@@ -229,7 +233,7 @@ include::attachment$patches/050-pure-api-config-sync.patch[]
 
 [source,diff]
 ----
-include::attachment$patches/060-renderer-linux-compatibility.patch[]
+include::attachment$patches/compatibility/060-renderer-linux-compatibility.patch[]
 ----
 
 [#snippet-070-linux-user-scripts-compatibility]
@@ -237,7 +241,7 @@ include::attachment$patches/060-renderer-linux-compatibility.patch[]
 
 [source,diff]
 ----
-include::attachment$patches/070-linux-user-scripts-compatibility.patch[]
+include::attachment$patches/compatibility/070-linux-user-scripts-compatibility.patch[]
 ----
 
 [#snippet-900-regression-tests]
@@ -245,5 +249,5 @@ include::attachment$patches/070-linux-user-scripts-compatibility.patch[]
 
 [source,diff]
 ----
-include::attachment$patches/900-regression-tests.patch[]
+include::attachment$patches/compatibility/900-regression-tests.patch[]
 ----

@@ -64,6 +64,10 @@ pwsh -NoLogo -NoProfile -File scripts/Installer-and-Manager.ps1 selftest -NonInt
 . Clean temporary source trees, container images, caches, and test files before committing.
 . Commit and push only after the feature matrix has been checked off for the target version.
 
+== Patch categories
+
+Compatibility patches live under `docs/modules/ROOT/attachments/patches/compatibility/` and are treated as required for Linux support. Enhancement patches live under `docs/modules/ROOT/attachments/patches/enhancements/` and are reserved for future user-selectable features.
+
 == Required GUI evidence
 
 The final validation report for a release should include screenshots or DOM assertions for these Linux-visible behaviors:

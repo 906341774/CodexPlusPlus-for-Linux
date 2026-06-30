@@ -64,6 +64,10 @@ pwsh -NoLogo -NoProfile -File scripts/Installer-and-Manager.ps1 selftest -NonInt
 . 提交前清理临时源码树、容器镜像、缓存和测试文件。
 . 只有目标版本的功能矩阵全部验收后，才提交并推送。
 
+== 补丁分类
+
+兼容性补丁位于 `docs/modules/ROOT/attachments/patches/compatibility/`，视为 Linux 支持的必需补丁。增强功能补丁位于 `docs/modules/ROOT/attachments/patches/enhancements/`，预留给未来用户可选功能。
+
 == 必需 GUI 证据
 
 一次发布的最终验证报告应包含以下 Linux 可见行为的截图或 DOM 断言：

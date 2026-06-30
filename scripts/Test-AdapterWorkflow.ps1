@@ -47,6 +47,8 @@ $requiredFiles = @(
     'docs/modules/ROOT/pages/adapter-workflow.adoc',
     'docs/modules/ROOT/pages/adapter-workflow_zh-CN.adoc',
     'docs/modules/ROOT/attachments/feature-matrix.json',
+    'docs/modules/ROOT/attachments/patches/compatibility/.gitkeep',
+    'docs/modules/ROOT/attachments/patches/enhancements/.gitkeep',
     '.github/workflows/adaptation-regression.yml',
     'scripts/run-adapter-regression.sh',
     'scripts/Run-AdapterRegression.ps1',
@@ -111,6 +113,10 @@ Assert-TextContains 'scripts/Run-AdapterRegression.ps1' 'Installer-and-Manager.p
 # ZH: 文档必须把维护者引向可机器检查的功能矩阵。
 Assert-TextContains 'docs/modules/ROOT/pages/adapter-workflow.adoc' 'feature-matrix.json' 'English workflow feature matrix link'
 Assert-TextContains 'docs/modules/ROOT/pages/adapter-workflow_zh-CN.adoc' 'feature-matrix.json' 'Chinese workflow feature matrix link'
+Assert-TextContains 'docs/modules/ROOT/pages/snippets.adoc' 'patches/compatibility/' 'English snippets compatibility patch directory'
+Assert-TextContains 'docs/modules/ROOT/pages/snippets.adoc' 'patches/enhancements/' 'English snippets enhancement patch directory'
+Assert-TextContains 'docs/modules/ROOT/pages/snippets_zh-CN.adoc' 'patches/compatibility/' 'Chinese snippets compatibility patch directory'
+Assert-TextContains 'docs/modules/ROOT/pages/snippets_zh-CN.adoc' 'patches/enhancements/' 'Chinese snippets enhancement patch directory'
 Assert-TextContains 'docs/modules/ROOT/nav.adoc' 'adapter-workflow.adoc' 'English nav entry'
 Assert-TextContains 'docs/modules/ROOT/nav.adoc' 'adapter-workflow_zh-CN.adoc' 'Chinese nav entry'
 

@@ -1,0 +1,293 @@
+= Codex++ v1.2.25 Linux adaptation attempt
+:toc:
+:toclevels: 2
+
+Date: 2026-07-01
+
+== Fixed upstream inputs
+
+* Codex++ upstream: `BigPizzaV3/CodexPlusPlus` `v1.2.25` at `9c5c6e1776f806d75f29108d9ee7e048fcb0fb97`.
+* Linux Codex Desktop upstream: `ilysenko/codex-desktop-linux` `main` at `9772c4ae2ba4ec604c8546e9b70ea5d95fd1a5df`.
+* Local source checkouts are intentionally ignored under `CodexPlusPlus/src` and `codex-desktop-linux/src`.
+
+== Release notes reviewed
+
+=== v1.2.4 (2026-06-08T03:27:55Z)
+
+## What's Changed
+* 修复 Windows 单实例端口异常占用导致无法启动 by @130040167 in https://github.com/BigPizzaV3/CodexPlusPlus/pull/723
+* feat: add Zed remote project registry by @Zhaoyikaiii in https://github.com/BigPizzaV3/CodexPlusPlus/pull/697
+* Fix provider sync for multiple session_meta records by @ZHAO-YIFENG in https://github.com/BigPizzaV3/CodexPlusPlus/pull/733
+* docs: clarify hybrid login relay mode by @aDragon0707 in https://github.com/BigPizzaV3/CodexPlusPlus/pull/445
+* fix(macos): 修正 DMG 打包 bundle 结构 by @lg320531124 in https://github.com/BigPizzaV3/CodexPlusPlus/pull/741
+* 限制 Fast 服务模式仅用于支持模型 by @szcascsa in https://github.com/BigPizzaV3/CodexPlusPlus/pull/724
+
+
+=== v1.2.5 (2026-06-13T02:01:12Z)
+
+## What's Changed
+* fix: pr-build.yaml ref_name containing a path separator by @nb5p in https://github.com/BigPizzaV3/CodexPlusPlus/pull/819
+* fix: 修复中转硅基流动时，Codex提示“unsupported call”问题 by @yu502950715yang in https://github.com/BigPizzaV3/CodexPlusPlus/pull/771
+* fix: detect standalone Codex installations on Windows by @lennney in https://github.com/BigPizzaV3/CodexPlusPlus/pull/809
+* fix(relay-test): 測試模型回退優先用 profile 自身 model by @polo7261 in https://github.com/BigPizzaV3/CodexPlusPlus/pull/830
+* fix(relay): auto-retry with /v1 prefix on 404 during connection test by @lennney in https://github.com/BigPizzaV3/CodexPlusPlus/pull/873
+* feat: show running duration in LatestLaunch instead of absolute time by @lennney in https://github.com/BigPizzaV3/CodexPlusPlus/pull/843
+* feat: detect unexpected Codex stop and notify user by @lennney in https://github.com/BigPizzaV3/CodexPlusPlus/pull/844
+
+=== v1.2.6 (2026-06-13T09:07:03Z)
+
+适配最新版Codex的会话目录
+
+=== v1.2.7 (2026-06-13T20:03:38Z)
+
+## v1.2.7 更新日志
+
+### 新增
+- 新增 Codex 图片覆盖层功能：可在设置中选择本地图片，并以半透明层叠加到 Codex 页面上。
+- 覆盖层改为注入 data URI，避免 Codex 页面拦截本地 helper 图片请求导致破图。
+
+### 改进
+- 重做供应商切换逻辑，切换时使用独立的供应商配置写入流程。
+
+=== v1.2.8 (2026-06-14T11:02:48Z)
+
+## Summary
+
+- Add Windows Computer Use Guard with a default-off settings toggle.
+- Preserve Computer Use configuration only when the toggle is enabled.
+- Fix local session deletion across duplicate/current/legacy Codex SQLite stores.
+
+## Notes
+
+
+=== v1.2.9 (2026-06-14T16:57:16Z)
+
+## 更新内容
+
+- 修复删除本地会话时可能提示 `Thread not found in local storage` 的问题，并会同时清理候选数据库里的重复 thread 记录。
+- 修复启动/重启 Codex++ 时自动应用供应商配置导致 `config.toml` / `auth.json` 中 API Key 被清空的风险；现在启动流程不会自动改写这些文件。
+- 修复背景覆盖层“重置设置”会把供应商配置一起重置的问题；现在只重置背景覆盖层相关设置。
+- 修复无法自动检测 Microsoft Store 安装的 Codex Beta (`OpenAI.CodexBeta`) 路径的问题。
+- 新增 Windows Computer Use Guard 开关，默认关闭；只有手动开启后才会修改 Computer Use 相关配置。
+
+
+=== v1.2.10 (2026-06-16T15:02:45Z)
+
+## 更新内容
+
+- 修复新版 Codex 本地存储结构下会话 Markdown 导出失败的问题，支持 `automation_runs` 并能从 `sessions` / `archived_sessions` 发现 rollout 文件。
+- 导出 Markdown 时支持用户选择保存路径；不支持文件选择器的环境会回退到浏览器下载。
+- 导出逻辑会遍历多个本地 Codex 数据库，避免默认数据库没有目标会话时提示未找到。
+- 兼容检测 Microsoft Store Codex Beta 安装路径，修复无法自动找到启动应用的问题。修复 #947。
+- 增加 CODEX_HOME 统一解析与环境变量冲突提示，避免读取错误的 Codex 数据目录。
+- 修复切换模型后首次启动 Codex 模型列表不刷新的问题。修复 #1018。
+
+=== v1.2.11 (2026-06-16T16:01:58Z)
+
+## 更新内容
+
+- 修复 Windows packaged Codex 启动时固定占用 9229 调试端口的问题。
+- 当默认调试端口已被占用时，会自动切换到可用端口。
+- 添加回归测试，防止后续再次出现端口占用导致无法启动的问题。
+
+## 验证
+
+
+=== v1.2.12 (2026-06-16T18:53:12Z)
+
+## 更新内容
+
+- 恢复 Windows 启动链路到更接近 1.2.7 的稳定流程，去掉启动前额外 CDP 探测和直接回退启动逻辑。
+- 修复 MS Store 版 Codex 启动时调试端口被占用导致无法正常启动的问题。
+- 修复“重启 Codex++”可能不生效的问题：重启时会等待旧 Codex/launcher 进程退出后再启动。
+- 保留启动失败时的降级运行状态，避免增强注入暂未就绪时直接中断 Codex 启动。
+
+## 验证
+
+=== v1.2.13 (2026-06-17T04:21:36Z)
+
+## 更新内容
+
+- 修复部分 Windows 用户更新 MS Store 版 Codex 后，Codex++ 无法检测到 Codex 版本的问题。
+- 增加 MS Store Codex 路径检测 fallback：当无法直接枚举 `C:\Program Files\WindowsApps` 时，会通过 `Get-AppxPackage` 读取安装路径。
+- 兼容 `OpenAI.Codex` 和 `OpenAI.CodexBeta` 包，用于识别 Codex 26.611 等新版本。
+- 改善因此导致的启动 / 重启 Codex 无响应问题。
+
+## 验证
+
+=== v1.2.14 (2026-06-17T15:06:54Z)
+
+## 更新内容
+
+- 新增代理请求的 User-Agent 透传：未手动配置 User-Agent 时，会保留 Codex 客户端原始 User-Agent 转发给上游。
+- Chat Completions、Responses 代理和 Models 列表接口现在统一遵守 User-Agent 规则。
+- 修复 Chat Completions 直连代理未使用供应商配置 User-Agent 的问题。
+- 修复一处 model catalog 测试中的重复配置字段，避免测试编译失败。
+
+=== v1.2.15 (2026-06-18T10:12:09Z)
+
+## 更新内容
+
+- 修复聚合供应商切换时误判“缺少独立 config.toml”的问题。
+- 聚合供应商现在会正确写入本地 Responses 代理配置，用于按策略转发到成员供应商。
+- 补充聚合供应商切换与代理转发回归测试，降低后续改动破坏风险。
+
+=== v1.2.16 (2026-06-20T11:04:59Z)
+
+## 更新内容
+
+- 手机控制入口增加“测试版”标识，明确该功能仍处于测试阶段。
+- 新增从第三方程序导入供应商配置入口，当前支持从 ccswitch 导入，并在名称中标注来源。
+- 修复 macOS 安装/修复入口可能依赖临时路径，导致使用一段时间后 App 不再可用的问题。
+- 优化 macOS 启动器查找管理工具/主程序的路径逻辑。
+- 版本号更新至 1.2.16。
+
+
+=== v1.2.17 (2026-06-20T14:34:14Z)
+
+## 更新内容
+- 修复 API Key 模式下插件市场补全后安装成功但管理中不可用的问题。
+- 新增本地 openai-curated 插件市场注册逻辑，避免插件配置缺少 marketplace source。
+- 新增从 openai/plugins 初始化插件市场的修复能力，新机器可在管理工具中一键修复。
+- 管理工具启动时检测插件市场缺失并提示修复，修复过程显示进度。
+- 改进新版 Codex 插件市场请求拦截，保留官方 marketplace 名称并补全插件描述、图标与安装状态。
+
+=== v1.2.18 (2026-06-21T08:09:16Z)
+
+## 更新内容
+
+- 修复插件市场配置修复失败时阻断 Codex++ 启动的问题。现在 `config.toml` 解析异常或插件市场写入失败只会记录诊断日志，不会导致应用打不开。
+- 修复部分 Chat Completions 上游在多轮对话后出现 `BadRequestError` / JSON 解析 400 的问题。历史工具调用参数现在会规范成合法 JSON 对象字符串，避免坏参数污染后续会话。
+- 版本号更新到 1.2.18。
+
+## 验证
+
+
+=== v1.2.19 (2026-06-27T06:23:12Z)
+
+## 更新
+- 新增 Codex 原生菜单运行时汉化，可在 Codex增强中开关，默认开启，不修改官方安装包。
+- 保留插件市场解锁，移除旧版强制解锁入口相关能力。
+- 增加供应商 URL 导入能力和 RunAPI 供应商预设。
+- 版本号更新到 1.2.19。
+
+## 验证
+- cargo fmt --check
+
+=== v1.2.20 (2026-06-27T08:55:22Z)
+
+## 更新
+- 模型列表改为逐行控件，每行同时编辑模型名和上下文窗口，避免两列输入错位。
+- 新增本地会话多选、全选、清空选择与批量删除，批量删除会统计成功和失败。
+- 修复供应商详情切换时模型行数据可能沿用上一供应商的问题。
+- 修复从上游获取模型时未使用当前编辑中供应商配置的问题。
+- 修复批量删除确认框中的会话预览换行显示。
+- 修复 Windows 缺少 sh 时上游 worktree 远端脚本语法测试失败的问题。
+- 版本号更新到 1.2.20。
+
+=== v1.2.21 (2026-06-27T19:13:49Z)
+
+## 更新
+- Codex 增强新增「插件列表全量展示」开关，进入插件页后自动连续展开「更多」入口。
+- 自动展开支持「查看 ... 以及另外 N 个」和英文「View/Show ... and N more」按钮文案，减少插件市场分批展示时的重复点击。
+- 自动展开默认开启，可在 Codex 增强页独立关闭。
+- 版本号更新到 1.2.21。
+
+## 验证
+- cargo check -p codex-plus-core
+
+=== v1.2.22 (2026-06-28T09:25:27Z)
+
+## 更新内容
+
+- 修复启动 Codex 时会自动应用当前供应商配置的问题。
+- 现在只有手动点击“使用/切换供应商”才会切换供应商配置。
+- 保留已开启的自动会话同步、插件市场配置修复、Computer Use guard 和历史模型名清理启动流程。
+
+## 问题来源
+
+
+=== v1.2.23 (2026-06-28T17:16:28Z)
+
+## Codex++ v1.2.23
+
+### 新增
+- 增加“强制中文界面”开关，默认开启。
+- 这个功能是给没有 VPN、连不上 Statsig 的用户使用的：强制启用 Codex App 内置 zh-CN 语言包，避免网络不通时回退英文。
+- 关闭该开关后不再干预语言选择，Codex App 会恢复官方原始行为。
+
+### 验证
+
+=== v1.2.24 (2026-06-29T07:35:25Z)
+
+## 1.2.24
+
+- 移除手机控制功能与 mobile relay 构建入口。
+- 关闭管理器时改用页面内确认弹窗，不再使用系统对话框。
+- 更新 Codex++ 管理器图标与任务栏图标处理。
+- 修复 Product Design 插件市场/官方账号登录相关路径。
+- 改进重启、Watcher、快速启动和会话/模型窗口相关体验。
+
+=== v1.2.25 (2026-06-30T16:54:40Z)
+
+## 更新内容
+- 修复 Stepwise 主面板在新版 Codex 页面中识别不到助手回复的问题。
+- Stepwise 建议解析兼容更多 API 返回结构，并优化空状态诊断。
+- README 增加 Stepwise 下一步建议功能介绍。
+
+== Patch apply audit against v1.2.25
+
+[cols="1,1,3", options="header"]
+|===
+|Patch |Status |Notes
+
+|010-linux-app-paths
+|applies
+|Still needed for Linux `codex-app/start.sh` and `version` detection.
+
+|020-cdp-multi-target-injection
+|conflict
+|Conflicts in `apps/codex-plus-launcher/src/main.rs` and `crates/codex-plus-core/src/cdp.rs`; needs rebase against upstream CDP/launcher changes.
+
+|030-linux-launcher-environment
+|applies
+|Still applies after `010`.
+
+|040-linux-entrypoints-health
+|applies
+|Still applies after `030`.
+
+|050-pure-api-config-sync
+|conflict
+|Conflicts in `Cargo.lock` and `crates/codex-plus-core/Cargo.toml`; upstream relay/provider work needs deeper review before deciding necessity.
+
+|060-renderer-linux-compatibility
+|conflict
+|Conflicts in `assets/inject/renderer-inject.js`; upstream added Stepwise, plugin, menu, locale and renderer changes, so this requires manual rebase.
+
+|070-linux-user-scripts-compatibility
+|applies
+|Still applies after prior compatible patches.
+
+|900-regression-tests
+|conflict
+|Expected after production patch conflicts; tests must be regenerated after production patches are rebased.
+|===
+
+== Current conclusion
+
+The first upstream-mainline attempt is not release-ready. The maintenance workflow is functioning: latest upstream was fixed to `v1.2.25`, source trees were prepared outside Git, compatibility patch directories were introduced, and incompatible patches were identified before build/install. The next engineering step is to rebase `020`, `050`, `060`, and `900` against `v1.2.25` before running AlmaLinux/GUI validation.
+
+== Test environment status
+
+* Podman binary is present: `podman version 5.8.3`.
+* Default Podman storage is blocked on this NFS-backed home directory: `configure storage: a network file system with user namespaces is not supported`.
+* The requested XFS loop image exists at `$HOME/.local/share/podman-loop-storage/containers-storage.xfs`, but this session cannot mount it because elevated mount operations are unavailable.
+* AlmaLinux container install/update/uninstall and GUI validation were therefore not executed in this first attempt.
+
+== Immediate next steps
+
+. Mount the user-level XFS loop storage for Podman outside this restricted session.
+. Rebase conflicting patches `020`, `050`, `060`, and `900` against Codex++ `v1.2.25`.
+. Re-run `scripts/Installer-and-Manager.ps1 apply-snippets` or install/update against the fixed local `CodexPlusPlus/src`.
+. Build and validate inside the AlmaLinux 9 minimal container, then perform Computer Use GUI checks for every feature in `feature-matrix.json`.
