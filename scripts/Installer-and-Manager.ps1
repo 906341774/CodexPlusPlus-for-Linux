@@ -50,9 +50,9 @@ $ErrorActionPreference = "Stop"
 # Adapted Codex++ install path.
 # 适配后的 Codex++ 安装路径。
 # Optional values / 可选值:
-#   relative path: resolved from CodexDesktopRoot, e.g. codex-app/.codex-plusplus
+#   relative path: resolved from the detected Codex app directory, e.g. .codex-plusplus
 #   absolute path: used as-is
-[string]$CodexPlusPlusInstallPath = 'codex-app/.codex-plusplus'
+[string]$CodexPlusPlusInstallPath = '.codex-plusplus'
 
 # Upstream source URL used when no local source or package is configured.
 # 未指定本地源码或包时使用的上游源码地址。
@@ -366,13 +366,55 @@ function Quote-ShSingle {
 }
 
 function Resolve-AdapterInstallPath {
-    param([string]$DesktopRoot, [string]$InstallPath)
+    param([string]$CodexAppDir, [string]$InstallPath)
     $raw = $InstallPath.Trim()
     $usesShellRoot = $raw -eq '~' -or $raw.StartsWith('~/') -or $raw.StartsWith('$HOME') -or $raw.StartsWith('${HOME}') -or $raw.StartsWith('$env:HOME')
     if ([System.IO.Path]::IsPathRooted($raw) -or $usesShellRoot) {
         return Expand-AdapterPath $raw
     }
-    return [System.IO.Path]::GetFullPath((Join-Path $DesktopRoot $raw))
+    return [System.IO.Path]::GetFullPath((Join-Path $CodexAppDir $raw))
+}
+
+function Resolve-AdapterInstallPathForExistingOperation {
+    param(
+        [object]$CodexInfo,
+        [string]$InstallPath
+    )
+    $raw = $InstallPath.Trim()
+    $usesShellRoot = $raw -eq '~' -or $raw.StartsWith('~/') -or $raw.StartsWith('$HOME') -or $raw.StartsWith('${HOME}') -or $raw.StartsWith('$env:HOME')
+    if ([System.IO.Path]::IsPathRooted($raw) -or $usesShellRoot) {
+        return Resolve-AdapterInstallPath $CodexInfo.AppDir $raw
+    }
+
+    # EN: Uninstall/apply operations may run after Codex Desktop was moved or partially removed.
+    # EN: Check both documented layout anchors before falling back to the currently detected app directory.
+    # ZH: 卸载/apply 操作可能发生在 Codex Desktop 已被移动或部分删除之后。
+    # ZH: 回退到当前识别的 app 目录前，先检查两种文档化布局对应的安装锚点。
+    $candidateDirs = @(
+        [string]$CodexInfo.AppDir,
+        [string]$CodexInfo.Root,
+        (Join-Path ([string]$CodexInfo.Root) 'codex-app')
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+
+    foreach ($dir in $candidateDirs) {
+        $candidate = Resolve-AdapterInstallPath $dir $raw
+        if (Test-Path $candidate) { return $candidate }
+    }
+    return Resolve-AdapterInstallPath $CodexInfo.AppDir $raw
+}
+
+function Clear-CodexPlusPlusLatestStatusForKnownLayouts {
+    param([object]$CodexInfo)
+    # EN: Existing installs may have used either the direct app root or nested codex-app layout.
+    # ZH: 既有安装可能使用直接 app 根目录，也可能使用嵌套 codex-app 布局。
+    $candidateDirs = @(
+        [string]$CodexInfo.AppDir,
+        [string]$CodexInfo.Root,
+        (Join-Path ([string]$CodexInfo.Root) 'codex-app')
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+    foreach ($dir in $candidateDirs) {
+        Clear-CodexPlusPlusLatestStatus -CodexAppDir $dir
+    }
 }
 
 function Get-AdapterUserHome {
@@ -790,7 +832,13 @@ function Assert-InstalledLinuxAdaptationApplied {
 
 function Test-CodexDesktopInstall {
     param([string]$CodexRoot)
-    $appDir = Join-Path $CodexRoot 'codex-app'
+    $nestedAppDir = Join-Path $CodexRoot 'codex-app'
+    $directStart = Join-Path $CodexRoot 'start.sh'
+    # EN: ilysenko/codex-desktop-linux can be kept as a repository root containing codex-app,
+    # EN: or its built codex-app directory can be installed directly as the user-facing root.
+    # ZH: ilysenko/codex-desktop-linux 可保留为包含 codex-app 的源码根目录，
+    # ZH: 也可把构建出的 codex-app 目录内容直接作为用户安装根目录。
+    $appDir = if (Test-Path $directStart) { $CodexRoot } else { $nestedAppDir }
     $start = Join-Path $appDir 'start.sh'
     return [pscustomobject]@{
         Root = $CodexRoot
@@ -1199,16 +1247,18 @@ function Show-InfoPanel {
 function Invoke-InstallOrUpdate {
     param([bool]$IsUpdate)
     $codexRoot = Expand-AdapterPath $CodexDesktopRoot
-    $installRoot = Resolve-AdapterInstallPath $codexRoot $CodexPlusPlusInstallPath
-    $workRoot = Join-Path $installRoot $WorkDirName
     Add-AdapterLog "Using Codex Desktop root: $codexRoot"
-    Add-AdapterLog "Using Codex++ install root: $installRoot"
-    [void][System.IO.Directory]::CreateDirectory($workRoot)
 
     Invoke-AdapterStep 8 'Check Codex Desktop / 检查 Codex Desktop' {
         $script:CodexInfo = Test-CodexDesktopInstall $codexRoot
         if (-not $script:CodexInfo.Installed) { throw (T 'CodexMissing') }
     }
+    # EN: Relative Codex++ paths must follow the detected Linux app root, not a hard-coded codex-app child.
+    # ZH: 相对 Codex++ 路径必须跟随已识别的 Linux app 根目录，而不是硬编码 codex-app 子目录。
+    $installRoot = Resolve-AdapterInstallPath $script:CodexInfo.AppDir $CodexPlusPlusInstallPath
+    $workRoot = Join-Path $installRoot $WorkDirName
+    Add-AdapterLog "Using Codex++ install root: $installRoot"
+    [void][System.IO.Directory]::CreateDirectory($workRoot)
     Invoke-AdapterStep 16 'Prepare source / 准备源码' {
         $script:SourceRoot = Prepare-Source $workRoot
     }
@@ -1275,6 +1325,50 @@ function Invoke-SelfTest {
             throw "VERSION ($projectVersion) does not match pinned upstream version ($CodexPlusPlusUpstreamVersion)"
         }
     }
+    $layoutTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("codexpp-layout-selftest-{0}" -f ([Guid]::NewGuid().ToString('N')))
+    try {
+        $directRoot = Join-Path $layoutTestRoot 'CodexDesktop'
+        $nestedRoot = Join-Path $layoutTestRoot 'codex-desktop-linux'
+        $nestedApp = Join-Path $nestedRoot 'codex-app'
+        [void][System.IO.Directory]::CreateDirectory($directRoot)
+        [void][System.IO.Directory]::CreateDirectory($nestedApp)
+        [System.IO.File]::WriteAllText((Join-Path $directRoot 'start.sh'), "#!/bin/sh`n")
+        [System.IO.File]::WriteAllText((Join-Path $directRoot 'version'), "direct`n")
+        [System.IO.File]::WriteAllText((Join-Path $nestedApp 'start.sh'), "#!/bin/sh`n")
+        [System.IO.File]::WriteAllText((Join-Path $nestedApp 'version'), "nested`n")
+        [void][System.IO.Directory]::CreateDirectory((Join-Path $directRoot '.codex-plusplus'))
+        [void][System.IO.Directory]::CreateDirectory((Join-Path $nestedApp '.codex-plusplus'))
+
+        # EN: The installer must accept both Linux packaging layouts used by the documented workflows.
+        # ZH: 安装脚本必须同时接受文档工作流中会出现的两种 Linux 打包布局。
+        $directInfo = Test-CodexDesktopInstall $directRoot
+        $nestedInfo = Test-CodexDesktopInstall $nestedRoot
+        if (-not $directInfo.Installed -or [System.IO.Path]::GetFullPath($directInfo.AppDir) -ne [System.IO.Path]::GetFullPath($directRoot)) {
+            throw 'Direct Codex Desktop root layout was not detected correctly.'
+        }
+        if (-not $nestedInfo.Installed -or [System.IO.Path]::GetFullPath($nestedInfo.AppDir) -ne [System.IO.Path]::GetFullPath($nestedApp)) {
+            throw 'Nested codex-app layout was not detected correctly.'
+        }
+
+        # EN: Relative Codex++ install paths are resolved from the detected app directory, not blindly from the outer root.
+        # ZH: 相对 Codex++ 安装路径应从已识别的 app 目录解析，而不是盲目从外层根目录解析。
+        $directInstall = Resolve-AdapterInstallPath $directInfo.AppDir '.codex-plusplus'
+        $nestedInstall = Resolve-AdapterInstallPath $nestedInfo.AppDir '.codex-plusplus'
+        if ([System.IO.Path]::GetFullPath($directInstall) -ne [System.IO.Path]::GetFullPath((Join-Path $directRoot '.codex-plusplus'))) {
+            throw 'Direct Codex++ install path was not resolved from the direct app root.'
+        }
+        if ([System.IO.Path]::GetFullPath($nestedInstall) -ne [System.IO.Path]::GetFullPath((Join-Path $nestedApp '.codex-plusplus'))) {
+            throw 'Nested Codex++ install path was not resolved from the nested app root.'
+        }
+        if ([System.IO.Path]::GetFullPath((Resolve-AdapterInstallPathForExistingOperation $directInfo '.codex-plusplus')) -ne [System.IO.Path]::GetFullPath((Join-Path $directRoot '.codex-plusplus'))) {
+            throw 'Existing direct Codex++ install path was not found.'
+        }
+        if ([System.IO.Path]::GetFullPath((Resolve-AdapterInstallPathForExistingOperation $nestedInfo '.codex-plusplus')) -ne [System.IO.Path]::GetFullPath((Join-Path $nestedApp '.codex-plusplus'))) {
+            throw 'Existing nested Codex++ install path was not found.'
+        }
+    } finally {
+        if (Test-Path $layoutTestRoot) { Remove-Item -LiteralPath $layoutTestRoot -Recurse -Force }
+    }
     Write-Host "Selftest OK: manifest and patch attachments are readable."
 }
 
@@ -1291,20 +1385,22 @@ try {
         'uninstall' {
             Read-OperationPathConfiguration
             $codexRoot = Expand-AdapterPath $CodexDesktopRoot
-            $installRoot = Resolve-AdapterInstallPath $codexRoot $CodexPlusPlusInstallPath
+            $codexInfo = Test-CodexDesktopInstall $codexRoot
+            $installRoot = Resolve-AdapterInstallPathForExistingOperation $codexInfo $CodexPlusPlusInstallPath
             Add-AdapterLog "Using Codex Desktop root: $codexRoot"
             Add-AdapterLog "Using Codex++ install root: $installRoot"
             if (Confirm-AdapterAction (T 'ConfirmUninstall') $true) {
                 Invoke-AdapterStep 100 'Uninstall / 卸载' {
                     Uninstall-AdaptedCodexPlusPlus $installRoot
-                    Clear-CodexPlusPlusLatestStatus -CodexAppDir (Join-Path $codexRoot 'codex-app')
+                    Clear-CodexPlusPlusLatestStatusForKnownLayouts $codexInfo
                 }
             }
         }
         'list-snippets' { Invoke-ListSnippets }
         'apply-snippets' {
             $codexRoot = Expand-AdapterPath $CodexDesktopRoot
-            $installRoot = Resolve-AdapterInstallPath $codexRoot $CodexPlusPlusInstallPath
+            $codexInfo = Test-CodexDesktopInstall $codexRoot
+            $installRoot = Resolve-AdapterInstallPathForExistingOperation $codexInfo $CodexPlusPlusInstallPath
             $workRoot = Join-Path $installRoot $WorkDirName
             $sourceRoot = Join-Path $workRoot 'source'
             if (-not (Test-Path $sourceRoot)) { throw "No prepared source found: $sourceRoot" }

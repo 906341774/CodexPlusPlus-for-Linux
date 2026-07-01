@@ -56,13 +56,46 @@ pwsh -NoLogo -NoProfile -File scripts/Installer-and-Manager.ps1 selftest -NonInt
   `git apply --check` must pass for every patch before building.
 . Run the white-box regression tests from `900-regression-tests`.
   At minimum, run the focused Rust tests that cover path resolution, CDP target selection, launcher environment, Pure API config sync, renderer injection, Fast button placement, and user-script location aliasing.
+. Prepare the AlmaLinux minimal container environment.
+  The rootless Podman storage must use the user-level XFS loop mount when the home directory is backed by NFS:
++
+[source,bash]
+----
+sudo mount -o loop,rw "$HOME/.local/share/podman-loop-storage/containers-storage.xfs" "$HOME/.local/share/containers"
+----
++
+  Stop and report if this mount, the AlmaLinux image pull, or container creation fails.
+  A missing Podman environment is a foundational blocker, not a reason to replace the required validation with a source-only workaround.
+. Build and install `ilysenko/codex-desktop-linux` in the container using the PowerShell procedure from the prompt and README.
+  The validation install root is `$HOME/opt/CodexDesktop`; this path is the Codex app root itself and must not be rewritten as `$HOME/opt/CodexDesktop/codex-app`.
 . Run the AlmaLinux minimal container install cycle.
   The cycle must cover non-interactive install, update, uninstall, and the interactive prompt path where Enter accepts each configured default.
+  Pass the Codex Desktop root explicitly and leave the Codex++ install path unspecified so the script default is tested:
++
+[source,powershell]
+----
+pwsh ./scripts/Installer-and-Manager.ps1 -Action install -CodexDesktopRootPath "$HOME/opt/CodexDesktop" -NonInteractive
+pwsh ./scripts/Installer-and-Manager.ps1 -Action update -CodexDesktopRootPath "$HOME/opt/CodexDesktop" -NonInteractive
+pwsh ./scripts/Installer-and-Manager.ps1 -Action uninstall -CodexDesktopRootPath "$HOME/opt/CodexDesktop" -NonInteractive
+----
 . Run GUI validation.
   Start Codex Desktop through the newly installed Codex++ Manager, then verify the feature matrix black-box checks by Computer Use screenshots and CDP DOM assertions.
+  Stop and report if Computer Use or equivalent GUI automation repeatedly fails after the application is running; GUI evidence is part of the release gate.
 . Update the snippets, feature matrix, and workflow docs if any upstream change makes a patch unnecessary or insufficient.
 . Clean temporary source trees, container images, caches, and test files before committing.
 . Commit and push only after the feature matrix has been checked off for the target version.
+
+== Stop and report conditions
+
+The maintainer may ask for mostly automatic execution, but the following conditions must stop the adaptation run and be reported clearly:
+
+* the user-level XFS loop storage cannot be mounted for rootless Podman;
+* AlmaLinux minimal cannot be pulled or started;
+* the explicit `-CodexDesktopRootPath "$HOME/opt/CodexDesktop"` install path cannot be validated;
+* Computer Use or another GUI validation channel repeatedly fails after the app starts;
+* the validation would require changing the requested workflow semantics rather than fixing the adapter.
+
+When one of these happens, do not silently substitute a weaker validation layer.
 
 == Patch categories
 
@@ -95,3 +128,9 @@ The repository may be pushed to the maintainer fork after all validation layers 
 
 If GitHub Actions is used for publication, prefer a manually triggered release job with explicit `contents: write` permission and a repository secret such as `FORK_PUSH_TOKEN`.
 Scheduled jobs should report status but should not push unreviewed adaptations automatically.
+
+== Repository hygiene
+
+Podman container files, local storage configuration, cache directories, and transient test work directories must stay out of Git.
+Upstream source and release artifacts are a maintainer policy decision: do not exclude or delete `CodexPlusPlus/`, `codex-desktop-linux/`, source snapshots, or release archives merely because they came from upstream.
+If those artifacts are added later, document why they are needed and which upstream version or tag they represent.

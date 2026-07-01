@@ -8,8 +8,6 @@ target/
 *.xfs
 containers-storage/
 podman/
-CodexPlusPlus/
-codex-desktop-linux/
 .codex
 
 # 一些编写的给AI的提示词的临时文本

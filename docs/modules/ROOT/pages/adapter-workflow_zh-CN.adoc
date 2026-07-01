@@ -56,13 +56,46 @@ pwsh -NoLogo -NoProfile -File scripts/Installer-and-Manager.ps1 selftest -NonInt
   每个 patch 在实际应用前都必须通过 `git apply --check`。
 . 运行 `900-regression-tests` 中的白盒回归测试。
   至少覆盖路径识别、CDP target 选择、launcher 环境、Pure API 配置同步、renderer injection、Fast 按钮位置、用户脚本 location 别名。
+. 准备 AlmaLinux minimal 容器环境。
+  当 home 目录位于 NFS 上时，rootless Podman 存储必须使用用户级 XFS loop 挂载：
++
+[source,bash]
+----
+sudo mount -o loop,rw "$HOME/.local/share/podman-loop-storage/containers-storage.xfs" "$HOME/.local/share/containers"
+----
++
+  如果此挂载、AlmaLinux 镜像拉取或容器创建失败，必须停下上报。
+  Podman 环境缺失是基础阻断条件，不能用仅源码层面的替代验证绕过去。
+. 在容器内使用提示词和 README 中的 PowerShell 流程构建并安装 `ilysenko/codex-desktop-linux`。
+  验证安装根目录是 `$HOME/opt/CodexDesktop`；这个路径就是 Codex app 根目录本身，不得改写成 `$HOME/opt/CodexDesktop/codex-app`。
 . 运行 AlmaLinux minimal 容器安装循环。
   必须覆盖非交互 install、update、uninstall，以及交互式路径询问中直接回车接受默认值的流程。
+  传参时必须显式指定 Codex Desktop 根目录，并且不指定 Codex++ 安装目录，以测试脚本默认值：
++
+[source,powershell]
+----
+pwsh ./scripts/Installer-and-Manager.ps1 -Action install -CodexDesktopRootPath "$HOME/opt/CodexDesktop" -NonInteractive
+pwsh ./scripts/Installer-and-Manager.ps1 -Action update -CodexDesktopRootPath "$HOME/opt/CodexDesktop" -NonInteractive
+pwsh ./scripts/Installer-and-Manager.ps1 -Action uninstall -CodexDesktopRootPath "$HOME/opt/CodexDesktop" -NonInteractive
+----
 . 运行 GUI 验证。
   通过新安装的 Codex++ Manager 启动 Codex Desktop，再用 Computer Use 截图和 CDP DOM 断言验证功能矩阵中的黑盒检查项。
+  如果应用已经启动，但 Computer Use 或等价 GUI 自动化反复失败，必须停下上报；GUI 证据是发布门禁的一部分。
 . 如果上游变化导致某个 patch 已不再必要或不再充分，必须同步更新 snippets、功能矩阵和工作流文档。
 . 提交前清理临时源码树、容器镜像、缓存和测试文件。
 . 只有目标版本的功能矩阵全部验收后，才提交并推送。
+
+== 必须停下上报的条件
+
+维护者可以要求尽量自动完成，但遇到以下情况时必须停止适配流程，并清楚报告：
+
+* 用户级 XFS loop 存储无法为 rootless Podman 挂载；
+* AlmaLinux minimal 无法拉取或启动；
+* 显式 `-CodexDesktopRootPath "$HOME/opt/CodexDesktop"` 安装路径无法验证；
+* 应用已启动后，Computer Use 或其它 GUI 验证通道仍反复失败；
+* 继续验证需要改变用户指定的工作流语义，而不是修复适配层本身。
+
+发生这些情况时，不得静默替换成更弱的验证层。
 
 == 补丁分类
 
@@ -95,3 +128,9 @@ pwsh -NoLogo -NoProfile -File scripts/Installer-and-Manager.ps1 selftest -NonInt
 
 如果使用 GitHub Actions 发布，建议使用手动触发的 release job，明确声明 `contents: write` 权限，并通过 `FORK_PUSH_TOKEN` 之类的仓库 secret 推送。
 定时任务应报告状态，不应自动推送未经人工确认的新适配。
+
+== 仓库卫生
+
+Podman 容器文件、本地存储配置、缓存目录和临时测试 work 目录必须保持在 Git 之外。
+上游源码和发行文件是否入库属于维护者策略决定：不要仅因为 `CodexPlusPlus/`、`codex-desktop-linux/`、源码快照或发行归档来自上游，就擅自排除或删除它们。
+如果后续加入这些文件，应说明它们的用途以及对应的上游版本或 tag。

@@ -29,7 +29,7 @@ link:README.adoc[English] | 简体中文
 
 == 预期的 Linux Codex Desktop 布局
 
-默认情况下，脚本预期存在：
+默认情况下，脚本可接受仓库式布局：
 
 [source,text]
 ----
@@ -37,11 +37,21 @@ $HOME/opt/codex-desktop-linux/codex-app/start.sh
 $HOME/opt/codex-desktop-linux/codex-app/version
 ----
 
-默认 Codex++ 适配器安装路径为：
+也可接受本项目验证工作流使用的直接 app-root 布局：
+
+[source,text]
+----
+$HOME/opt/CodexDesktop/start.sh
+$HOME/opt/CodexDesktop/version
+----
+
+默认 Codex++ 适配器安装路径为已识别 Codex app 目录下的 `.codex-plusplus`。
+例如：
 
 [source,text]
 ----
 $HOME/opt/codex-desktop-linux/codex-app/.codex-plusplus
+$HOME/opt/CodexDesktop/.codex-plusplus
 ----
 
 == 先安装 Linux Codex Desktop
@@ -49,41 +59,45 @@ $HOME/opt/codex-desktop-linux/codex-app/.codex-plusplus
 安装本适配器之前，请先按照 https://github.com/ilysenko/codex-desktop-linux 的 `README.md` 操作。
 下面的命令是一个实用示例；当前平台所需依赖和要求请以该上游 README 为准。
 
-[source,shell,subs="attributes,macros"]
+[source,powershell,subs="attributes,macros"]
 ----
-# Unofficial Linux Codex Desktop build, from:
-# https://github.com/ilysenko/codex-desktop-linux
+$codexDesktopLinuxSource = "$HOME/opt/CodexPlusPlus-on-Linux/codex-desktop-linux/src"
+$codexDesktopInstallPath = "$HOME/opt/CodexDesktop"
 
-cd "$HOME/opt"
-git clone https://github.com/ilysenko/codex-desktop-linux.git
-cd codex-desktop-linux
+Set-Location $codexDesktopLinuxSource
+Set-Item Env:CODEX_LINUX_FEATURES 'agent-workspace,api-key-service-tier,appshots,authenticated-proxy,codex-wrapper-updater,conversation-mode,copilot-reasoning-effort,frameless-titlebar,node-repl-reaper,open-target-discovery,persistent-status-panel,read-aloud,read-aloud-mcp,remote-control-ui,remote-mobile-control,thorium-chrome-plugin,x11-ewmh-computer-use,zed-opener'
+Set-Item Env:CODEX_LINUX_DISABLE_FEATURES ''
+Set-Item Env:PACKAGE_WITH_UPDATER '0'
+Set-Item Env:CODEX_BOOTSTRAP_NONINTERACTIVE '1'
+Set-Item Env:CODEX_LINUX_ENABLE_COMPUTER_USE_UI '1'
 
-# Check native build requirements.
-make setup-native
-
-# Install missing dependencies reported by setup-native.
-# Example on Arch Linux:
-sudo pacman -S --needed ydotool
-
-# Arch Linux may provide ydotool as a user service.
-systemctl --user daemon-reload
-systemctl --user enable --now ydotool.service
-sudo usermod -a -G input "$USER"
-
-# Build the native app. The Computer Use UI entry is enabled by CODEX_LINUX_ENABLE_COMPUTER_USE_UI=1.
-CODEX_LINUX_FEATURES=conversation-mode,copilot-reasoning-effort,example-feature,open-target-discovery,read-aloud,read-aloud-mcp,remote-control-ui,remote-mobile-control,zed-opener \
-CODEX_LINUX_DISABLE_FEATURES= \
-PACKAGE_WITH_UPDATER=0 \
-CODEX_BOOTSTRAP_NONINTERACTIVE=1 \
-CODEX_LINUX_ENABLE_COMPUTER_USE_UI=1 \
 make build-app
+if (Test-Path $codexDesktopInstallPath) {
+    throw "Install path already exists: $codexDesktopInstallPath"
+}
+Move-Item -Path "codex-app" -Destination $codexDesktopInstallPath
 
-# Optional user-level launch integration.
-ln -s "$(pwd)/codex-app/start.sh" "$HOME/.local/bin/codex-desktop-linux"
-ln -s "$(pwd)/codex-app/.codex-linux/codex-desktop.png" "$HOME/.local/share/icons/codex-desktop.png"
-cp "contrib/user-local-install/files/.local/share/applications/codex-desktop.desktop" "$HOME/.local/share/applications/codex-desktop-linux.desktop"
-sed -i 's/^Exec=.*/Exec=codex-desktop-linux/' "$HOME/.local/share/applications/codex-desktop-linux.desktop"
+New-Item -ItemType Directory -Force -Path "$HOME/.local/bin", "$HOME/.local/share/icons", "$HOME/.local/share/applications"
+New-Item -ItemType SymbolicLink -Force `
+    -Path "$HOME/.local/bin/codex-desktop-linux" `
+    -Target (Join-Path $codexDesktopInstallPath 'start.sh' -Resolve)
+New-Item -ItemType SymbolicLink -Force `
+    -Path "$HOME/.local/share/icons/codex-desktop.png" `
+    -Target (Join-Path $codexDesktopInstallPath '.codex-linux' 'codex-desktop.png' -Resolve)
+
+$desktopFilePath = "$HOME/.local/share/applications/codex-desktop-linux.desktop"
+Copy-Item -Path "contrib/user-local-install/files/.local/share/applications/codex-desktop.desktop" -Destination $desktopFilePath -Force
+(Get-Content $desktopFilePath) -creplace '^Exec=.*', 'Exec=codex-desktop-linux' | Set-Content $desktopFilePath
+
+Remove-Item -ErrorAction SilentlyContinue `
+    Env:CODEX_LINUX_FEATURES,
+    Env:CODEX_LINUX_DISABLE_FEATURES,
+    Env:PACKAGE_WITH_UPDATER,
+    Env:CODEX_BOOTSTRAP_NONINTERACTIVE,
+    Env:CODEX_LINUX_ENABLE_COMPUTER_USE_UI
 ----
+
+`ydotool` 的安装命令本身因发行版而异；当前包名和服务配置请参考 `ilysenko/codex-desktop-linux` 的 `docs/linux-computer-use.md`。
 
 如果要更新 Linux Codex Desktop 构建，请替换 `ilysenko/codex-desktop-linux` 使用的 `codex.dmg`，然后重新执行它的构建流程。
 
@@ -93,14 +107,14 @@ sed -i 's/^Exec=.*/Exec=codex-desktop-linux/' "$HOME/.local/share/applications/c
 
 [source,powershell]
 ----
-pwsh ./scripts/Installer-and-Manager.ps1 -Action install
+pwsh ./scripts/Installer-and-Manager.ps1 -Action install -CodexDesktopRootPath "$HOME/opt/CodexDesktop"
 ----
 
 脚本默认值保持保守：
 
 * Codex Desktop 根目录：`$HOME/opt/codex-desktop-linux`
 * Codex++ 源码：拉取 `https://github.com/BigPizzaV3/CodexPlusPlus`
-* Codex++ 安装路径：`codex-app/.codex-plusplus`
+* Codex++ 安装路径：已识别 Codex app 目录下的 `.codex-plusplus`
 * 回归测试片段：启用
 * 更新检查提示：默认禁用
 
@@ -110,13 +124,13 @@ pwsh ./scripts/Installer-and-Manager.ps1 -Action install
 它们的显示名称为 `Codex++` 和 `Codex++ Manager`，会在可用时复用 Linux Codex Desktop 图标，并替换旧的适配器品牌 `*-linux.desktop` 入口。
 
 脚本顶部有配置区。
-它支持 shell 风格路径值，例如 `$HOME/opt/codex-desktop-linux`、`${HOME}/opt/codex-desktop-linux`、`$env:HOME/opt/codex-desktop-linux` 和 `~/opt/codex-desktop-linux`。
+它支持 shell 风格路径值，例如 `$HOME/opt/CodexDesktop`、`${HOME}/opt/CodexDesktop`、`$env:HOME/opt/CodexDesktop` 和 `~/opt/CodexDesktop`。
 
 == 更新适配后的 Codex++
 
 [source,powershell]
 ----
-pwsh ./scripts/Installer-and-Manager.ps1 -Action update
+pwsh ./scripts/Installer-and-Manager.ps1 -Action update -CodexDesktopRootPath "$HOME/opt/CodexDesktop"
 ----
 
 `update` 操作会拉取或复制一份新的上游源码，重新应用已启用片段，重新构建，并替换已安装的适配器二进制文件。
@@ -125,7 +139,7 @@ pwsh ./scripts/Installer-and-Manager.ps1 -Action update
 
 [source,powershell]
 ----
-pwsh ./scripts/Installer-and-Manager.ps1 -Action uninstall
+pwsh ./scripts/Installer-and-Manager.ps1 -Action uninstall -CodexDesktopRootPath "$HOME/opt/CodexDesktop"
 ----
 
 默认会保留用户脚本。

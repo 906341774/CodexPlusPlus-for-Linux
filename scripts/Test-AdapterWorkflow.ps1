@@ -35,6 +35,19 @@ function Assert-TextContains {
     }
 }
 
+function Assert-TextNotContains {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Needle,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $fullPath = Resolve-RepoPath $Path
+    $text = Get-Content -LiteralPath $fullPath -Raw
+    if ($text.Contains($Needle)) {
+        throw "Workflow contract failed: $Label must not be present in $Path"
+    }
+}
+
 function Read-JsonFile {
     param([Parameter(Mandatory = $true)][string]$Path)
     $fullPath = Resolve-RepoPath $Path
@@ -113,6 +126,20 @@ Assert-TextContains 'scripts/Run-AdapterRegression.ps1' 'Installer-and-Manager.p
 # ZH: 文档必须把维护者引向可机器检查的功能矩阵。
 Assert-TextContains 'docs/modules/ROOT/pages/adapter-workflow.adoc' 'feature-matrix.json' 'English workflow feature matrix link'
 Assert-TextContains 'docs/modules/ROOT/pages/adapter-workflow_zh-CN.adoc' 'feature-matrix.json' 'Chinese workflow feature matrix link'
+Assert-TextContains 'docs/modules/ROOT/pages/adapter-workflow.adoc' 'sudo mount -o loop,rw "$HOME/.local/share/podman-loop-storage/containers-storage.xfs" "$HOME/.local/share/containers"' 'English workflow Podman XFS mount prerequisite'
+Assert-TextContains 'docs/modules/ROOT/pages/adapter-workflow_zh-CN.adoc' 'sudo mount -o loop,rw "$HOME/.local/share/podman-loop-storage/containers-storage.xfs" "$HOME/.local/share/containers"' 'Chinese workflow Podman XFS mount prerequisite'
+Assert-TextContains 'docs/modules/ROOT/pages/adapter-workflow.adoc' '-CodexDesktopRootPath "$HOME/opt/CodexDesktop"' 'English workflow explicit validation Codex Desktop root'
+Assert-TextContains 'docs/modules/ROOT/pages/adapter-workflow_zh-CN.adoc' '-CodexDesktopRootPath "$HOME/opt/CodexDesktop"' 'Chinese workflow explicit validation Codex Desktop root'
+Assert-TextContains 'docs/modules/ROOT/pages/adapter-workflow.adoc' 'Stop and report' 'English workflow mandatory stop conditions'
+Assert-TextContains 'docs/modules/ROOT/pages/adapter-workflow_zh-CN.adoc' '必须停下上报' 'Chinese workflow mandatory stop conditions'
+Assert-TextContains 'docs/modules/ROOT/pages/adapter-workflow.adoc' 'Upstream source and release artifacts are a maintainer policy decision' 'English workflow upstream artifact policy'
+Assert-TextContains 'docs/modules/ROOT/pages/adapter-workflow_zh-CN.adoc' '上游源码和发行文件是否入库属于维护者策略决定' 'Chinese workflow upstream artifact policy'
+Assert-TextContains 'README.adoc' '-CodexDesktopRootPath "$HOME/opt/CodexDesktop"' 'English README explicit Codex Desktop root install example'
+Assert-TextContains 'README_zh-CN.adoc' '-CodexDesktopRootPath "$HOME/opt/CodexDesktop"' 'Chinese README explicit Codex Desktop root install example'
+Assert-TextContains 'README.adoc' '[source,powershell' 'English README keeps Codex Desktop build example in PowerShell'
+Assert-TextContains 'README_zh-CN.adoc' '[source,powershell' 'Chinese README keeps Codex Desktop build example in PowerShell'
+Assert-TextNotContains '.gitignore' "`nCodexPlusPlus/`n" 'blanket upstream Codex++ source ignore'
+Assert-TextNotContains '.gitignore' "`ncodex-desktop-linux/`n" 'blanket upstream Codex Desktop source ignore'
 Assert-TextContains 'docs/modules/ROOT/pages/snippets.adoc' 'patches/compatibility/' 'English snippets compatibility patch directory'
 Assert-TextContains 'docs/modules/ROOT/pages/snippets.adoc' 'patches/enhancements/' 'English snippets enhancement patch directory'
 Assert-TextContains 'docs/modules/ROOT/pages/snippets_zh-CN.adoc' 'patches/compatibility/' 'Chinese snippets compatibility patch directory'
