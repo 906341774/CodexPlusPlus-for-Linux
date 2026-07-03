@@ -1,0 +1,115 @@
+= Codex++ v1.2.27 Linux adaptation attempt
+:toc:
+:toclevels: 2
+
+Date: 2026-07-01
+
+== Fixed upstream inputs
+
+* Codex++ upstream: `BigPizzaV3/CodexPlusPlus` `v1.2.27`, tag object `4c92976ba146063ea82cac788cf7c8eb6c80fa39`, source commit `9bf0e787f9cbcf9767940a1a2e33f5c54dd71846`.
+* Previous upstream tags checked during this pass: `v1.2.26` at `e190f5f9be379b796cba3ba5142418886161ea0c`, `v1.2.25` at `9c5c6e1776f806d75f29108d9ee7e048fcb0fb97`.
+* Linux Codex Desktop upstream checkout used for local reference: `ilysenko/codex-desktop-linux` `main` at `9772c4ae2ba4ec604c8546e9b70ea5d95fd1a5df`.
+* Important checkout rule: use `git checkout --detach v1.2.27^{}` when creating clean Codex++ worktrees. The plain tag name is an annotated tag object, and local temporary commits must not be treated as upstream state.
+
+== Release notes reviewed
+
+=== v1.2.26
+
+Source: https://github.com/BigPizzaV3/CodexPlusPlus/releases/tag/v1.2.26[]
+
+* Removed the special plugin forced-install feature while keeping plugin marketplace unlock behavior.
+* Updated Codex++ icon resources.
+* Fixed `config.toml` UTF-8 BOM parse/write compatibility.
+* Upstream validation listed `node tools/i18n-verify.mjs`, `npm run check`, `cargo test -p codex-plus-core`, and `npm run build`.
+
+Linux adapter impact:
+
+* The `050-pure-api-config-sync` patch was kept and rebased so live Codex config writes normalize BOM-prefixed TOML before validation and writeback on every platform, not only Windows.
+* Desktop-entry icon behavior remains governed by `040-linux-entrypoints-health`, which intentionally preserves upstream-style Codex++ launcher names and descriptions on Linux.
+
+=== v1.2.27
+
+Source: https://github.com/BigPizzaV3/CodexPlusPlus/releases/tag/v1.2.27[]
+
+* Fixed session move failures caused by stale frontend asset hashes in newer Codex builds.
+* Fixed session move paths that selected old SQLite databases and then reported `Thread not found`.
+* Fixed stale project state and provider sync restoring old `cwd` after moving sessions back to normal conversations.
+* Improved diagnostics around session move failures.
+* Upstream validation listed `node tools/i18n-verify.mjs`, `npm run check`, `cargo test -p codex-plus-core`, `cargo test -p codex-plus-data`, and `npm run build`.
+
+Linux adapter impact:
+
+* The provider sync area changed enough that the Linux adapter needed an additional compatibility patch for Codex Desktop's new `local_thread_catalog` tables.
+* The user-visible symptom is that Codex++ Manager can still list local sessions while Linux Codex Desktop project sidebars show an empty conversation state.
+* The new `080-linux-local-thread-catalog-sync` patch backfills the newer local catalog from legacy `threads` rows during provider sync, excluding archived, projectless, and non-user-event threads.
+
+== Patch apply audit against v1.2.27
+
+[cols="1,1,3", options="header"]
+|===
+|Patch |Status |Notes
+
+|010-linux-app-paths
+|Required
+|Rebased cleanly; still needed for Linux `codex-app/start.sh` and `version` file detection.
+
+|020-cdp-multi-target-injection
+|Required
+|Rebased cleanly; still needed for multi-target Linux webview injection and main-window preference.
+
+|030-linux-launcher-environment
+|Required
+|Rebased cleanly; keeps resolver/proxy environment, safe ports, private-network helper preflights, and Linux wrapper startup behavior.
+
+|040-linux-entrypoints-health
+|Required
+|Rebased cleanly; keeps Linux app-local launcher and manager health detection while preserving upstream-style desktop entries.
+
+|050-pure-api-config-sync
+|Required
+|Rebased with the upstream BOM fix; live config writes now normalize BOM-prefixed TOML before validation/writeback.
+
+|060-renderer-linux-compatibility
+|Required
+|Manually rebased for v1.2.27 renderer changes; covers plugin navigation/detail compatibility, Pure API account/read compatibility, delete stability, floating menu placement, and Fast badge Linux composer placement/clickability.
+
+|070-linux-user-scripts-compatibility
+|Required
+|Rebased cleanly; still needed for marketplace user scripts that expect `app://-/index.html`.
+
+|080-linux-local-thread-catalog-sync
+|Required
+|New in this pass; backfills `local_thread_catalog` from existing session `threads` rows so project sidebars can see legacy local conversations after Codex storage schema updates.
+
+|900-regression-tests
+|Optional
+|Rebased and extended; now also covers local thread catalog backfill in `crates/codex-plus-data/tests/provider_sync.rs`.
+|===
+
+== White-box validation so far
+
+These checks were run in a clean v1.2.27 worktree after applying the rebased patch set:
+
+* `cargo test -p codex-plus-core --test cdp_bridge`
+* `cargo test -p codex-plus-core --test launcher`
+* `cargo test -p codex-plus-core --test installers`
+* `cargo test -p codex-plus-core --test relay_config`
+* `cargo test -p codex-plus-data --test provider_sync`
+
+The TDD cycle for `080-linux-local-thread-catalog-sync` used a failing `provider_sync_backfills_new_local_thread_catalog_from_legacy_state_db` test before implementing the provider sync backfill.
+
+== Pending black-box validation
+
+The following items must still pass before tagging and pushing the adapter release:
+
+* Recreate a clean v1.2.27 Codex++ checkout and replay the Antora snippet manifest with `git apply --check` and `git apply`.
+* Run adapter-level PowerShell selftests and regression scripts from this repository.
+* In an AlmaLinux 9 minimal Podman container stored under the user-level XFS-backed Podman directory, validate non-interactive install, update, and uninstall.
+* In the same container, validate interactive install/update/uninstall prompts and Enter-as-default behavior.
+* Build/install `ilysenko/codex-desktop-linux` inside the container with the PowerShell flow from the project prompt, passing `$HOME/opt/CodexDesktop` as the Codex Desktop install path.
+* Use Computer Use screenshots as the primary GUI acceptance evidence for Codex++ Manager health checks, plugin unlock/detail, Fast badge, user-script context meter, and local conversation sidebar visibility.
+* Only after container and GUI validation pass, copy the verified result to the host Codex Desktop/Codex++ installation.
+
+== Current conclusion
+
+The v1.2.27 source patch set is ready for replay and container validation. It is not yet a completed release until the AlmaLinux Podman install/update/uninstall cycle and Computer Use GUI checks pass.

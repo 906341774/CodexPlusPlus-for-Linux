@@ -1,8 +1,8 @@
 diff --git a/apps/codex-plus-manager/src-tauri/src/commands.rs b/apps/codex-plus-manager/src-tauri/src/commands.rs
-index be41a35..a40e5fe 100644
+index 7ac18aa..8eb4ec3 100644
 --- a/apps/codex-plus-manager/src-tauri/src/commands.rs
 +++ b/apps/codex-plus-manager/src-tauri/src/commands.rs
-@@ -2291,12 +2291,13 @@ fn load_overview_payload() -> (
+@@ -2842,12 +2842,13 @@ fn load_overview_payload() -> (
      Option<LaunchStatus>,
  ) {
      let settings = SettingsStore::default().load().unwrap_or_default();
@@ -31,16 +31,16 @@ index e524db7..13b1803 100644
 +    EntryPointState, InstallActionResult, InstallOptions, ShortcutState,
 +    inspect_entrypoints, inspect_entrypoints_for_app,
  };
- 
+
  pub fn install_entrypoints() -> InstallActionResult {
 diff --git a/crates/codex-plus-core/src/install/mod.rs b/crates/codex-plus-core/src/install/mod.rs
-index 17058b3..787fb76 100644
+index 2f105ed..5db140d 100644
 --- a/crates/codex-plus-core/src/install/mod.rs
 +++ b/crates/codex-plus-core/src/install/mod.rs
 @@ -75,15 +75,27 @@ pub fn shortcut_names() -> (&'static str, &'static str) {
      ("Codex++.lnk", "Codex++ 管理工具.lnk")
  }
- 
+
 +pub fn desktop_entry_file_names() -> (&'static str, &'static str) {
 +    ("codex-plus-plus.desktop", "codex-plus-plus-manager.desktop")
 +}
@@ -48,7 +48,7 @@ index 17058b3..787fb76 100644
  pub fn app_bundle_names() -> (&'static str, &'static str) {
      ("Codex++.app", "Codex++ 管理工具.app")
  }
- 
+
  pub fn inspect_entrypoints() -> EntryPointState {
 +    inspect_entrypoints_for_app(None)
 +}
@@ -66,8 +66,8 @@ index 17058b3..787fb76 100644
 +        )),
      }
  }
- 
-@@ -214,7 +226,104 @@ fn entrypoint_candidates(root: &Option<PathBuf>, manager: bool) -> Vec<PathBuf>
+
+@@ -227,7 +239,104 @@ fn entrypoint_candidates(root: &Option<PathBuf>, manager: bool) -> Vec<PathBuf>
      } else if cfg!(target_os = "macos") {
          vec![root.join(format!("{name}.app"))]
      } else {
@@ -172,4 +172,4 @@ index 17058b3..787fb76 100644
 +        ]
      }
  }
- 
+

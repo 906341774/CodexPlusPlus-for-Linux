@@ -1,17 +1,120 @@
 diff --git a/assets/inject/renderer-inject.js b/assets/inject/renderer-inject.js
-index 7c46728..cd53858 100644
+index 9007c9c..b4daa7b 100644
 --- a/assets/inject/renderer-inject.js
 +++ b/assets/inject/renderer-inject.js
-@@ -344,6 +344,8 @@
+@@ -343,6 +343,8 @@
+   const codexThreadScrollRouteHooksVersion = "dispatcher:2";
    const codexThreadScrollListenerVersion = "4";
    const codexThreadScrollUserIntentVersion = "dispatcher:2";
-   const codexForcePluginInstallRefreshIntervalMs = 1000;
 +  const codexPluginEntryUnlockVersion = "2";
 +  const codexPluginEntryRefreshIntervalMs = 1000;
    const codexPlusImageOverlayId = "codex-plus-image-overlay";
    window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
    const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
-@@ -1697,7 +1699,7 @@
+@@ -1388,30 +1390,80 @@
+   const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
+   const codexServiceTierFallbackFastValue = "priority";
+   const codexServiceTierModulePromises = new Map();
++  const codexAppAssetTextPromises = new Map();
++  const codexAppAssetFeatureFallbacks = {
++    "setting-storage-": [
++      ["default-service-tier", "dispatchMessage", "service_tier"],
++      ["pending-worktree-create", "dispatchMessage", "service_tier"],
++    ],
++    "app-server-manager-signals-": [
++      ["sendRequest", "list-plugins", "install-plugin", "account/read"],
++      ["sendRequest", "list-plugins", "install-plugin", "plugin/read"],
++      ["sendRequest", "list-plugins", "install-plugin"],
++    ],
++  };
+   const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5"]);
+   const codexThreadServiceTierModes = new Set(["inherit", "standard", "fast"]);
+   const codexServiceTierControlModes = new Set(["inherit", "global-standard", "global-fast", "custom"]);
+
+-  function codexAppAssetUrl(namePart) {
+-    const urls = [
++  function codexAppAssetCandidateUrls() {
++    return Array.from(new Set([
+       ...Array.from(document.scripts || []).map((script) => script.src),
+       ...Array.from(document.querySelectorAll("link[href]") || []).map((link) => link.href),
+       ...performance.getEntriesByType("resource").map((entry) => entry.name),
+-    ].filter(Boolean);
+-    return urls.find((url) => url.includes("/assets/") && url.includes(namePart) && url.split("?")[0].endsWith(".js")) || "";
++    ].filter(Boolean)))
++      .filter((url) => url.includes("/assets/") && url.split("?")[0].endsWith(".js"));
++  }
++
++  function codexAppAssetImportableUrl(url) {
++    if (!url) return "";
++    if (url.startsWith("app://-/assets/")) return "";
++    return url;
++  }
++
++  function codexAppAssetUrl(namePart) {
++    const urls = codexAppAssetCandidateUrls();
++    const url = urls.find((url) => url.includes("/assets/") && url.includes(namePart) && url.split("?")[0].endsWith(".js")) || "";
++    return codexAppAssetImportableUrl(url);
++  }
++
++  async function codexAppAssetText(url) {
++    if (!codexAppAssetTextPromises.has(url)) {
++      codexAppAssetTextPromises.set(
++        url,
++        fetch(url)
++          .then((response) => response.ok ? response.text() : "")
++          .catch(() => "")
++      );
++    }
++    return await codexAppAssetTextPromises.get(url);
+   }
+
+   async function codexAppAssetUrlFromScriptText(namePart) {
+     const scripts = Array.from(document.scripts || []).map((script) => script.src).filter(Boolean);
+     for (const src of scripts) {
+       if (!src.includes("/assets/") || !src.split("?")[0].endsWith(".js")) continue;
+-      try {
+-        const text = await fetch(src).then((response) => response.ok ? response.text() : "");
+-        const escaped = namePart.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+-        const match = text.match(new RegExp(`["'](\\./assets/${escaped}[^"']+\\.js)["']`));
+-        if (!match) continue;
+-        return new URL(match[1], src).href;
+-      } catch {
++      const text = await codexAppAssetText(src);
++      const escaped = namePart.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
++      const match = text.match(new RegExp(`["'](\\./assets/${escaped}[^"']+\\.js)["']`));
++      if (!match) continue;
++      const href = new URL(match[1], src).href;
++      if (!codexAppAssetImportableUrl(href)) continue;
++      return new URL(match[1], src).href;
++    }
++    return "";
++  }
++
++  async function codexAppAssetUrlFromLoadedResourceText(namePart) {
++    const featureSets = codexAppAssetFeatureFallbacks[namePart] || [];
++    if (!featureSets.length) return "";
++    for (const url of codexAppAssetCandidateUrls()) {
++      const text = await codexAppAssetText(url);
++      if (!text) continue;
++      if (featureSets.some((features) => features.every((feature) => text.includes(feature)))) {
++        const importableUrl = codexAppAssetImportableUrl(url);
++        if (!importableUrl) continue;
++        return importableUrl;
+       }
+     }
+     return "";
+@@ -1420,7 +1472,9 @@
+   async function loadCodexAppModule(namePart) {
+     if (!codexServiceTierModulePromises.has(namePart)) {
+       const promise = Promise.resolve().then(async () => {
+-        const url = codexAppAssetUrl(namePart) || await codexAppAssetUrlFromScriptText(namePart);
++        const url = codexAppAssetUrl(namePart)
++          || await codexAppAssetUrlFromScriptText(namePart)
++          || await codexAppAssetUrlFromLoadedResourceText(namePart);
+         if (!url) throw new Error(`未找到 Codex App asset: ${namePart}`);
+         return await import(url);
+       }).catch((error) => {
+@@ -1702,7 +1756,7 @@
    }
 
    function setCodexServiceTierControlMode(mode) {
@@ -20,7 +123,7 @@ index 7c46728..cd53858 100644
        showToast("后端未连接，无法切换服务模式", null);
        refreshCodexServiceTierControls();
        return;
-@@ -1771,8 +1773,13 @@
+@@ -1776,8 +1830,13 @@
      };
    }
 
@@ -35,7 +138,7 @@ index 7c46728..cd53858 100644
      if (codexPlusBackendStatus.status && codexPlusBackendStatus.status !== "ok") return { tier: "failed", label: "未连接", disabled: true, title: "服务模式：后端未连接，无法切换" };
      if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: "服务模式：正在读取" };
      if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: "服务模式：读取失败" };
-@@ -1891,7 +1898,7 @@
+@@ -1896,7 +1955,7 @@
    }
 
    function setCodexThreadServiceTierMode(mode) {
@@ -44,7 +147,7 @@ index 7c46728..cd53858 100644
        showToast("后端未连接，无法切换服务模式", null);
        refreshCodexServiceTierControls();
        return;
-@@ -1914,7 +1921,7 @@
+@@ -1919,7 +1978,7 @@
    }
 
    function toggleCodexServiceTierFromBadge() {
@@ -53,7 +156,39 @@ index 7c46728..cd53858 100644
        showToast("后端未连接，无法切换服务模式", null);
        refreshCodexServiceTierControls();
        return;
-@@ -2811,6 +2818,50 @@
+@@ -2061,12 +2120,30 @@
+     return message;
+   }
+
++  function findCodexDispatcherClass(module) {
++    return Object.values(module || {}).find((value) => {
++      if (typeof value !== "function" || typeof value.getInstance !== "function") return false;
++      return String(value).includes("dispatchMessage") && String(value).includes("subscribe") && String(value).includes("handleMessage");
++    }) || null;
++  }
++
++  function isCodexHotkeyWindowRoute() {
++    try {
++      const params = new URLSearchParams(location.search || "");
++      return params.get("initialRoute") === "/hotkey-window";
++    } catch {
++      const href = String(location.href || "");
++      return href.includes("initialRoute=%2Fhotkey-window") || href.includes("initialRoute=/hotkey-window");
++    }
++  }
++
+   function installCodexServiceTierDispatcherPatch() {
+     if (window.__codexServiceTierRequestOverrideInstalled === codexServiceTierRequestOverrideVersion) return;
+     const patch = async () => {
+       try {
++        if (isCodexHotkeyWindowRoute()) return;
+         const module = await loadCodexAppModule("setting-storage-");
+-        const dispatcherClass = typeof module.v === "function" && String(module.v).includes("dispatchMessage") ? module.v : null;
++        const dispatcherClass = findCodexDispatcherClass(module);
+         const dispatcher = dispatcherClass?.getInstance?.();
+         if (!dispatcher || typeof dispatcher.dispatchMessage !== "function") throw new Error("Codex dispatcher unavailable");
+         if (dispatcher.__codexServiceTierOriginalDispatchMessage) {
+@@ -2812,6 +2889,50 @@
      return !!button.closest?.('[class*="ms-auto"][class*="shrink-0"][class*="items-center"]');
    }
 
@@ -104,7 +239,7 @@ index 7c46728..cd53858 100644
    function updateFloatingCodexPlusMenuPosition(menu) {
      if (!menu?.classList?.contains(codexPlusMenuFloatingClass)) return;
      const header = document.querySelector(selectors.appHeader) || document.querySelector("header");
-@@ -2827,6 +2878,7 @@
+@@ -2828,6 +2949,7 @@
        setCssPropIfChanged(menu, "--codex-plus-menu-top", `${anchor.rect.top}px`);
        setCssPropIfChanged(menu, "--codex-plus-menu-height", `${anchor.rect.height}px`);
        setCssPropIfChanged(menu, "--codex-plus-menu-right", `${Math.max(0, window.innerWidth - anchor.rect.left + gap)}px`);
@@ -112,7 +247,7 @@ index 7c46728..cd53858 100644
        return;
      }
 
-@@ -2836,6 +2888,7 @@
+@@ -2837,6 +2959,7 @@
        setCssPropIfChanged(menu, "--codex-plus-menu-height", `${headerRect.height}px`);
      }
      menu.style.removeProperty("--codex-plus-menu-right");
@@ -120,7 +255,7 @@ index 7c46728..cd53858 100644
    }
 
    function installCodexPlusMenu() {
-@@ -3342,6 +3395,14 @@
+@@ -3343,6 +3466,14 @@
        };
      }
      if (message.type === "mcp-request" && message.request && typeof message.request === "object") {
@@ -135,7 +270,7 @@ index 7c46728..cd53858 100644
        const requestMethod = appServerModelRequestMethod(String(message.request.method || ""), message.request.params);
        if (requestMethod !== "list-plugins" && requestMethod !== "install-plugin") return message;
        const requestParams = patchPluginMarketplaceRequestParams(
-@@ -3486,6 +3547,8 @@
+@@ -3487,6 +3618,8 @@
        window.addEventListener("message", (event) => {
          try {
            patchPluginMarketplaceResponseData(event?.data);
@@ -144,7 +279,7 @@ index 7c46728..cd53858 100644
          } catch (error) {
            sendCodexPlusDiagnostic("plugin_marketplace_response_message_patch_failed", {
              errorName: error?.name || "",
-@@ -3537,8 +3600,159 @@
+@@ -3538,11 +3671,180 @@
      void patch();
    }
 
@@ -302,10 +437,17 @@ index 7c46728..cd53858 100644
    function pluginPatchDisabledInRelayMode() {
 -    return !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.launchMode === "relay";
 +    return codexPlusBackendSettings.launchMode === "relay";
-   }
-
-   function pluginInstallCandidates() {
-@@ -3634,6 +3848,13 @@
++  }
++
++  function patchReactDisabledProps(element) {
++    Object.keys(element)
++      .filter((key) => key.startsWith("__reactProps"))
++      .forEach((key) => {
++        const props = element[key];
++        if (!props || typeof props !== "object") return;
++        props.disabled = false;
++        props["aria-disabled"] = false;
++      });
    }
 
    function clearPluginPatchArtifacts() {
@@ -316,10 +458,130 @@ index 7c46728..cd53858 100644
 +      delete pluginButton.dataset.codexPluginEnabled;
 +      clearPluginEntryUnlockLabel(pluginButton);
 +    }
-     pluginInstallCandidates().forEach(clearForcedInstallButtonLabel);
    }
 
-@@ -4668,6 +4889,8 @@
+   let cachedSessionRows = [];
+@@ -4381,18 +4683,81 @@
+   }
+
+   async function postJson(path, payload) {
++    const helperBridgeFallbackRoutes = new Set([
++      "/settings/get",
++      "/settings/set",
++      "/user-scripts/list",
++      "/user-scripts/set-enabled",
++      "/user-scripts/set-script-enabled",
++      "/user-scripts/delete",
++      "/user-scripts/reload",
++      "/devtools/open",
++      "/manager/open",
++      "/backend/status",
++      "/backend/repair",
++      "/codex-model-catalog",
++      "/codex-config-model",
++      "/zed-remote/status",
++      "/zed-remote/resolve-host",
++      "/zed-remote/fallback-request",
++      "/zed-remote/open",
++      "/zed-remote/projects",
++      "/zed-remote/remember-project",
++      "/zed-remote/forget-project",
++      "/upstream-worktree/status",
++      "/upstream-worktree/defaults",
++      "/upstream-worktree/prepare",
++      "/upstream-worktree/create",
++      "/stepwise/settings",
++      "/stepwise/generate",
++      "/stepwise/test",
++      "/delete",
++      "/undo",
++      "/export-markdown",
++      "/thread-usage-history",
++      "/archived-thread",
++      "/move-thread-workspace",
++      "/thread-sort-key",
++      "/thread-sort-keys",
++    ]);
++    async function fetchJsonFromHelper(path, payload) {
++      try {
++        const response = await fetch(`${helperBase}${path}`, {
++          method: "POST",
++          headers: { "Content-Type": "application/json" },
++          body: JSON.stringify(payload || {}),
++        });
++        const value = await response.json();
++        if (!response.ok && value && typeof value === "object" && !("status" in value)) {
++          value.status = "failed";
++        }
++        return value;
++      } catch (error) {
++        return { status: "failed", message: "未连接" };
++      }
++    }
++    async function fetchBridgeRouteFromHelper(path, payload, event) {
++      const fallback = await fetchJsonFromHelper(path, payload);
++      if (fallback && fallback.status !== "failed") {
++        sendCodexPlusDiagnostic(event, {
++          path,
++          responseStatus: fallback.status || "ok",
++        });
++      } else {
++        sendCodexPlusDiagnostic(`${event}_failed`, {
++          path,
++          responseStatus: fallback?.status || "",
++          errorMessage: fallback?.message || "",
++        });
++      }
++      return fallback;
++    }
+     if (!window.__codexSessionDeleteBridge) {
+       if (path === "/backend/status" || path === "/backend/repair") {
+-        try {
+-          const response = await fetch(`${helperBase}${path}`, {
+-            method: "POST",
+-            headers: { "Content-Type": "application/json" },
+-            body: JSON.stringify(payload || {}),
+-          });
+-          return await response.json();
+-        } catch (error) {
+-          return { status: "failed", message: "未连接" };
+-        }
++        return await fetchJsonFromHelper(path, payload);
++      }
++      if (helperBridgeFallbackRoutes.has(path)) {
++        return await fetchBridgeRouteFromHelper(path, payload, "bridge_missing_http_fallback_ok");
+       }
+       sendCodexPlusDiagnostic("bridge_missing_for_route", { path });
+       return { status: "failed", message: "桥接不可用，请重启启动器" };
+@@ -4404,16 +4769,7 @@
+       ]);
+     }
+     async function fetchBackendStatusFromHelper(path, payload) {
+-      try {
+-        const response = await fetch(`${helperBase}${path}`, {
+-          method: "POST",
+-          headers: { "Content-Type": "application/json" },
+-          body: JSON.stringify(payload || {}),
+-        });
+-        return await response.json();
+-      } catch (error) {
+-        return { status: "failed", message: "未连接" };
+-      }
++      return await fetchJsonFromHelper(path, payload);
+     }
+     try {
+       if (path === "/backend/status" || path === "/backend/repair") {
+@@ -4460,6 +4816,9 @@
+         });
+         return fallback;
+       }
++      if (helperBridgeFallbackRoutes.has(path)) {
++        return await fetchBridgeRouteFromHelper(path, payload, "bridge_call_failed_http_fallback_ok");
++      }
+       throw error;
+     }
+   }
+@@ -4547,6 +4906,8 @@
    let codexModelWhitelistRefreshTimer = 0;
    let codexModelWhitelistRefreshUntil = 0;
    const codexPlusModelListRequestIds = new Set();
@@ -328,7 +590,7 @@ index 7c46728..cd53858 100644
 
    if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) {
      window.__codexPlusServiceTierTest = {
-@@ -5045,6 +5268,91 @@
+@@ -4924,6 +5285,91 @@
      }, true);
    }
 
@@ -420,7 +682,27 @@ index 7c46728..cd53858 100644
    function patchMcpModelResponseData(data) {
      if (data?.type !== "mcp-response") return false;
      const message = data.message || data.response;
-@@ -7017,16 +7325,21 @@
+@@ -5881,6 +6327,8 @@
+     if (result.status !== "moved") throw new Error(result.message || "移动项目失败");
+     await setProjectlessThreadIds(ref, "remove");
+     await clearThreadWorkspaceHints(ref);
++    await clearThreadWritableRoots(ref);
++    await clearThreadProjectlessOutputDirectories(ref);
+     return result;
+   }
+
+@@ -6672,8 +7120,9 @@
+     if (window.__codexUpstreamPendingWorktreeDispatcherPatch === patchVersion) return;
+     const patch = async () => {
+       try {
++        if (isCodexHotkeyWindowRoute()) return;
+         const module = await loadCodexAppModule("setting-storage-");
+-        const dispatcherClass = typeof module.v === "function" && String(module.v).includes("dispatchMessage") ? module.v : null;
++        const dispatcherClass = findCodexDispatcherClass(module);
+         const dispatcher = dispatcherClass?.getInstance?.();
+         if (!dispatcher || typeof dispatcher.dispatchMessage !== "function") throw new Error("Codex dispatcher unavailable");
+         if (!dispatcher.__codexUpstreamWorktreeOriginalDispatchMessage) {
+@@ -6920,16 +7369,21 @@
 
    function isCurrentSessionRow(row, ref) {
      if (row.getAttribute("aria-current") === "page" || row.getAttribute("aria-current") === "true") return true;
@@ -445,7 +727,7 @@ index 7c46728..cd53858 100644
    }
 
    function releaseDeleteFocus(row, button) {
-@@ -7041,7 +7354,7 @@
+@@ -6944,7 +7398,7 @@
      const shouldReload = isCurrentSessionRow(row, ref);
      row.remove();
      if (shouldReload) {
@@ -454,7 +736,7 @@ index 7c46728..cd53858 100644
      }
    }
 
-@@ -7752,12 +8065,58 @@
+@@ -7655,12 +8109,58 @@
        });
    }
 
@@ -514,7 +796,7 @@ index 7c46728..cd53858 100644
        .filter(codexServiceTierBadgeVisibleElement)
        .sort((left, right) => {
          const leftRect = left.getBoundingClientRect();
-@@ -7785,6 +8144,12 @@
+@@ -7688,6 +8188,12 @@
      const candidates = new Set();
      const threadComposer = conversationViewFindComposerEl();
      if (threadComposer && codexServiceTierBadgeVisibleElement(threadComposer)) candidates.add(threadComposer);
@@ -527,7 +809,50 @@ index 7c46728..cd53858 100644
      codexServiceTierVisibleComposerFooters().forEach((footer) => {
        candidates.add(footer);
        let node = footer.parentElement;
-@@ -7853,14 +8218,14 @@
+@@ -7722,6 +8228,14 @@
+     }) || null;
+   }
+
++  function codexServiceTierDirectChildUnder(parent, node) {
++    let child = node;
++    while (child?.parentElement && child.parentElement !== parent) {
++      child = child.parentElement;
++    }
++    return child?.parentElement === parent ? child : null;
++  }
++
+   function codexServiceTierComposerFooter(composer) {
+     if (composer?.matches?.(".composer-footer")) return composer;
+     return codexServiceTierBestComposerFooter(composer) || codexServiceTierBestComposerFooter() || null;
+@@ -7740,12 +8254,24 @@
+     return providerGroup || children[children.length - 1] || footer;
+   }
+
++  function codexServiceTierBadgeInsertionPoint(composer, anchor, group) {
++    if (anchor?.parentElement) {
++      const parent = anchor.parentElement;
++      const style = getComputedStyle(parent);
++      if (style.display !== "contents") return { parent, before: anchor };
++    }
++    if (!group) return null;
++    const before = anchor ? codexServiceTierDirectChildUnder(group, anchor) : null;
++    return {
++      parent: group,
++      before: before?.parentElement === group ? before : group.firstChild,
++    };
++  }
++
+   function codexServiceTierBadgePlacement(composer) {
+     const anchor = composer ? codexServiceTierBadgeAnchor(composer) : null;
+-    if (anchor?.parentElement) return { parent: anchor.parentElement, before: anchor };
+     const group = composer ? codexServiceTierBadgeFooterGroup(composer) : null;
+-    if (group) return { parent: group, before: group.firstChild };
+-    return null;
++    return codexServiceTierBadgeInsertionPoint(composer, anchor, group);
+   }
+
+   function wireCodexServiceTierBadge(badge) {
+@@ -7756,14 +8282,14 @@
      badge.addEventListener("click", (event) => {
        event.preventDefault();
        event.stopPropagation();
@@ -544,7 +869,7 @@ index 7c46728..cd53858 100644
        toggleCodexServiceTierFromBadge();
      });
    }
-@@ -8097,6 +8462,7 @@
+@@ -8000,6 +8526,7 @@
      installCodexServiceTierDispatcherPatch();
      installCodexPlusMenu();
      localizeCodexMenus();
@@ -552,12 +877,11 @@ index 7c46728..cd53858 100644
      scheduleBackendHeartbeat();
      installDeleteButtonEventDelegation();
      updateThreadScrollHandlers();
-@@ -8699,11 +9065,16 @@
+@@ -8602,10 +9129,15 @@
    function scanDeferred() {
      if (pluginPatchDisabledInRelayMode()) {
        clearPluginPatchArtifacts();
 +      refreshPluginEntryUnlockLoop();
-       refreshForcePluginInstallUnlockLoop();
      } else {
        const pluginUnlockStrategy = codexPluginUnlockStrategy();
        const settings = codexPlusSettings();
@@ -569,10 +893,12 @@ index 7c46728..cd53858 100644
        if ((pluginUnlockStrategy === "modern" || pluginUnlockStrategy === "unknown") && settings.pluginMarketplaceUnlock) {
          const marketplaceRequestPatchStrategy = codexPluginMarketplaceRequestPatchStrategy();
          installPluginBuildFlavorFilterPatch();
-@@ -8764,6 +9135,10 @@
+@@ -8664,6 +9196,12 @@
        '[class*="user-message"]',
        '[class*="UserMessage"]',
        ".composer-footer",
++      '[class*="_footer_"]',
++      '[class*="_composer_"]',
 +      '[data-codex-intelligence-trigger="true"]',
 +      '[data-codex-composer="true"]',
 +      selectors.pluginNavButton,
@@ -580,7 +906,7 @@ index 7c46728..cd53858 100644
        selectors.appHeader,
        selectors.archiveNav,
        codexMenuLocalizationScopeSelector(),
-@@ -8848,7 +9223,7 @@
+@@ -8748,7 +9286,7 @@
    window.addEventListener("resize", window.__codexPlusResizeHandler);
    window.__codexSessionDeleteObserver?.disconnect();
    window.__codexSessionDeleteObserver = new MutationObserver(scheduleScan);

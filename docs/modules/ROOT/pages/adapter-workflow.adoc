@@ -16,6 +16,7 @@ The machine-checkable feature contract is stored in xref:attachment$feature-matr
 == Regular cadence
 
 Run the scheduled workflow at least weekly, and run it manually whenever upstream Codex++ publishes a release or materially changes launcher, manager, renderer injection, user scripts, install logic, or API profile handling.
+Each run must freeze one upstream baseline for the whole adaptation round. Do not switch to a newer upstream release in the middle of the same round just because another release appears during debugging; finish the pinned baseline first, then start a separate round if the maintainer asks to follow the newer release.
 
 The GitHub Actions entry point is `.github/workflows/adaptation-regression.yml`.
 It is intentionally split into validation and release phases: scheduled runs validate, while publishing to a maintained fork remains an explicit maintainer action.
@@ -80,9 +81,11 @@ pwsh ./scripts/Installer-and-Manager.ps1 -Action uninstall -CodexDesktopRootPath
 ----
 . Run GUI validation.
   Start Codex Desktop through the newly installed Codex++ Manager, then verify the feature matrix black-box checks by Computer Use screenshots and CDP DOM assertions.
+  In the `--network=host` Podman fixture, the validation command must set an isolated `CODEX_WEBVIEW_PORT` in addition to unique Codex++ CDP debug and helper ports; otherwise the launcher may collide with, or accidentally inspect, a host Codex Desktop instance.
   Stop and report if Computer Use or equivalent GUI automation repeatedly fails after the application is running; GUI evidence is part of the release gate.
 . Update the snippets, feature matrix, and workflow docs if any upstream change makes a patch unnecessary or insufficient.
 . Clean temporary source trees, container images, caches, and test files before committing.
+. When the release gate is green, clear only the CodexDesktop and Codex++ debug payloads from the prepared container, then archive the prepared test container with non-solid maximum 7z compression into an Antora attachment subdirectory for the next adaptation round.
 . Commit and push only after the feature matrix has been checked off for the target version.
 
 == Stop and report conditions

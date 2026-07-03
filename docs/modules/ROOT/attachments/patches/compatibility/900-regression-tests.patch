@@ -1,5 +1,26 @@
+diff --git a/apps/codex-plus-launcher/src/main.rs b/apps/codex-plus-launcher/src/main.rs
+index eca7b1a..94d7dff 100644
+--- a/apps/codex-plus-launcher/src/main.rs
++++ b/apps/codex-plus-launcher/src/main.rs
+@@ -928,6 +928,16 @@ mod tests {
+                 .is_some_and(|name| name.contains(codex_plus_core::install::MANAGER_BINARY))
+         );
+     }
++
++    #[test]
++    fn update_prompt_can_be_disabled_for_fixed_baseline_validation() {
++        assert!(update_prompt_disabled_by_environment(Some("1")));
++        assert!(update_prompt_disabled_by_environment(Some("true")));
++        assert!(update_prompt_disabled_by_environment(Some(" yes ")));
++        assert!(!update_prompt_disabled_by_environment(None));
++        assert!(!update_prompt_disabled_by_environment(Some("0")));
++        assert!(!update_prompt_disabled_by_environment(Some("false")));
++    }
+ }
+
+ fn builtin_user_scripts_dir() -> PathBuf {
 diff --git a/crates/codex-plus-core/tests/bridge_routes.rs b/crates/codex-plus-core/tests/bridge_routes.rs
-index 38a1ab4..a9a21cc 100644
+index cf63669..b8a9f41 100644
 --- a/crates/codex-plus-core/tests/bridge_routes.rs
 +++ b/crates/codex-plus-core/tests/bridge_routes.rs
 @@ -731,6 +731,31 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
@@ -34,11 +55,43 @@ index 38a1ab4..a9a21cc 100644
  #[tokio::test]
  async fn core_runtime_open_devtools_uses_inspector_url_opener() {
      let opened = Arc::new(Mutex::new(Vec::<String>::new()));
+@@ -1411,7 +1436,11 @@ impl LaunchHooks for ContextHooks {
+         Ok(())
+     }
+
+-    async fn start_helper(&self, _helper_port: u16) -> anyhow::Result<()> {
++    async fn start_helper(
++        &self,
++        _helper_port: u16,
++        _bridge_context: Option<BridgeContext>,
++    ) -> anyhow::Result<()> {
+         Ok(())
+     }
+
 diff --git a/crates/codex-plus-core/tests/cdp_bridge.rs b/crates/codex-plus-core/tests/cdp_bridge.rs
-index 47fbed0..dc8bcb9 100644
+index c0d06e3..8db13b8 100644
 --- a/crates/codex-plus-core/tests/cdp_bridge.rs
 +++ b/crates/codex-plus-core/tests/cdp_bridge.rs
-@@ -212,7 +212,7 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
+@@ -122,6 +122,18 @@ fn injection_script_times_out_backend_bridge_calls_and_falls_back_to_helper() {
+     assert!(script.contains("backend_status_bridge_and_http_failed"));
+ }
+
++#[test]
++fn injection_script_falls_back_to_helper_for_bridge_routes_when_binding_is_missing() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("helperBridgeFallbackRoutes"));
++    assert!(script.contains("\"/settings/get\""));
++    assert!(script.contains("\"/user-scripts/list\""));
++    assert!(script.contains("fetchJsonFromHelper(path, payload)"));
++    assert!(script.contains("bridge_missing_http_fallback_ok"));
++    assert!(script.contains("bridge_call_failed_http_fallback_ok"));
++}
++
+ #[test]
+ fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
+     let script = assets::injection_script(57321);
+@@ -218,7 +230,7 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
      let script = assets::injection_script(57321);
 
      assert!(script.contains("function pluginPatchDisabledInRelayMode()"));
@@ -47,7 +100,7 @@ index 47fbed0..dc8bcb9 100644
      assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
      assert!(script.contains("clearPluginPatchArtifacts()"));
  }
-@@ -234,23 +234,29 @@ fn injection_script_gates_legacy_and_modern_plugin_unlock_by_codex_version() {
+@@ -240,23 +252,31 @@ fn injection_script_gates_legacy_and_modern_plugin_unlock_by_codex_version() {
      let script = assets::injection_script(57321);
 
      assert!(script.contains("const pluginUnlockStrategy = codexPluginUnlockStrategy()"));
@@ -80,12 +133,25 @@ index 47fbed0..dc8bcb9 100644
 +    assert!(script.contains("if (!codexPlusSettings().pluginMarketplaceUnlock) return"));
 +    assert!(script.contains("installPluginEntryGuard(pluginButton);"));
 +    assert!(script.contains("function clearPluginEntryUnlockLabel(button)"));
-+    assert!(script.contains("function labelUnlockedPluginEntry(button) {\n    clearPluginEntryUnlockLabel(button);\n  }"));
++    assert!(script.contains(
++        "function labelUnlockedPluginEntry(button) {\n    clearPluginEntryUnlockLabel(button);\n  }"
++    ));
 +    assert!(!script.contains("\"Plugins - Unlocked\" : \"插件 - 已解锁\""));
  }
 
  #[test]
-@@ -591,7 +597,9 @@ fn injection_script_exposes_fast_service_tier_control() {
+@@ -295,9 +315,8 @@ fn injection_script_does_not_unlock_disabled_plugin_install_buttons() {
+     assert!(script.contains("button[aria-disabled=\"true\"]"));
+     assert!(script.contains("[role=\"button\"][data-disabled]"));
+     assert!(!script.contains("installButtonUnlockNodes"));
+-    assert!(!script.contains("patchReactDisabledProps"));
+     assert!(!script.contains("props[\"data-disabled\"] = undefined"));
+-    assert!(!script.contains("button.querySelectorAll?.(\"button, [role='button'], [disabled], [aria-disabled], [data-disabled]"));
++    assert!(!script.contains("installPluginButtonGuard"));
+     assert!(!script.contains("button.dataset.codexForceInstallUnlocked"));
+ }
+
+@@ -597,7 +616,9 @@ fn injection_script_exposes_fast_service_tier_control() {
      assert!(script.contains("codexServiceTierBadgeFooterGroup"));
      assert!(script.contains("codexServiceTierFindComposerEl"));
      assert!(script.contains("codexServiceTierVisibleComposerFooters"));
@@ -95,10 +161,60 @@ index 47fbed0..dc8bcb9 100644
      assert!(script.contains("codexServiceTierComposerCandidates"));
      assert!(script.contains("codexServiceTierComposerScore"));
      assert!(script.contains("data-codex-service-tier-badge"));
-@@ -606,6 +614,30 @@ fn injection_script_exposes_fast_service_tier_control() {
+@@ -612,6 +633,96 @@ fn injection_script_exposes_fast_service_tier_control() {
      assert!(script.contains("fast"));
  }
 
++#[test]
++fn linux_renderer_asset_loader_can_find_renamed_dynamic_chunks() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("function codexAppAssetUrlFromScriptText"));
++    assert!(script.contains("new RegExp(`"));
++    assert!(script.contains("return new URL(match[1], src).href;"));
++}
++
++#[test]
++fn linux_renderer_asset_loader_skips_linux_app_scheme_dynamic_chunks() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("function codexAppAssetImportableUrl"));
++    assert!(script.contains("url.startsWith(\"app://-/assets/\")"));
++    assert!(script.contains("return codexAppAssetImportableUrl(url);"));
++}
++
++#[test]
++fn linux_renderer_asset_loader_can_find_merged_codex_chunks_by_features() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("codexAppAssetFeatureFallbacks"));
++    assert!(script.contains("\"setting-storage-\""));
++    assert!(script.contains("\"default-service-tier\""));
++    assert!(script.contains("\"pending-worktree-create\""));
++    assert!(script.contains("\"app-server-manager-signals-\""));
++    assert!(script.contains("\"list-plugins\""));
++    assert!(script.contains("\"install-plugin\""));
++    assert!(script.contains("codexAppAssetUrlFromLoadedResourceText"));
++}
++
++#[test]
++fn linux_renderer_service_tier_patch_finds_dispatcher_without_minified_export_name() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("function findCodexDispatcherClass(module)"));
++    assert!(script.contains("Object.values(module || {})"));
++    assert!(script.contains("String(value).includes(\"dispatchMessage\")"));
++    assert!(!script.contains("typeof module.v === \"function\" && String(module.v).includes(\"dispatchMessage\")"));
++}
++
++#[test]
++fn linux_renderer_dispatcher_patches_skip_hotkey_window_route() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("function isCodexHotkeyWindowRoute()"));
++    assert!(script.matches("if (isCodexHotkeyWindowRoute()) return;").count() >= 2);
++}
++
 +#[test]
 +fn linux_renderer_patch_places_fast_badge_in_current_linux_composer_footer() {
 +    let script = assets::injection_script(57321);
@@ -106,10 +222,24 @@ index 47fbed0..dc8bcb9 100644
 +    assert!(script.contains("function codexServiceTierLinuxComposerFooters"));
 +    assert!(script.contains("function codexServiceTierComposerFromIntelligenceTrigger"));
 +    assert!(script.contains("function codexServiceTierComposerFromEditable"));
++    assert!(script.contains("function codexServiceTierFindLinuxFooterNear"));
++    assert!(script.contains("function codexServiceTierBadgeInsertionPoint"));
++    assert!(script.contains("style.display"));
++    assert!(script.contains("\"contents\""));
 +    assert!(script.contains("[data-codex-intelligence-trigger=\"true\"]"));
 +    assert!(script.contains("[data-codex-composer=\"true\"]"));
 +    assert!(script.contains("_footer_"));
-+    assert!(script.contains("const linuxBestFooter = codexServiceTierBestLinuxComposerFooter();"));
++    assert!(script.contains("const linuxTriggerFooter = codexServiceTierComposerFromIntelligenceTrigger();"));
++}
++
++#[test]
++fn linux_renderer_patch_observes_current_linux_composer_footer_mounts_for_fast_badge() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("[class*=\"_footer_\"]"));
++    assert!(script.contains("[data-codex-composer=\"true\"]"));
++    assert!(script.contains("[data-codex-intelligence-trigger=\"true\"]"));
++    assert!(script.contains("[class*=\"_composer_\"]"));
 +}
 +
 +#[test]
@@ -120,13 +250,24 @@ index 47fbed0..dc8bcb9 100644
 +    assert!(script.contains("status !== \"ok\" && status !== \"checking\""));
 +    assert!(script.contains("if (codexServiceTierBackendBlocksLocalOverride())"));
 +    assert!(script.contains("codexPlusBackendStatus.status === \"checking\" && codexServiceTierState.status === \"loading\""));
-+    assert!(script.contains("codexServiceTierState.status === \"loading\" && badge.dataset.tier === \"loading\""));
++    assert!(script.contains(
++        "codexServiceTierState.status === \"loading\" && badge.dataset.tier === \"loading\""
++    ));
 +}
 +
  #[test]
  fn injection_script_prompts_for_markdown_export_path_when_supported() {
      let script = assets::injection_script(57321);
-@@ -1649,3 +1681,55 @@ fn noop_handler() -> bridge::BridgeHandler {
+@@ -630,7 +741,7 @@ fn injection_script_discovers_vscode_api_asset_without_hardcoded_hash() {
+
+     assert!(script.contains("loadCodexAppModule(\"vscode-api-\""));
+     assert!(script.contains("codexAppAssetUrlFromScriptText"));
+-    assert!(script.contains("fetch(src"));
++    assert!(script.contains("codexAppAssetText(src)"));
+     assert!(!script.contains("vscode-api-Dc9pX2Bc.js"));
+     assert!(!script.contains("import(\"./assets/vscode-api-"));
+ }
+@@ -1681,3 +1792,62 @@ fn noop_handler() -> bridge::BridgeHandler {
              as Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send>>
      })
  }
@@ -135,7 +276,9 @@ index 47fbed0..dc8bcb9 100644
 +fn linux_renderer_patch_keeps_plugin_label_native_and_normalizes_detail_payloads() {
 +    let script = assets::injection_script(57321);
 +
-+    assert!(script.contains("function labelUnlockedPluginEntry(button) {\n    clearPluginEntryUnlockLabel(button);\n  }"));
++    assert!(script.contains(
++        "function labelUnlockedPluginEntry(button) {\n    clearPluginEntryUnlockLabel(button);\n  }"
++    ));
 +    assert!(!script.contains("\"Plugins - Unlocked\" : \"插件 - 已解锁\""));
 +    assert!(script.contains("function normalizeCodexPlusPluginDetail(plugin)"));
 +    assert!(script.contains("function ensureCodexPlusArrayProperty(target, property)"));
@@ -172,7 +315,9 @@ index 47fbed0..dc8bcb9 100644
 +    assert!(script.contains("function floatingMenuNativeControlRects(menuRect)"));
 +    assert!(script.contains("function avoidFloatingCodexPlusMenuNativeControlOverlap(menu)"));
 +    assert!(script.contains("rectsOverlap(menuRect, rect, 8)"));
-+    assert!(script.contains("updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));"));
++    assert!(script.contains(
++        "updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));"
++    ));
 +}
 +
 +#[test]
@@ -180,17 +325,19 @@ index 47fbed0..dc8bcb9 100644
 +    let script = assets::injection_script(57321);
 +
 +    assert!(!script.contains("window.location.reload()"));
-+    assert!(script.contains("attributeFilter: [\"class\", \"disabled\", \"aria-disabled\", \"data-disabled\", \"aria-current\"]"));
++    assert!(script.contains("function refreshActionButton(originalButton, row, onActivate)"));
++    assert!(
++        script.contains("window.__codexSessionDeleteObserver = new MutationObserver(scheduleScan)")
++    );
 +}
 diff --git a/crates/codex-plus-core/tests/installers.rs b/crates/codex-plus-core/tests/installers.rs
-index 7cd4e79..cdc9294 100644
+index 7cd4e79..0626153 100644
 --- a/crates/codex-plus-core/tests/installers.rs
 +++ b/crates/codex-plus-core/tests/installers.rs
-@@ -191,3 +191,110 @@ fn windows_default_install_root_uses_known_folder_before_userprofile_desktop() {
+@@ -191,3 +191,122 @@ fn windows_default_install_root_uses_known_folder_before_userprofile_desktop() {
          assert_eq!(strategy, "user-dirs-desktop");
      }
  }
-+
 +
 +#[cfg(target_os = "linux")]
 +fn linux_install_env_lock() -> &'static std::sync::Mutex<()> {
@@ -235,8 +382,12 @@ index 7cd4e79..cdc9294 100644
 +    let app_dir = temp.path().join("codex-app");
 +    let install_dir = app_dir.join(".codex-plusplus").join("install");
 +    std::fs::create_dir_all(&install_dir).unwrap();
-+    std::fs::write(install_dir.join("launch-codex-plus-plus"), "#!/bin/sh
-+").unwrap();
++    std::fs::write(
++        install_dir.join("launch-codex-plus-plus"),
++        "#!/bin/sh
++",
++    )
++    .unwrap();
 +    std::fs::write(install_dir.join("codex-plus-plus-manager"), "").unwrap();
 +
 +    let state = codex_plus_core::install::inspect_entrypoints_for_app(Some(&app_dir));
@@ -271,8 +422,12 @@ index 7cd4e79..cdc9294 100644
 +    let install_dir = install_root.join("install");
 +    std::fs::create_dir_all(data_home.join("codex-plusplus")).unwrap();
 +    std::fs::create_dir_all(&install_dir).unwrap();
-+    std::fs::write(install_dir.join("launch-codex-plus-plus"), "#!/bin/sh
-+").unwrap();
++    std::fs::write(
++        install_dir.join("launch-codex-plus-plus"),
++        "#!/bin/sh
++",
++    )
++    .unwrap();
 +    std::fs::write(install_dir.join("codex-plus-plus-manager"), "").unwrap();
 +    std::fs::write(
 +        data_home.join("codex-plusplus").join("state.json"),
@@ -294,25 +449,111 @@ index 7cd4e79..cdc9294 100644
 +    );
 +    assert_eq!(
 +        state.management_shortcut.path.as_deref(),
-+        Some(install_dir.join("codex-plus-plus-manager").to_str().unwrap())
++        Some(
++            install_dir
++                .join("codex-plus-plus-manager")
++                .to_str()
++                .unwrap()
++        )
 +    );
 +}
 diff --git a/crates/codex-plus-core/tests/launcher.rs b/crates/codex-plus-core/tests/launcher.rs
-index 26e2c57..f54f4ea 100644
+index ec12600..960960c 100644
 --- a/crates/codex-plus-core/tests/launcher.rs
 +++ b/crates/codex-plus-core/tests/launcher.rs
-@@ -12,6 +12,7 @@ use codex_plus_core::launcher::{
-     build_codex_arguments, build_codex_arguments_for_settings,
-     build_codex_arguments_with_native_menu_inspector, build_codex_command,
+@@ -14,6 +14,7 @@ use codex_plus_core::launcher::{
      build_codex_command_with_native_menu_inspector, build_macos_cleanup_command,
-+    codex_process_environment_for_app_from, codex_process_environment_from,
      build_macos_open_command, build_macos_open_command_with_native_menu_inspector,
      build_packaged_activation, build_packaged_activation_with_native_menu_inspector,
++    codex_process_environment_for_app_from, codex_process_environment_from,
      launch_and_inject_with_hooks,
-@@ -544,6 +545,39 @@ async fn default_helper_serves_backend_status_over_http() {
+ };
+ #[cfg(windows)]
+@@ -320,6 +321,34 @@ fn launcher_native_menu_inspector_arguments_are_added_before_extra_args() {
+     assert_eq!(command[4], "--force_high_performance_gpu");
+ }
+
++#[test]
++fn linux_start_script_native_menu_inspector_command_uses_new_instance_separator() {
++    let temp = tempfile::tempdir().unwrap();
++    let start = temp.path().join("start.sh");
++    std::fs::write(
++        &start,
++        "#!/bin/sh
++",
++    )
++    .unwrap();
++
++    let command = build_codex_command_with_native_menu_inspector(temp.path(), 9229, 9329, &[]);
++
++    if cfg!(target_os = "linux") {
++        assert_eq!(
++            command,
++            vec![
++                start.to_string_lossy().to_string(),
++                "--new-instance".to_string(),
++                "--".to_string(),
++                "--remote-debugging-port=9229".to_string(),
++                "--remote-allow-origins=http://127.0.0.1:9229".to_string(),
++                "--inspect=127.0.0.1:9329".to_string(),
++            ]
++        );
++    }
++}
++
+ #[test]
+ fn launcher_constructs_windows_packaged_activation_without_real_app() {
+     let app_dir = PathBuf::from(
+@@ -520,7 +549,7 @@ async fn default_helper_serves_backend_status_over_http() {
+     let port = listener.local_addr().unwrap().port();
+     drop(listener);
+
+-    hooks.start_helper(port).await.unwrap();
++    hooks.start_helper(port, None).await.unwrap();
+     let client = reqwest::Client::builder().no_proxy().build().unwrap();
+     let response = client
+         .post(format!("http://127.0.0.1:{port}/backend/status"))
+@@ -547,6 +576,76 @@ async fn default_helper_serves_backend_status_over_http() {
      hooks.shutdown_helper(port).await;
  }
 
++#[tokio::test]
++async fn default_helper_serves_settings_bridge_routes_over_http() {
++    let temp = tempfile::tempdir().unwrap();
++    let settings_path = temp.path().join("settings.json");
++    let settings_store = codex_plus_core::settings::SettingsStore::new(settings_path.clone());
++    settings_store
++        .save(&BackendSettings {
++            codex_app_service_tier_controls: true,
++            ..BackendSettings::default()
++        })
++        .unwrap();
++    let previous_settings_path =
++        codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path));
++    let hooks = DefaultLaunchHooks::default();
++    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
++    let port = listener.local_addr().unwrap().port();
++    drop(listener);
++
++    hooks.start_helper(port, None).await.unwrap();
++    let response = reqwest::Client::builder()
++        .no_proxy()
++        .build()
++        .unwrap()
++        .post(format!("http://127.0.0.1:{port}/settings/get"))
++        .json(&serde_json::json!({}))
++        .send()
++        .await
++        .unwrap();
++
++    assert!(response.status().is_success());
++    let payload: serde_json::Value = response.json().await.unwrap();
++    assert_eq!(payload["codexAppServiceTierControls"], true);
++
++    hooks.shutdown_helper(port).await;
++    codex_plus_core::paths::set_settings_path_for_tests(previous_settings_path);
++}
++
 +#[tokio::test]
 +async fn default_helper_allows_private_network_preflight() {
 +    let hooks = DefaultLaunchHooks::default();
@@ -320,7 +561,7 @@ index 26e2c57..f54f4ea 100644
 +    let port = listener.local_addr().unwrap().port();
 +    drop(listener);
 +
-+    hooks.start_helper(port).await.unwrap();
++    hooks.start_helper(port, None).await.unwrap();
 +    let client = reqwest::Client::builder().no_proxy().build().unwrap();
 +    let response = client
 +        .request(
@@ -349,7 +590,16 @@ index 26e2c57..f54f4ea 100644
  #[tokio::test]
  async fn default_helper_accepts_diagnostic_log_events_over_http() {
      let temp = tempfile::tempdir().unwrap();
-@@ -1289,6 +1323,81 @@ async fn default_launch_hooks_provider_sync_enabled_returns_explicit_error() {
+@@ -557,7 +656,7 @@ async fn default_helper_accepts_diagnostic_log_events_over_http() {
+     let port = listener.local_addr().unwrap().port();
+     drop(listener);
+
+-    hooks.start_helper(port).await.unwrap();
++    hooks.start_helper(port, None).await.unwrap();
+     let response = reqwest::Client::builder()
+         .no_proxy()
+         .build()
+@@ -1292,6 +1391,140 @@ async fn default_launch_hooks_provider_sync_enabled_returns_explicit_error() {
      );
  }
 
@@ -357,8 +607,12 @@ index 26e2c57..f54f4ea 100644
 +fn linux_start_script_command_uses_new_instance_separator() {
 +    let temp = tempfile::tempdir().unwrap();
 +    let start = temp.path().join("start.sh");
-+    std::fs::write(&start, "#!/bin/sh
-+").unwrap();
++    std::fs::write(
++        &start,
++        "#!/bin/sh
++",
++    )
++    .unwrap();
 +
 +    let command = build_codex_command(temp.path(), 9229, &[]);
 +
@@ -405,8 +659,12 @@ index 26e2c57..f54f4ea 100644
 +#[test]
 +fn linux_start_script_environment_uses_codex_plusplus_webview_range() {
 +    let temp = tempfile::tempdir().unwrap();
-+    std::fs::write(temp.path().join("start.sh"), "#!/bin/sh
-+").unwrap();
++    std::fs::write(
++        temp.path().join("start.sh"),
++        "#!/bin/sh
++",
++    )
++    .unwrap();
 +
 +    let process_env = codex_process_environment_for_app_from(
 +        temp.path(),
@@ -428,11 +686,90 @@ index 26e2c57..f54f4ea 100644
 +    }
 +}
 +
++#[test]
++fn linux_start_script_environment_strips_tauri_runtime_pollution() {
++    let temp = tempfile::tempdir().unwrap();
++    std::fs::write(
++        temp.path().join("start.sh"),
++        "#!/bin/sh
++",
++    )
++    .unwrap();
++    let env = std::collections::HashMap::from([
++        ("DISPLAY".to_string(), ":0".to_string()),
++        (
++            "HTTPS_PROXY".to_string(),
++            "http://env-proxy.example.test:8080".to_string(),
++        ),
++        (
++            "LD_LIBRARY_PATH".to_string(),
++            "/opt/conda/envs/codexpp-tauri/lib".to_string(),
++        ),
++        ("CONDA_PREFIX".to_string(), "/opt/conda/envs/codexpp-tauri".to_string()),
++        (
++            "PIXI_PROJECT_ENVIRONMENT".to_string(),
++            "/opt/codexpp-pixi/.pixi/envs/default".to_string(),
++        ),
++        (
++            "PKG_CONFIG_PATH".to_string(),
++            "/opt/conda/envs/codexpp-tauri/lib/pkgconfig".to_string(),
++        ),
++    ]);
++
++    let process_env = codex_process_environment_for_app_from(temp.path(), &env, || None);
++
++    assert_eq!(
++        process_env.get("HTTPS_PROXY").map(String::as_str),
++        Some("http://env-proxy.example.test:8080")
++    );
++    if cfg!(target_os = "linux") {
++        for key in [
++            "LD_LIBRARY_PATH",
++            "CONDA_PREFIX",
++            "PIXI_PROJECT_ENVIRONMENT",
++            "PKG_CONFIG_PATH",
++        ] {
++            assert!(
++                !process_env.contains_key(key),
++                "{key} must not be inherited by Linux Codex Desktop"
++            );
++        }
++    }
++}
++
  #[derive(Clone)]
  struct FakeHooks {
      events: Arc<Mutex<Vec<String>>>,
+@@ -1414,7 +1647,11 @@ impl LaunchHooks for FakeHooks {
+         Ok(())
+     }
+
+-    async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
++    async fn start_helper(
++        &self,
++        helper_port: u16,
++        _bridge_context: Option<codex_plus_core::routes::BridgeContext>,
++    ) -> anyhow::Result<()> {
+         self.event(format!("start-helper:{helper_port}"));
+         Ok(())
+     }
+@@ -1451,7 +1688,13 @@ impl LaunchHooks for FakeHooks {
+         Ok(())
+     }
+
+-    async fn ensure_injection(&self, debug_port: u16, helper_port: u16, _app_dir: &Path) -> bool {
++    async fn ensure_injection(
++        &self,
++        debug_port: u16,
++        helper_port: u16,
++        _app_dir: &Path,
++        _bridge_context: Option<codex_plus_core::routes::BridgeContext>,
++    ) -> bool {
+         self.event(format!("inject:{debug_port}:{helper_port}"));
+         self.inject_error.is_none()
+     }
 diff --git a/crates/codex-plus-core/tests/relay_config.rs b/crates/codex-plus-core/tests/relay_config.rs
-index e97fd4d..2f21612 100644
+index c19476f..04aa49b 100644
 --- a/crates/codex-plus-core/tests/relay_config.rs
 +++ b/crates/codex-plus-core/tests/relay_config.rs
 @@ -467,7 +467,7 @@ fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
@@ -444,11 +781,10 @@ index e97fd4d..2f21612 100644
      assert!(config.contains(r#"base_url = "http://192.168.188.245:3001/v1""#));
      assert!(config.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
  }
-@@ -2301,6 +2301,48 @@ requires_openai_auth = true
+@@ -2320,6 +2320,43 @@ requires_openai_auth = true
      assert!(!config.contains("[model_providers.custom]"));
  }
 
-+
 +#[test]
 +fn pure_api_config_is_configured_without_openai_auth_requirement() {
 +    let temp = tempfile::tempdir().unwrap();
@@ -469,12 +805,8 @@ index e97fd4d..2f21612 100644
 +fn pure_api_config_preserves_direct_ip_and_explicit_http_port() {
 +    let temp = tempfile::tempdir().unwrap();
 +
-+    apply_pure_api_config_to_home(
-+        temp.path(),
-+        "http://64.83.38.106:8080",
-+        "sk-test-redacted",
-+    )
-+    .unwrap();
++    apply_pure_api_config_to_home(temp.path(), "http://64.83.38.106:8080", "sk-test-redacted")
++        .unwrap();
 +
 +    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
 +    assert!(config.contains(r#"base_url = "http://64.83.38.106:8080""#));
@@ -493,3 +825,219 @@ index e97fd4d..2f21612 100644
  #[cfg(windows)]
  #[test]
  fn apply_relay_profile_to_home_with_switch_rules_does_not_preserve_computer_use_guard_config_by_default()
+diff --git a/crates/codex-plus-data/tests/provider_sync.rs b/crates/codex-plus-data/tests/provider_sync.rs
+index 2584939..b9ff05d 100644
+--- a/crates/codex-plus-data/tests/provider_sync.rs
++++ b/crates/codex-plus-data/tests/provider_sync.rs
+@@ -74,6 +74,128 @@ fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
+     }
+ }
+
++fn create_state_db_with_project_threads(path: &Path) {
++    let db = Connection::open(path).unwrap();
++    db.execute_batch(
++        r#"
++        CREATE TABLE threads (
++            id TEXT PRIMARY KEY,
++            rollout_path TEXT,
++            created_at REAL,
++            updated_at REAL,
++            source TEXT,
++            model_provider TEXT,
++            cwd TEXT,
++            title TEXT,
++            archived INTEGER,
++            git_branch TEXT,
++            has_user_event INTEGER,
++            created_at_ms INTEGER,
++            updated_at_ms INTEGER,
++            preview TEXT,
++            recency_at REAL,
++            recency_at_ms INTEGER
++        );
++        INSERT INTO threads VALUES (
++            'thread-visible',
++            '/home/deck/.codex/sessions/2026/rollout-visible.jsonl',
++            1782000000.0,
++            1782000900.0,
++            'local',
++            'openai',
++            '/home/deck/opt/CodexPlusPlus-on-Linux',
++            'Visible project thread',
++            0,
++            'mian',
++            1,
++            1782000000000,
++            1782000900000,
++            'Do not use preview when title exists',
++            1782000900.0,
++            1782000900000
++        );
++        INSERT INTO threads VALUES (
++            'thread-archived',
++            '/home/deck/.codex/sessions/2026/rollout-archived.jsonl',
++            1782000000.0,
++            1782000800.0,
++            'local',
++            'openai',
++            '/home/deck/opt/CodexPlusPlus-on-Linux',
++            'Archived project thread',
++            1,
++            'mian',
++            1,
++            1782000000000,
++            1782000800000,
++            'Archived preview',
++            1782000800.0,
++            1782000800000
++        );
++        INSERT INTO threads VALUES (
++            'thread-without-cwd',
++            '/home/deck/.codex/sessions/2026/rollout-without-cwd.jsonl',
++            1782000000.0,
++            1782000700.0,
++            'local',
++            'openai',
++            '',
++            'No project thread',
++            0,
++            NULL,
++            1,
++            1782000000000,
++            1782000700000,
++            'No project preview',
++            1782000700.0,
++            1782000700000
++        );
++        "#,
++    )
++    .unwrap();
++}
++
++fn create_empty_local_thread_catalog(path: &Path) {
++    let db = Connection::open(path).unwrap();
++    db.execute_batch(
++        r#"
++        CREATE TABLE local_thread_catalog (
++            host_id TEXT NOT NULL,
++            thread_id TEXT NOT NULL,
++            display_title TEXT NOT NULL,
++            source_created_at REAL NOT NULL,
++            source_updated_at REAL NOT NULL,
++            cwd TEXT NOT NULL,
++            source_kind TEXT NOT NULL,
++            source_detail TEXT,
++            model_provider TEXT NOT NULL,
++            git_branch TEXT,
++            observation_sequence INTEGER NOT NULL,
++            missing_candidate INTEGER NOT NULL DEFAULT 0 CHECK (missing_candidate IN (0, 1)),
++            PRIMARY KEY (host_id, thread_id)
++        );
++        CREATE TABLE local_thread_catalog_hosts (
++            host_id TEXT PRIMARY KEY,
++            host_kind TEXT NOT NULL CHECK (host_kind IN ('local','ssh','wsl','remote-control'))
++        );
++        CREATE TABLE local_thread_catalog_metadata (
++            id INTEGER PRIMARY KEY CHECK(id=1),
++            catalog_revision INTEGER NOT NULL DEFAULT 0
++        );
++        CREATE TABLE local_thread_catalog_sync_state (
++            host_id TEXT PRIMARY KEY,
++            watermark_updated_at REAL,
++            initial_build_complete INTEGER NOT NULL DEFAULT 0,
++            observation_sequence INTEGER NOT NULL DEFAULT 0
++        );
++        INSERT INTO local_thread_catalog_hosts VALUES ('local', 'local');
++        INSERT INTO local_thread_catalog_metadata VALUES (1, 0);
++        INSERT INTO local_thread_catalog_sync_state VALUES ('local', NULL, 0, 13);
++        "#,
++    )
++    .unwrap();
++}
++
+ #[test]
+ fn provider_sync_targets_merge_config_rollout_sqlite_and_sort_current_first() {
+     let tmp = tempdir().unwrap();
+@@ -350,6 +472,82 @@ fn provider_sync_updates_new_codex_sqlite_directory_db() {
+     assert!(backup_dir.join("db/sqlite/codex-dev.db").exists());
+ }
+
++#[test]
++fn provider_sync_backfills_new_local_thread_catalog_from_legacy_state_db() {
++    let tmp = tempdir().unwrap();
++    let home = tmp.path().join(".codex");
++    let sqlite_dir = home.join("sqlite");
++    fs::create_dir_all(&sqlite_dir).unwrap();
++    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
++    create_state_db_with_project_threads(&home.join("state_5.sqlite"));
++    let catalog_path = sqlite_dir.join("codex-dev.db");
++    create_empty_local_thread_catalog(&catalog_path);
++
++    let result = run_provider_sync(Some(&home));
++
++    assert_eq!(result.status, ProviderSyncStatus::Synced);
++    let db = Connection::open(&catalog_path).unwrap();
++    let rows = db
++        .prepare(
++            "SELECT host_id, thread_id, display_title, source_created_at, source_updated_at, cwd, source_kind, source_detail, model_provider, git_branch, observation_sequence, missing_candidate FROM local_thread_catalog ORDER BY thread_id",
++        )
++        .unwrap()
++        .query_map([], |row| {
++            Ok((
++                row.get::<_, String>(0)?,
++                row.get::<_, String>(1)?,
++                row.get::<_, String>(2)?,
++                row.get::<_, f64>(3)?,
++                row.get::<_, f64>(4)?,
++                row.get::<_, String>(5)?,
++                row.get::<_, String>(6)?,
++                row.get::<_, Option<String>>(7)?,
++                row.get::<_, String>(8)?,
++                row.get::<_, Option<String>>(9)?,
++                row.get::<_, i64>(10)?,
++                row.get::<_, i64>(11)?,
++            ))
++        })
++        .unwrap()
++        .collect::<rusqlite::Result<Vec<_>>>()
++        .unwrap();
++    assert_eq!(
++        rows,
++        vec![(
++            "local".to_string(),
++            "thread-visible".to_string(),
++            "Visible project thread".to_string(),
++            1782000000.0,
++            1782000900.0,
++            "/home/deck/opt/CodexPlusPlus-on-Linux".to_string(),
++            "rollout".to_string(),
++            Some("/home/deck/.codex/sessions/2026/rollout-visible.jsonl".to_string()),
++            "apigather".to_string(),
++            Some("mian".to_string()),
++            14,
++            0,
++        )]
++    );
++    let sync_state = db
++        .query_row(
++            "SELECT watermark_updated_at, initial_build_complete, observation_sequence FROM local_thread_catalog_sync_state WHERE host_id = 'local'",
++            [],
++            |row| Ok((row.get::<_, f64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
++        )
++        .unwrap();
++    assert_eq!(sync_state, (1782000900.0, 1, 14));
++    let revision: i64 = db
++        .query_row(
++            "SELECT catalog_revision FROM local_thread_catalog_metadata WHERE id = 1",
++            [],
++            |row| row.get(0),
++        )
++        .unwrap();
++    assert_eq!(revision, 1);
++    let backup_dir = result.backup_dir.unwrap();
++    assert!(backup_dir.join("db/sqlite/codex-dev.db").exists());
++}
++
+ #[test]
+ fn provider_sync_backup_metadata_contains_reference_fields_and_managed_marker() {
+     let tmp = tempdir().unwrap();

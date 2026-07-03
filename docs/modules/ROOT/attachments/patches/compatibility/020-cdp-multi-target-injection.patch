@@ -1,8 +1,8 @@
 diff --git a/apps/codex-plus-launcher/src/main.rs b/apps/codex-plus-launcher/src/main.rs
-index abc4307..6a5df1f 100644
+index cc12fae..4b7c194 100644
 --- a/apps/codex-plus-launcher/src/main.rs
 +++ b/apps/codex-plus-launcher/src/main.rs
-@@ -511,6 +511,10 @@ impl LauncherRuntimeService {
+@@ -517,6 +517,10 @@ impl LauncherRuntimeService {
      fn set_websocket_url(&self, websocket_url: &str) {
          *self.websocket_url.lock().unwrap() = Some(websocket_url.to_string());
      }
@@ -13,7 +13,7 @@ index abc4307..6a5df1f 100644
  }
 
  #[async_trait::async_trait]
-@@ -657,10 +661,21 @@ async fn inject_with_context(
+@@ -663,10 +667,21 @@ async fn inject_with_context(
      runtime: Arc<LauncherRuntimeService>,
  ) -> anyhow::Result<()> {
      let mut last_error = None;
@@ -36,7 +36,7 @@ index abc4307..6a5df1f 100644
                  last_error = Some(error);
                  tokio::time::sleep(std::time::Duration::from_millis(500)).await;
              }
-@@ -676,12 +691,10 @@ async fn try_inject_with_context(
+@@ -682,12 +697,10 @@ async fn try_inject_with_context(
      runtime: Arc<LauncherRuntimeService>,
  ) -> anyhow::Result<()> {
      let targets = codex_plus_core::cdp::list_targets(debug_port).await?;
@@ -53,7 +53,7 @@ index abc4307..6a5df1f 100644
      let settings = codex_plus_core::settings::SettingsStore::default()
          .load()
          .unwrap_or_default();
-@@ -695,18 +708,60 @@ async fn try_inject_with_context(
+@@ -701,18 +714,60 @@ async fn try_inject_with_context(
      } else {
          vec![script, user_bundle]
      };

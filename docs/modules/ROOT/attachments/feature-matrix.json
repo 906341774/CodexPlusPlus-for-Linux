@@ -44,11 +44,13 @@
       "whiteBoxChecks": [
         "Regression tests cover resolver and proxy environment preservation",
         "Source marker: CODEX_WEBVIEW_PORT",
-        "Source marker: Access-Control-Allow-Private-Network"
+        "Source marker: Access-Control-Allow-Private-Network",
+        "Source marker: handle_helper_bridge_route"
       ],
       "blackBoxChecks": [
         "Codex starts from the Codex++ Manager without Cannot access before initialization errors",
-        "The Codex webview can call the Codex++ helper over localhost without private-network preflight failure"
+        "The Codex webview can call the Codex++ helper over localhost without private-network preflight failure",
+        "The Codex webview can read Codex++ settings from the helper even when the CDP binding is missing or reconnecting"
       ]
     },
     {
@@ -98,11 +100,14 @@
       "patchIds": ["060-renderer-linux-compatibility"],
       "whiteBoxChecks": [
         "Renderer injection contains normalizeCodexPlusPluginDetail",
-        "Regression tests cover plugin detail payload normalization"
+        "Regression tests cover plugin detail payload normalization",
+        "Source marker: codexAppAssetFeatureFallbacks",
+        "Regression test: linux_renderer_asset_loader_skips_linux_app_scheme_dynamic_chunks"
       ],
       "blackBoxChecks": [
         "Opening a marketplace plugin detail page does not jump to an error page",
-        "Plugin install and detail pages both work after relaunch"
+        "Plugin install and detail pages both work after relaunch",
+        "Renderer diagnostics do not report missing app-server-manager-signals assets on current Linux Codex Desktop chunks"
       ]
     },
     {
@@ -121,28 +126,52 @@
     {
       "id": "fast-button",
       "name": "Fast service-tier control in Linux composer footer",
-      "patchIds": ["060-renderer-linux-compatibility"],
+      "patchIds": ["030-linux-launcher-environment", "060-renderer-linux-compatibility"],
       "whiteBoxChecks": [
         "Source marker: codexServiceTierLinuxComposerFooters",
-        "Source marker: codexServiceTierBackendBlocksLocalOverride"
+        "Source marker: codexServiceTierBackendBlocksLocalOverride",
+        "Source marker: findCodexDispatcherClass",
+        "Source marker: isCodexHotkeyWindowRoute",
+        "Source marker: helperBridgeFallbackRoutes",
+        "Regression test: linux_renderer_asset_loader_can_find_merged_codex_chunks_by_features",
+        "Regression test: linux_renderer_service_tier_patch_finds_dispatcher_without_minified_export_name",
+        "Regression test: linux_renderer_dispatcher_patches_skip_hotkey_window_route"
       ],
       "blackBoxChecks": [
         "When Fast mode is enabled in Codex++ Manager, the Fast badge appears in the Codex composer footer",
-        "The Fast badge remains clickable during transient backend-checking states"
+        "The Fast badge remains clickable during transient backend-checking states",
+        "Renderer diagnostics do not report missing setting-storage assets on current Linux Codex Desktop chunks",
+        "Renderer diagnostics do not repeatedly report Codex dispatcher unavailable after current Linux Codex Desktop chunks load"
       ]
     },
     {
       "id": "context-used-meter",
       "name": "Codex Context Used Meter marketplace user script",
-      "patchIds": ["070-linux-user-scripts-compatibility", "900-regression-tests"],
+      "patchIds": ["030-linux-launcher-environment", "060-renderer-linux-compatibility", "070-linux-user-scripts-compatibility", "900-regression-tests"],
       "whiteBoxChecks": [
         "Regression test: user_script_bundle_wraps_scripts_with_linux_codex_location_alias",
+        "Regression test: injection_script_falls_back_to_helper_for_bridge_routes_when_binding_is_missing",
         "Source marker: codexPlusLinuxUserScriptLocation",
-        "Bundle marker: app://-/index.html"
+        "Bundle marker: app://-/index.html",
+        "Source marker: /user-scripts/list"
       ],
       "blackBoxChecks": [
         "Install and enable Codex Context Used Meter from the script market",
         "After launching Codex Desktop through Codex++ Manager, the context meter appears in the conversation UI"
+      ]
+    },
+    {
+      "id": "local-thread-catalog",
+      "name": "Project sidebar visibility for existing local conversations",
+      "patchIds": ["080-linux-local-thread-catalog-sync", "900-regression-tests"],
+      "whiteBoxChecks": [
+        "Regression test: provider_sync_backfills_new_local_thread_catalog_from_legacy_state_db",
+        "Source marker: local_thread_catalog",
+        "Source marker: collect_local_catalog_threads"
+      ],
+      "blackBoxChecks": [
+        "Codex++ Manager local sessions and Codex Desktop project sidebars agree on visible unarchived conversations",
+        "After provider sync, projects with legacy local threads no longer show the empty-state message for conversations"
       ]
     },
     {

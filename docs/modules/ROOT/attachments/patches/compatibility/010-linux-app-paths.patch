@@ -1,8 +1,8 @@
 diff --git a/crates/codex-plus-core/src/app_paths.rs b/crates/codex-plus-core/src/app_paths.rs
-index 7bb3c6f..401f186 100644
+index eea4285..b94da8d 100644
 --- a/crates/codex-plus-core/src/app_paths.rs
 +++ b/crates/codex-plus-core/src/app_paths.rs
-@@ -162,6 +162,10 @@ pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
+@@ -225,6 +225,10 @@ pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
      if app_dir.extension() == Some(OsStr::new("app")) {
          return app_dir.join("Contents").join("MacOS").join("Codex");
      }
@@ -13,7 +13,7 @@ index 7bb3c6f..401f186 100644
      let upper = app_dir.join("Codex.exe");
      if upper.exists() {
          upper
-@@ -174,6 +178,15 @@ pub fn codex_app_version(app_dir: &Path) -> Option<String> {
+@@ -237,6 +241,15 @@ pub fn codex_app_version(app_dir: &Path) -> Option<String> {
      if app_dir.extension() == Some(OsStr::new("app")) {
          return macos_app_version(app_dir);
      }

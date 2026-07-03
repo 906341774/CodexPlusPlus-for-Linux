@@ -59,7 +59,7 @@ $ErrorActionPreference = "Stop"
 [string]$CodexPlusPlusGitHubRepo = 'https://github.com/BigPizzaV3/CodexPlusPlus'
 # Upstream version pinned by this adapter release.
 # 当前适配项目固定对应的上游 Codex++ 版本。
-[string]$CodexPlusPlusUpstreamVersion = '1.2.25'
+[string]$CodexPlusPlusUpstreamVersion = '1.2.28'
 [string]$CodexPlusPlusReleaseTag = "v$CodexPlusPlusUpstreamVersion"
 [string]$CodexPlusPlusVersionZipUrl = "https://github.com/BigPizzaV3/CodexPlusPlus/archive/refs/tags/$CodexPlusPlusReleaseTag.zip"
 [string]$CodexPlusPlusMainZipUrl = 'https://github.com/BigPizzaV3/CodexPlusPlus/archive/refs/heads/main.zip'
@@ -90,6 +90,7 @@ $ErrorActionPreference = "Stop"
 #   temp: prefer temporary tools under Codex++ install directory
 [ValidateSet("auto", "system", "temp")]
 [string]$DependencyMode = "auto"
+[int]$MinimumNodeMajorVersion = 20
 
 # Build mode choices / 构建模式:
 #   release: optimized production binaries
@@ -585,9 +586,128 @@ function Sync-CodexPlusPlusUserState {
     Clear-CodexPlusPlusLatestStatus -CodexAppDir $CodexAppDir
 }
 
+function Test-AdapterSamePath {
+    param(
+        [string]$Left,
+        [string]$Right
+    )
+    if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) { return $false }
+    try {
+        return [System.IO.Path]::GetFullPath($Left) -eq [System.IO.Path]::GetFullPath($Right)
+    } catch {
+        return $Left.TrimEnd('/\') -eq $Right.TrimEnd('/\')
+    }
+}
+
+function Remove-AdapterJsonProperties {
+    param(
+        [object]$ObjectValue,
+        [string[]]$Names
+    )
+    foreach ($name in $Names) {
+        if ($ObjectValue.PSObject.Properties.Name -contains $name) {
+            $ObjectValue.PSObject.Properties.Remove($name)
+        }
+    }
+}
+
+function Write-OrRemoveAdapterJsonObject {
+    param(
+        [string]$PathValue,
+        [object]$ObjectValue
+    )
+    $propertyCount = @($ObjectValue.PSObject.Properties).Count
+    if ($propertyCount -eq 0) {
+        if (Test-Path $PathValue) { Remove-Item -LiteralPath $PathValue -Force }
+    } else {
+        Write-AdapterJsonObject $PathValue $ObjectValue
+    }
+}
+
+function Clear-CodexSessionDeleteSettingsForUninstall {
+    param([string[]]$CodexAppDirs)
+    $path = Get-CodexPlusPlusSessionPath 'settings.json'
+    if (-not (Test-Path $path)) { return }
+    $settings = Read-AdapterJsonObject $path
+    if (-not ($settings.PSObject.Properties.Name -contains 'codexAppPath')) { return }
+
+    $configuredApp = [string]$settings.codexAppPath
+    $matchesCurrentUninstall = $false
+    foreach ($dir in ($CodexAppDirs | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)) {
+        if (Test-AdapterSamePath $configuredApp $dir) {
+            $matchesCurrentUninstall = $true
+            break
+        }
+    }
+    if (-not $matchesCurrentUninstall) { return }
+
+    # EN: Remove only the adapter-maintained path field; keep unrelated upstream manager settings.
+    # ZH: 仅移除适配脚本维护的路径字段，保留上游管理器其它无关设置。
+    Remove-AdapterJsonProperties $settings @('codexAppPath')
+    Write-OrRemoveAdapterJsonObject $path $settings
+    Add-AdapterLog "Cleared Codex++ manager settings path for uninstall: $path"
+}
+
+function Clear-CodexPlusPlusStateForUninstall {
+    param(
+        [string]$InstallRoot,
+        [string[]]$CodexAppDirs = @()
+    )
+    $statePath = Join-Path (Get-AdapterXdgDataHome) 'codex-plusplus/state.json'
+    $sessionCandidates = @($CodexAppDirs)
+    if (Test-Path $statePath) {
+        $state = Read-AdapterJsonObject $statePath
+        $stateInstallRoot = if ($state.PSObject.Properties.Name -contains 'linuxAdapterInstallRoot') { [string]$state.linuxAdapterInstallRoot } else { '' }
+        if (Test-AdapterSamePath $stateInstallRoot $InstallRoot) {
+            if ($state.PSObject.Properties.Name -contains 'appRoot') {
+                $sessionCandidates += [string]$state.appRoot
+            }
+
+            # EN: These keys are written by this Linux adapter during install/update and must not point to removed files.
+            # ZH: 这些键由 Linux 适配脚本在安装/更新时写入，卸载后不能继续指向已删除文件。
+            Remove-AdapterJsonProperties $state @(
+                'version',
+                'installedAt',
+                'appRoot',
+                'codexVersion',
+                'sourceRoot',
+                'linuxAdapterInstallRoot',
+                'linuxCodexStartScript',
+                'linuxAdapterLauncherPath',
+                'linuxAdapterManagerPath',
+                'linuxAdapterDesktopEntryPath',
+                'linuxAdapterManagerDesktopEntryPath'
+            )
+            Write-OrRemoveAdapterJsonObject $statePath $state
+            Add-AdapterLog "Cleared Codex++ Linux adapter state for uninstall: $statePath"
+        }
+    }
+
+    Clear-CodexSessionDeleteSettingsForUninstall -CodexAppDirs $sessionCandidates
+}
+
 function Test-CommandAvailable {
     param([string]$Name)
     return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+function Get-NodeMajorVersion {
+    if (-not (Test-CommandAvailable 'node')) { return $null }
+    try {
+        $version = (& node --version 2>$null).Trim()
+    } catch {
+        return $null
+    }
+    if ($version -match '^v?(?<major>\d+)\.') {
+        return [int]$Matches.major
+    }
+    return $null
+}
+
+function Test-NodeMeetsMinimum {
+    param([int]$MinimumMajorVersion = $MinimumNodeMajorVersion)
+    $major = Get-NodeMajorVersion
+    return $null -ne $major -and $major -ge $MinimumMajorVersion
 }
 
 function Invoke-External {
@@ -805,6 +925,8 @@ function Assert-SourceLinuxAdaptationApplied {
     Assert-TextFileContains (Join-Path $SourceRoot 'assets/inject/renderer-inject.js') 'codexServiceTierLinuxComposerFooters' 'Linux Fast badge composer placement'
     Assert-TextFileContains (Join-Path $SourceRoot 'assets/inject/renderer-inject.js') 'codexServiceTierBackendBlocksLocalOverride' 'Linux Fast badge transient backend checking clickability'
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/user_scripts.rs') 'codexPlusLinuxUserScriptLocation' 'Linux user script location alias'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/codex_sqlite.rs') 'local_thread_catalog' 'Linux Codex local thread catalog discovery'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-data/src/provider_sync.rs') 'collect_local_catalog_threads' 'Linux local thread catalog provider sync backfill'
     Add-AdapterLog "Verified Linux adaptation markers in patched source."
 }
 
@@ -945,6 +1067,10 @@ function Install-TemporaryRust {
         RUSTUP_HOME = $rustupHome
         CARGO_HOME = $cargoHome
     } | Out-Null
+    # EN: rustup installs proxies under CARGO_HOME; later cargo invocations must see the same rustup state.
+    # ZH: rustup 会把代理程序安装到 CARGO_HOME；后续 cargo 调用必须看到同一份 rustup 状态。
+    $env:RUSTUP_HOME = $rustupHome
+    $env:CARGO_HOME = $cargoHome
     $env:PATH = (Join-Path $cargoHome 'bin') + [System.IO.Path]::PathSeparator + $env:PATH
 }
 
@@ -963,14 +1089,40 @@ function Install-TemporaryNode {
     $env:PATH = (Join-Path $nodeRoot "$name/bin") + [System.IO.Path]::PathSeparator + $env:PATH
 }
 
+function Ensure-NodeDependencies {
+    param([string]$ToolsRoot)
+    # EN: Modern Vite/Tailwind native bindings require a newer Node than AlmaLinux 9 ships by default.
+    # ZH: 当前 Vite/Tailwind 原生绑定需要比 AlmaLinux 9 默认 Node 更新的版本。
+    $nodeOk = Test-NodeMeetsMinimum
+    $npmOk = Test-CommandAvailable 'npm'
+    if ($DependencyMode -eq 'system') {
+        if (-not $nodeOk) { throw "Missing required system dependency: node >= $MinimumNodeMajorVersion" }
+        if (-not $npmOk) { throw "Missing required system dependency: npm" }
+        Add-AdapterLog "Dependency found: node >= $MinimumNodeMajorVersion"
+        Add-AdapterLog "Dependency found: npm"
+        return
+    }
+    if ($DependencyMode -ne 'temp' -and $nodeOk -and $npmOk) {
+        Add-AdapterLog "Dependency found: node >= $MinimumNodeMajorVersion"
+        Add-AdapterLog "Dependency found: npm"
+        return
+    }
+
+    # EN: In auto/temp modes, install a private Node toolchain when Node is missing or too old.
+    # ZH: auto/temp 模式下，如果 Node 缺失或版本过旧，就安装私有 Node 工具链。
+    Add-AdapterLog "Node.js is missing or older than $MinimumNodeMajorVersion; attempting temporary install"
+    Install-TemporaryNode $ToolsRoot
+    if (-not (Test-NodeMeetsMinimum)) { throw "Temporary Node.js did not provide node >= $MinimumNodeMajorVersion" }
+    if (-not (Test-CommandAvailable 'npm')) { throw "Temporary Node.js did not provide npm" }
+}
+
 function Ensure-Dependencies {
     param([string]$InstallRoot)
     $toolsRoot = Join-Path $InstallRoot $TemporaryToolsDirName
     [void][System.IO.Directory]::CreateDirectory($toolsRoot)
     Ensure-Dependency 'git' { throw "git is required for patch application." }
     Ensure-Dependency 'cargo' { Install-TemporaryRust $toolsRoot }
-    Ensure-Dependency 'node' { Install-TemporaryNode $toolsRoot }
-    Ensure-Dependency 'npm' { Install-TemporaryNode $toolsRoot }
+    Ensure-NodeDependencies $toolsRoot
 }
 
 # =============================================================================
@@ -1193,21 +1345,24 @@ exec $launcherQuoted --app-path $appQuoted "`$@"
 }
 
 function Uninstall-AdaptedCodexPlusPlus {
-    param([string]$InstallRoot)
+    param(
+        [string]$InstallRoot,
+        [string[]]$CodexAppDirs = @()
+    )
     $binDir = Join-Path $InstallRoot 'install'
     if (-not (Test-Path $InstallRoot)) {
         Add-AdapterLog "Install root does not exist: $InstallRoot"
-        return
-    }
-    if ($PreserveUserScriptsOnUninstall) {
-        foreach ($name in @('codex-plus-plus', 'codex-plus-plus-manager', 'launch-codex-plus-plus', 'README-linux-adapter.txt')) {
-            $path = Join-Path $binDir $name
-            if (Test-Path $path) { Remove-Item -LiteralPath $path -Force }
-        }
-        Add-AdapterLog "Removed binaries and preserved user data: $InstallRoot"
     } else {
-        Remove-Item -LiteralPath $InstallRoot -Recurse -Force
-        Add-AdapterLog "Removed install root: $InstallRoot"
+        if ($PreserveUserScriptsOnUninstall) {
+            foreach ($name in @('codex-plus-plus', 'codex-plus-plus-manager', 'launch-codex-plus-plus', 'README-linux-adapter.txt')) {
+                $path = Join-Path $binDir $name
+                if (Test-Path $path) { Remove-Item -LiteralPath $path -Force }
+            }
+            Add-AdapterLog "Removed binaries and preserved user data: $InstallRoot"
+        } else {
+            Remove-Item -LiteralPath $InstallRoot -Recurse -Force
+            Add-AdapterLog "Removed install root: $InstallRoot"
+        }
     }
     $apps = Get-AdapterApplicationsDir
     Remove-DesktopEntryFiles $apps @(
@@ -1216,6 +1371,7 @@ function Uninstall-AdaptedCodexPlusPlus {
         'codex-plus-plus-linux.desktop',
         'codex-plus-plus-manager-linux.desktop'
     )
+    Clear-CodexPlusPlusStateForUninstall -InstallRoot $InstallRoot -CodexAppDirs $CodexAppDirs
 }
 
 function Show-InfoPanel {
@@ -1366,6 +1522,48 @@ function Invoke-SelfTest {
         if ([System.IO.Path]::GetFullPath((Resolve-AdapterInstallPathForExistingOperation $nestedInfo '.codex-plusplus')) -ne [System.IO.Path]::GetFullPath((Join-Path $nestedApp '.codex-plusplus'))) {
             throw 'Existing nested Codex++ install path was not found.'
         }
+
+        # EN: Uninstall must not leave user-level state pointing at removed Linux adapter entrypoints.
+        # ZH: 卸载后不能留下仍指向已删除 Linux 适配入口的用户级状态文件。
+        $oldHome = $env:HOME
+        $oldXdgDataHome = $env:XDG_DATA_HOME
+        try {
+            $env:HOME = Join-Path $layoutTestRoot 'home'
+            $env:XDG_DATA_HOME = Join-Path $layoutTestRoot 'xdg-data'
+            $testInstallRoot = $directInstall
+            $testBinDir = Join-Path $testInstallRoot 'install'
+            $testSourceRoot = Join-Path $testInstallRoot 'work/source'
+            [void][System.IO.Directory]::CreateDirectory($testBinDir)
+            [void][System.IO.Directory]::CreateDirectory($testSourceRoot)
+            foreach ($name in @('codex-plus-plus', 'codex-plus-plus-manager', 'launch-codex-plus-plus', 'README-linux-adapter.txt')) {
+                [System.IO.File]::WriteAllText((Join-Path $testBinDir $name), "selftest`n")
+            }
+            Sync-CodexPlusPlusUserState `
+                -CodexAppDir $directRoot `
+                -InstallRoot $testInstallRoot `
+                -SourceRoot $testSourceRoot `
+                -CodexPlusPlusVersion 'selftest' `
+                -CodexDesktopVersion 'direct'
+            Uninstall-AdaptedCodexPlusPlus $testInstallRoot
+
+            $statePath = Join-Path (Get-AdapterXdgDataHome) 'codex-plusplus/state.json'
+            if (Test-Path $statePath) {
+                $stateText = [System.IO.File]::ReadAllText($statePath)
+                if ($stateText.Contains('linuxAdapterManagerPath') -or $stateText.Contains([System.IO.Path]::GetFullPath($testInstallRoot))) {
+                    throw 'Uninstall left stale Codex++ Linux adapter state.'
+                }
+            }
+            $settingsPath = Get-CodexPlusPlusSessionPath 'settings.json'
+            if (Test-Path $settingsPath) {
+                $settingsText = [System.IO.File]::ReadAllText($settingsPath)
+                if ($settingsText.Contains([System.IO.Path]::GetFullPath($directRoot))) {
+                    throw 'Uninstall left stale Codex++ manager codexAppPath.'
+                }
+            }
+        } finally {
+            $env:HOME = $oldHome
+            $env:XDG_DATA_HOME = $oldXdgDataHome
+        }
     } finally {
         if (Test-Path $layoutTestRoot) { Remove-Item -LiteralPath $layoutTestRoot -Recurse -Force }
     }
@@ -1391,21 +1589,37 @@ try {
             Add-AdapterLog "Using Codex++ install root: $installRoot"
             if (Confirm-AdapterAction (T 'ConfirmUninstall') $true) {
                 Invoke-AdapterStep 100 'Uninstall / 卸载' {
-                    Uninstall-AdaptedCodexPlusPlus $installRoot
+                    # EN: Pass all known Codex app layout anchors so user-level settings are cleared only when they refer to this uninstall target.
+                    # ZH: 传入所有已知 Codex app 布局锚点，仅在用户级设置确实指向本次卸载目标时才清理。
+                    $knownCodexAppDirs = @(
+                        [string]$codexInfo.AppDir,
+                        [string]$codexInfo.Root,
+                        (Join-Path ([string]$codexInfo.Root) 'codex-app')
+                    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+                    Uninstall-AdaptedCodexPlusPlus -InstallRoot $installRoot -CodexAppDirs $knownCodexAppDirs
                     Clear-CodexPlusPlusLatestStatusForKnownLayouts $codexInfo
                 }
             }
         }
         'list-snippets' { Invoke-ListSnippets }
         'apply-snippets' {
-            $codexRoot = Expand-AdapterPath $CodexDesktopRoot
-            $codexInfo = Test-CodexDesktopInstall $codexRoot
-            $installRoot = Resolve-AdapterInstallPathForExistingOperation $codexInfo $CodexPlusPlusInstallPath
-            $workRoot = Join-Path $installRoot $WorkDirName
-            $sourceRoot = Join-Path $workRoot 'source'
-            if (-not (Test-Path $sourceRoot)) { throw "No prepared source found: $sourceRoot" }
+            # EN: Maintainers often replay snippets against an explicit clean upstream checkout before install.
+            # ZH: 维护者常需要在安装前，先对明确指定的干净上游源码树重放片段。
+            if (-not [string]::IsNullOrWhiteSpace($CodexPlusPlusLocalSource)) {
+                $sourceRoot = Expand-AdapterPath $CodexPlusPlusLocalSource
+            } else {
+                # EN: Without an explicit source path, keep the historical behavior of using the prepared install work tree.
+                # ZH: 未明确指定源码路径时，保留原先使用安装工作目录 prepared source 的行为。
+                $codexRoot = Expand-AdapterPath $CodexDesktopRoot
+                $codexInfo = Test-CodexDesktopInstall $codexRoot
+                $installRoot = Resolve-AdapterInstallPathForExistingOperation $codexInfo $CodexPlusPlusInstallPath
+                $workRoot = Join-Path $installRoot $WorkDirName
+                $sourceRoot = Join-Path $workRoot 'source'
+            }
+            if (-not (Test-Path (Join-Path $sourceRoot 'Cargo.toml'))) { throw "No Codex++ source found: $sourceRoot" }
             $snippets = Get-EnabledSnippets (Read-SnippetManifest)
             foreach ($snippet in $snippets) { Apply-SnippetPatch -SourceRoot $sourceRoot -Snippet $snippet }
+            Assert-SourceLinuxAdaptationApplied -SourceRoot $sourceRoot
         }
         'selftest' { Invoke-SelfTest }
     }

@@ -34,8 +34,8 @@ Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility
 |`030-linux-launcher-environment`
 |Required
 |`crates/codex-plus-core/src/launcher.rs`
-|Launch Linux Codex Desktop through `start.sh`, preserve resolver/proxy environment, remove Electron poison variables, set safe webview ports, allow Chromium private-network helper preflights, and keep the Linux wrapper alive after injection failure.
-|Needed for the hacked Linux Codex Desktop wrapper, reliable DNS/proxy behavior in desktop sessions, and Codex webview access to the Codex++ helper.
+|Launch Linux Codex Desktop through `start.sh`, preserve resolver/proxy environment, remove Electron poison variables, set safe webview ports, allow Chromium private-network helper preflights, expose helper HTTP bridge routes for settings/user scripts, and keep the Linux wrapper alive after injection failure.
+|Needed for the hacked Linux Codex Desktop wrapper, reliable DNS/proxy behavior in desktop sessions, and Codex webview access to Codex++ helper state when CDP binding is missing or reconnecting.
 |xref:attachment$patches/compatibility/030-linux-launcher-environment.patch[patch]
 
 |`040-linux-entrypoints-health`
@@ -55,7 +55,7 @@ Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility
 |`060-renderer-linux-compatibility`
 |Required
 |`assets/inject/renderer-inject.js`
-|Stabilize Linux renderer injection: plugin nav unlock, plugin detail response normalization, Pure API synthetic account compatibility, no full refresh on delete, no debug suffix on Plugins label, floating Codex++ trigger overlap avoidance, Fast service-tier badge placement in the Linux composer footer, and Fast badge clickability during transient backend checks.
+|Stabilize Linux renderer injection: plugin nav unlock, plugin detail response normalization, Pure API synthetic account compatibility, no full refresh on delete, no debug suffix on Plugins label, floating Codex++ trigger overlap avoidance, Fast service-tier badge placement in the Linux composer footer, Fast badge clickability during transient backend checks, HTTP helper fallback for bridge routes when CDP binding is unavailable, fallback discovery for renamed or merged Codex asset chunks, skip unimportable Linux `app://-/assets/` dynamic chunk records, find Codex dispatcher exports without relying on one minified export name, and skip main-window dispatcher patches on the hotkey window route.
 |Needed while upstream renderer injection does not account for Linux Codex Desktop DOM and MCP response differences.
 |xref:attachment$patches/compatibility/060-renderer-linux-compatibility.patch[patch]
 
@@ -66,10 +66,17 @@ Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility
 |Needed when user scripts such as `Codex Context Used Meter` treat the Linux `http://127.0.0.1:<port>/?mcpAppSandboxDevtools=1` page as a non-conversation window.
 |xref:attachment$patches/compatibility/070-linux-user-scripts-compatibility.patch[patch]
 
+|`080-linux-local-thread-catalog-sync`
+|Required
+|`crates/codex-plus-core/src/codex_sqlite.rs`, `crates/codex-plus-data/src/provider_sync.rs`
+|Backfill the new Codex Desktop `local_thread_catalog` tables from legacy `threads` rows during provider sync so project sidebars can see existing local conversations.
+|Needed when Codex++ can list local sessions but Linux Codex Desktop project sidebars show no conversations after a Codex storage schema update.
+|xref:attachment$patches/compatibility/080-linux-local-thread-catalog-sync.patch[patch]
+
 |`900-regression-tests`
 |Optional
-|`crates/codex-plus-core/tests/*.rs`
-|Add regression coverage for the Linux path, CDP target selection, Linux launcher environment, helper private-network preflights, Pure API config, plugin details, delete stability, floating menu positioning, Fast badge composer placement, user-script location aliasing, and transient backend-check clickability.
+|`crates/codex-plus-core/tests/*.rs`, `crates/codex-plus-data/tests/provider_sync.rs`
+|Add regression coverage for the Linux path, CDP target selection, Linux launcher environment, helper private-network preflights and bridge route fallback, Pure API config, plugin details, delete stability, floating menu positioning, Fast badge composer placement, renamed or merged Codex asset chunk fallback, skipping unimportable Linux `app://-/assets/` chunk records, minified dispatcher export drift, hotkey-window dispatcher guard, user-script location aliasing, local thread catalog backfill, and transient backend-check clickability.
 |Recommended for source builds and CI; can be disabled for a faster production-only patch.
 |xref:attachment$patches/compatibility/900-regression-tests.patch[patch]
 |===
@@ -116,7 +123,7 @@ The manager script extracts the JSON block between the markers below.
     "targets": [
       "crates/codex-plus-core/src/launcher.rs"
     ],
-    "purpose": "Launch Linux Codex Desktop through start.sh, preserve desktop resolver/proxy environment, and allow Codex webview requests to the helper."
+    "purpose": "Launch Linux Codex Desktop through start.sh, preserve desktop resolver/proxy environment, and expose helper HTTP bridge routes for Codex webview settings/user-script fallback."
   },
   {
     "id": "040-linux-entrypoints-health",
@@ -152,7 +159,7 @@ The manager script extracts the JSON block between the markers below.
     "targets": [
       "assets/inject/renderer-inject.js"
     ],
-    "purpose": "Patch Linux-specific renderer compatibility for plugin navigation, plugin details, Pure API account reads, delete behavior, label cleanup, menu positioning, Fast badge composer placement, and transient backend-check clickability."
+    "purpose": "Patch Linux-specific renderer compatibility for plugin navigation, plugin details, Pure API account reads, delete behavior, label cleanup, menu positioning, Fast badge composer placement, helper HTTP fallback when CDP binding is missing, renamed or merged Codex asset chunk fallback, unimportable app:// asset records, minified dispatcher export drift, hotkey-window dispatcher guard, and transient backend-check clickability."
   },
   {
     "id": "070-linux-user-scripts-compatibility",
@@ -166,6 +173,18 @@ The manager script extracts the JSON block between the markers below.
     "purpose": "Wrap enabled user scripts with a Linux Codex Desktop location alias for marketplace scripts that expect app://-/index.html."
   },
   {
+    "id": "080-linux-local-thread-catalog-sync",
+    "required": true,
+    "defaultEnabled": true,
+    "kind": "production",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/080-linux-local-thread-catalog-sync.patch",
+    "targets": [
+      "crates/codex-plus-core/src/codex_sqlite.rs",
+      "crates/codex-plus-data/src/provider_sync.rs"
+    ],
+    "purpose": "Backfill Codex Desktop local_thread_catalog rows from legacy local session threads so project sidebars keep showing existing conversations after storage schema updates."
+  },
+  {
     "id": "900-regression-tests",
     "required": false,
     "defaultEnabled": true,
@@ -176,9 +195,10 @@ The manager script extracts the JSON block between the markers below.
       "crates/codex-plus-core/tests/cdp_bridge.rs",
       "crates/codex-plus-core/tests/installers.rs",
       "crates/codex-plus-core/tests/launcher.rs",
-      "crates/codex-plus-core/tests/relay_config.rs"
+      "crates/codex-plus-core/tests/relay_config.rs",
+      "crates/codex-plus-data/tests/provider_sync.rs"
     ],
-    "purpose": "Add regression tests for the Linux adaptation snippets, including helper private-network preflights, Fast badge placement, user-script location aliasing, and transient backend-check clickability in the current Linux composer footer."
+    "purpose": "Add regression tests for the Linux adaptation snippets, including helper private-network preflights, helper bridge route fallback, Fast badge placement, renamed or merged Codex asset chunk fallback, unimportable app:// asset records, minified dispatcher export drift, hotkey-window dispatcher guard, user-script location aliasing, local thread catalog backfill, and transient backend-check clickability in the current Linux composer footer."
   }
 ]
 ----
@@ -242,6 +262,14 @@ include::attachment$patches/compatibility/060-renderer-linux-compatibility.patch
 [source,diff]
 ----
 include::attachment$patches/compatibility/070-linux-user-scripts-compatibility.patch[]
+----
+
+[#snippet-080-linux-local-thread-catalog-sync]
+=== 080 Linux local thread catalog synchronization
+
+[source,diff]
+----
+include::attachment$patches/compatibility/080-linux-local-thread-catalog-sync.patch[]
 ----
 
 [#snippet-900-regression-tests]

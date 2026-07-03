@@ -1,5 +1,6 @@
 .tmp/
 .cache/
+cache/
 work/
 dist/
 *.log
@@ -8,6 +9,7 @@ target/
 *.xfs
 containers-storage/
 podman/
+.podman-test/
 .codex
 
 # 一些编写的给AI的提示词的临时文本

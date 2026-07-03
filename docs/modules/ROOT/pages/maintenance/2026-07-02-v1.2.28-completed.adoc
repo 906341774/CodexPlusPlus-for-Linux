@@ -1,0 +1,103 @@
+= Codex++ v1.2.28 Linux adaptation completed
+:toc:
+:toclevels: 2
+
+Date: 2026-07-02
+
+== Fixed upstream inputs
+
+* Codex++ upstream: `BigPizzaV3/CodexPlusPlus` `v1.2.28`, tag object `966682eb8e1b01a24a2550c5b58be79922bd542e`, source commit `ce4510faaeb2d7c81ba2b3a4f2367273b0817ee0`.
+* This round stayed pinned to `v1.2.28`. Later upstream releases must start a new adaptation round instead of interrupting this baseline.
+* Linux Codex Desktop validation root in the AlmaLinux fixture: `$HOME/opt/CodexDesktop`.
+
+== Upstream delta reviewed
+
+The local upstream delta from `v1.2.27` to `v1.2.28` was:
+
+* `Release 1.2.28`
+* `Merge branch 'merge-pr-1248-stepwise'`
+* `Validate backup file restore paths`
+* `Update README icon asset`
+
+Linux adapter impact:
+
+* Existing compatibility patches remained necessary.
+* The renderer patch stayed required for Linux DOM drift, Fast badge placement/clickability, helper fallback, asset fallback, dispatcher export drift, and hotkey-window guards.
+* The new `080-linux-local-thread-catalog-sync` compatibility patch was kept because Codex Desktop project sidebars can otherwise miss conversations that Codex++ Manager can list.
+
+== Patch apply and source validation
+
+The v1.2.28 source was replayed from a clean upstream checkout with the Antora snippet manifest. All compatibility and regression patches applied successfully.
+
+Validated patch set:
+
+* `010-linux-app-paths`
+* `020-cdp-multi-target-injection`
+* `030-linux-launcher-environment`
+* `040-linux-entrypoints-health`
+* `050-pure-api-config-sync`
+* `060-renderer-linux-compatibility`
+* `070-linux-user-scripts-compatibility`
+* `080-linux-local-thread-catalog-sync`
+* `900-regression-tests`
+
+== Automated validation
+
+The following checks passed after the v1.2.28 replay:
+
+* `pwsh -NoLogo -NoProfile -File scripts/Test-AdapterWorkflow.ps1`
+* `pwsh -NoLogo -NoProfile -File scripts/Installer-and-Manager.ps1 -Action selftest -NonInteractive`
+* `cargo test -p codex-plus-core -p codex-plus-data`
+
+The Rust pass covered the Linux path, CDP bridge, helper bridge routes, installer entrypoints, launcher environment, Pure API relay config, user-script location aliasing, renderer injection compatibility, Fast badge placement/clickability, local thread catalog backfill, and storage/provider sync regressions.
+
+== AlmaLinux Podman validation
+
+The local AlmaLinux 9 fixture was validated with:
+
+* AlmaLinux 9.8 minimal container.
+* PowerShell 7.6.3.
+* Node.js 22.22.2.
+* Rust/Cargo installed through rustup.
+* Pixi-provided WebKitGTK/Tauri compatibility layer.
+* Noto CJK fonts installed for Chinese GUI rendering.
+* Correct upstream-style desktop entries:
+  `codex-plus-plus.desktop` and `codex-plus-plus-manager.desktop`.
+* No legacy adapter-generated `codex-plus-plus-linux.desktop` or `codex-plus-plus-manager-linux.desktop`.
+
+Container-local validation passed for:
+
+* workflow contract check;
+* installer selftest;
+* non-interactive install/update/uninstall behavior during the adaptation run;
+* interactive default-path behavior during the adaptation run;
+* GUI launch through Codex++ with isolated CDP, helper, and Codex webview ports.
+
+The `.podman-test/` fixture is intentionally ignored but kept in the local project checkout for future adaptation rounds.
+
+== GUI evidence
+
+The v1.2.28 GUI validation produced local screenshot evidence for:
+
+* Codex Desktop launching through Codex++;
+* `Codex++ 1.2.28` status indicator placement without native-control overlap;
+* Plugins navigation without debug suffix;
+* Fast service-tier badge visible in the Linux composer footer;
+* Fast badge switching from `standard` to `fast`.
+
+Additional CDP assertions confirmed helper status, context-meter script loading, and absence of the known critical dispatcher/asset errors during the validation run.
+
+== Host installation
+
+After container validation, the verified v1.2.28 build was applied to the host installation rooted at `$HOME/opt/CodexDesktop`.
+
+The host state files were synchronized so both Codex++ and the manager point to the detected Linux Codex app root:
+
+* `$HOME/.local/share/codex-plusplus/state.json`
+* `$HOME/.codex-session-delete/settings.json`
+
+The host installation uses the upstream-style desktop entries and does not keep the earlier incorrect `*-linux.desktop` entries.
+
+== Release conclusion
+
+The `v1.2.28` Linux adaptation is complete for this round. Future upstream versions must start a new pinned baseline and rerun the workflow instead of replacing this completed baseline mid-run.

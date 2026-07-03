@@ -16,6 +16,7 @@
 == 固定周期
 
 至少每周运行一次定时工作流；当上游 Codex++ 发布新版本，或明显修改 launcher、manager、renderer injection、user scripts、安装逻辑、API profile 处理时，也应手动运行一次。
+每一轮适配必须固定一个上游基线版本。同一轮中不得因为上游又发布新版本而中途切换基线；必须先完成已固定基线的调试和验收，之后只有在维护者发起下一轮适配时才追随更新版本。
 
 GitHub Actions 入口是 `.github/workflows/adaptation-regression.yml`。
 该工作流刻意区分验证阶段和发布阶段：定时运行只做验证，推送到维护者 fork 必须是明确的维护者动作。
@@ -80,9 +81,11 @@ pwsh ./scripts/Installer-and-Manager.ps1 -Action uninstall -CodexDesktopRootPath
 ----
 . 运行 GUI 验证。
   通过新安装的 Codex++ Manager 启动 Codex Desktop，再用 Computer Use 截图和 CDP DOM 断言验证功能矩阵中的黑盒检查项。
+  在使用 `--network=host` 的 Podman 夹具中，验证命令必须在唯一的 Codex++ CDP debug port 和 helper port 之外，同时设置隔离的 `CODEX_WEBVIEW_PORT`；否则 launcher 可能与宿主 Codex Desktop 实例发生端口冲突，或误检查宿主实例。
   如果应用已经启动，但 Computer Use 或等价 GUI 自动化反复失败，必须停下上报；GUI 证据是发布门禁的一部分。
 . 如果上游变化导致某个 patch 已不再必要或不再充分，必须同步更新 snippets、功能矩阵和工作流文档。
 . 提交前清理临时源码树、容器镜像、缓存和测试文件。
+. 发布门禁全部通过后，只清理已准备容器中的 CodexDesktop 和 Codex++ 调试载荷，然后使用 7z 非固实最高压缩打包已准备好的测试容器，存放到 Antora 附件的合适子目录，供下一轮适配复用。
 . 只有目标版本的功能矩阵全部验收后，才提交并推送。
 
 == 必须停下上报的条件

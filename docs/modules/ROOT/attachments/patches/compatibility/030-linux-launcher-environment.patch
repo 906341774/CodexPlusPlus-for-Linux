@@ -1,4 +1,101 @@
+diff --git a/apps/codex-plus-launcher/src/main.rs b/apps/codex-plus-launcher/src/main.rs
+index cc12fae..a975e7c 100644
+--- a/apps/codex-plus-launcher/src/main.rs
++++ b/apps/codex-plus-launcher/src/main.rs
+@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
+     let options = parse_launch_options(args.iter());
+     if helper_only {
+         let hooks = LauncherHooks::default();
+-        hooks.start_helper(options.helper_port).await?;
++        hooks.start_helper(options.helper_port, None).await?;
+         std::future::pending::<()>().await;
+         hooks.shutdown_helper(options.helper_port).await;
+         return Ok(());
+@@ -49,9 +49,11 @@ async fn main() -> Result<()> {
+         activate_existing_codex_app(&options).await?;
+         return Ok(());
+     };
+-    tokio::spawn(async {
+-        let _ = notify_manager_when_update_available().await;
+-    });
++    if !startup_update_prompt_disabled() {
++        tokio::spawn(async {
++            let _ = notify_manager_when_update_available().await;
++        });
++    }
+     let hooks = LauncherHooks::default();
+     let handle = launch_and_inject_with_hooks(options, &hooks).await?;
+     handle.wait_for_codex_exit().await?;
+@@ -145,8 +145,15 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
+             &settings.codex_extra_args,
+         )
+         .await;
++    let bridge_context = if settings.enhancements_enabled {
++        hooks.bridge_context(options.debug_port, &app_dir).await?
++    } else {
++        None
++    };
+     if settings.enhancements_enabled {
+-        hooks.start_helper(options.helper_port).await?;
++        hooks
++            .start_helper(options.helper_port, bridge_context.clone())
++            .await?;
+     }
+     let process_ids = codex_plus_core::watcher::find_codex_processes();
+     let mut activated = false;
+@@ -161,7 +168,12 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
+     }
+     let injection_ready = if settings.enhancements_enabled {
+         hooks
+-            .ensure_injection(options.debug_port, options.helper_port, &app_dir)
++            .ensure_injection(
++                options.debug_port,
++                options.helper_port,
++                &app_dir,
++                bridge_context,
++            )
+             .await
+     } else {
+         false
+@@ -210,6 +224,21 @@ async fn notify_manager_when_update_available() -> anyhow::Result<bool> {
+     Ok(true)
+ }
+
++fn startup_update_prompt_disabled() -> bool {
++    update_prompt_disabled_by_environment(
++        std::env::var("CODEX_PLUS_DISABLE_UPDATE_CHECK")
++            .ok()
++            .as_deref(),
++    )
++}
++
++fn update_prompt_disabled_by_environment(value: Option<&str>) -> bool {
++    matches!(
++        value.map(|value| value.trim().to_ascii_lowercase()),
++        Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on")
++    )
++}
++
+ fn open_manager_with_update_prompt() -> anyhow::Result<()> {
+     let manager_path = manager_exe_path();
+     let mut command = std::process::Command::new(&manager_path);
+@@ -311,8 +323,12 @@ impl LaunchHooks for LauncherHooks {
+         self.core.ensure_plugin_marketplace_config(settings).await
+     }
+
+-    async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
+-        self.core.start_helper(helper_port).await
++    async fn start_helper(
++        &self,
++        helper_port: u16,
++        bridge_context: Option<BridgeContext>,
++    ) -> anyhow::Result<()> {
++        self.core.start_helper(helper_port, bridge_context).await
+     }
+
+     async fn launch_codex(
 diff --git a/crates/codex-plus-core/src/launcher.rs b/crates/codex-plus-core/src/launcher.rs
+index fcdeb04..792fb4d 100644
 --- a/crates/codex-plus-core/src/launcher.rs
 +++ b/crates/codex-plus-core/src/launcher.rs
 @@ -1,3 +1,4 @@
@@ -6,7 +103,109 @@ diff --git a/crates/codex-plus-core/src/launcher.rs b/crates/codex-plus-core/src
  use std::net::SocketAddr;
  use std::path::{Path, PathBuf};
  use std::process::Stdio;
-@@ -507,6 +508,11 @@
+@@ -141,7 +142,11 @@ pub trait LaunchHooks: Send + Sync {
+     ) -> anyhow::Result<()> {
+         Ok(())
+     }
+-    async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()>;
++    async fn start_helper(
++        &self,
++        helper_port: u16,
++        bridge_context: Option<crate::routes::BridgeContext>,
++    ) -> anyhow::Result<()>;
+     async fn launch_codex(
+         &self,
+         app_dir: &Path,
+@@ -165,12 +170,21 @@ pub trait LaunchHooks: Send + Sync {
+     ) -> anyhow::Result<()> {
+         self.inject(debug_port, helper_port).await
+     }
+-    async fn ensure_injection(&self, debug_port: u16, helper_port: u16, app_dir: &Path) -> bool {
++    async fn ensure_injection(
++        &self,
++        debug_port: u16,
++        helper_port: u16,
++        app_dir: &Path,
++        bridge_context: Option<crate::routes::BridgeContext>,
++    ) -> bool {
+         for attempt in 1..=120 {
+-            let result = match self.bridge_context(debug_port, app_dir).await {
+-                Ok(Some(ctx)) => self.inject_bridge(debug_port, helper_port, ctx).await,
+-                Ok(None) => self.inject(debug_port, helper_port).await,
+-                Err(error) => Err(error),
++            let result = match bridge_context.clone() {
++                Some(ctx) => self.inject_bridge(debug_port, helper_port, ctx).await,
++                None => match self.bridge_context(debug_port, app_dir).await {
++                    Ok(Some(ctx)) => self.inject_bridge(debug_port, helper_port, ctx).await,
++                    Ok(None) => self.inject(debug_port, helper_port).await,
++                    Err(error) => Err(error),
++                },
+             };
+             match result {
+                 Ok(()) => return true,
+@@ -294,8 +308,15 @@ where
+         if protocol_proxy_enabled {
+             helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
+         }
++        let helper_bridge_context = if settings.enhancements_enabled {
++            hooks.bridge_context(debug_port, &app_dir).await?
++        } else {
++            None
++        };
+         if settings.enhancements_enabled || protocol_proxy_enabled {
+-            hooks.start_helper(helper_port).await?;
++            hooks
++                .start_helper(helper_port, helper_bridge_context.clone())
++                .await?;
+             helper_started = true;
+         }
+
+@@ -311,7 +332,7 @@ where
+         let mut injection_degraded = false;
+         if settings.enhancements_enabled {
+             let injection_ready = hooks
+-                .ensure_injection(debug_port, helper_port, &app_dir)
++                .ensure_injection(debug_port, helper_port, &app_dir, helper_bridge_context)
+                 .await;
+             if injection_ready {
+                 keep_launched_on_error = false;
+@@ -586,13 +607,23 @@ impl LaunchHooks for DefaultLaunchHooks {
+         Ok(())
+     }
+
+-    async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
++    async fn start_helper(
++        &self,
++        helper_port: u16,
++        bridge_context: Option<crate::routes::BridgeContext>,
++    ) -> anyhow::Result<()> {
+         let bind_host = helper_bind_host();
+         let listener = tokio::net::TcpListener::bind((bind_host.as_str(), helper_port))
+             .await
+             .with_context(|| {
+                 format!("failed to bind helper runtime on {bind_host}:{helper_port}")
+             })?;
++        let bridge_context = bridge_context.unwrap_or_else(|| {
++            crate::routes::BridgeContext::core(Arc::new(crate::routes::CoreRuntimeService::new(
++                0,
++                StatusStore::default(),
++            )))
++        });
+         let _ = crate::diagnostic_log::append_diagnostic_log(
+             "helper.listening",
+             serde_json::json!({
+@@ -608,8 +639,9 @@ impl LaunchHooks for DefaultLaunchHooks {
+                     _ = &mut shutdown_rx => break,
+                     accepted = listener.accept() => {
+                         if let Ok((stream, addr)) = accepted {
++                            let bridge_context = bridge_context.clone();
+                             tokio::spawn(async move {
+-                                let _ = handle_helper_connection(stream, Some(addr)).await;
++                                let _ = handle_helper_connection(stream, Some(addr), bridge_context).await;
+                             });
+                         }
+                     }
+@@ -728,6 +760,11 @@ impl LaunchHooks for DefaultLaunchHooks {
              .args(&command[1..])
              .stdout(Stdio::null())
              .stderr(Stdio::null());
@@ -18,7 +217,33 @@ diff --git a/crates/codex-plus-core/src/launcher.rs b/crates/codex-plus-core/src
          #[cfg(windows)]
          child_command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
          let child = child_command
-@@ -742,11 +748,11 @@
+@@ -907,6 +944,7 @@ impl LaunchHooks for DefaultLaunchHooks {
+ async fn handle_helper_connection(
+     mut stream: tokio::net::TcpStream,
+     remote_addr: Option<SocketAddr>,
++    bridge_context: crate::routes::BridgeContext,
+ ) -> anyhow::Result<()> {
+     let request_bytes = read_http_request(&mut stream).await?;
+     let request = String::from_utf8_lossy(&request_bytes);
+@@ -962,6 +1000,17 @@ async fn handle_helper_connection(
+         )
+         .await;
+     }
++    if is_helper_bridge_route(path) && matches!(method, "POST" | "OPTIONS") {
++        return handle_helper_bridge_route(
++            &mut stream,
++            bridge_context,
++            method,
++            path,
++            request_body,
++            remote_addr_text,
++        )
++        .await;
++    }
+
+     let (status, body, content_type, log_event) =
+         if matches!(path, "/backend/status" | "/backend/repair")
+@@ -1043,11 +1092,11 @@ async fn handle_helper_connection(
      );
      let response = if method == "OPTIONS" {
          format!(
@@ -32,7 +257,97 @@ diff --git a/crates/codex-plus-core/src/launcher.rs b/crates/codex-plus-core/src
              body.len()
          )
      };
-@@ -1034,7 +1040,7 @@
+@@ -1059,6 +1108,89 @@ async fn handle_helper_connection(
+     Ok(())
+ }
+
++fn is_helper_bridge_route(path: &str) -> bool {
++    matches!(
++        path,
++        "/settings/get"
++            | "/settings/set"
++            | "/user-scripts/list"
++            | "/user-scripts/set-enabled"
++            | "/user-scripts/set-script-enabled"
++            | "/user-scripts/delete"
++            | "/user-scripts/reload"
++            | "/devtools/open"
++            | "/manager/open"
++            | "/codex-model-catalog"
++            | "/codex-config-model"
++            | "/ads"
++            | "/zed-remote/status"
++            | "/zed-remote/resolve-host"
++            | "/zed-remote/fallback-request"
++            | "/zed-remote/open"
++            | "/zed-remote/projects"
++            | "/zed-remote/remember-project"
++            | "/zed-remote/forget-project"
++            | "/upstream-worktree/status"
++            | "/upstream-worktree/defaults"
++            | "/upstream-worktree/prepare"
++            | "/upstream-worktree/create"
++            | "/stepwise/settings"
++            | "/stepwise/generate"
++            | "/stepwise/test"
++            | "/delete"
++            | "/undo"
++            | "/export-markdown"
++            | "/thread-usage-history"
++            | "/archived-thread"
++            | "/move-thread-workspace"
++            | "/thread-sort-key"
++            | "/thread-sort-keys"
++    )
++}
++
++async fn handle_helper_bridge_route(
++    stream: &mut tokio::net::TcpStream,
++    bridge_context: crate::routes::BridgeContext,
++    method: &str,
++    path: &str,
++    request_body: &str,
++    remote_addr_text: Option<String>,
++) -> anyhow::Result<()> {
++    if method == "OPTIONS" {
++        write_http_response(
++            stream,
++            "204 No Content",
++            "application/json; charset=utf-8",
++            &[],
++        )
++        .await?;
++        log_helper_response(
++            "helper.bridge_options",
++            method,
++            path,
++            "204 No Content",
++            remote_addr_text,
++        );
++        stream.shutdown().await?;
++        return Ok(());
++    }
++    let payload = serde_json::from_str::<serde_json::Value>(request_body)
++        .unwrap_or_else(|_| serde_json::json!({}));
++    let body = serde_json::to_vec(
++        &crate::routes::handle_bridge_request(bridge_context, path, payload).await,
++    )?;
++    write_http_response(stream, "200 OK", "application/json; charset=utf-8", &body).await?;
++    log_helper_response(
++        "helper.bridge_route_ok",
++        method,
++        path,
++        "200 OK",
++        remote_addr_text,
++    );
++    stream.shutdown().await?;
++    Ok(())
++}
++
+ fn overlay_image_response() -> (String, Vec<u8>, String, &'static str) {
+     let not_found = || {
+         (
+@@ -1424,7 +1556,7 @@ async fn write_http_response(
      body: &[u8],
  ) -> anyhow::Result<()> {
      let response = format!(
@@ -41,7 +356,7 @@ diff --git a/crates/codex-plus-core/src/launcher.rs b/crates/codex-plus-core/src
          body.len()
      );
      stream.write_all(response.as_bytes()).await?;
-@@ -1049,7 +1055,7 @@
+@@ -1438,7 +1570,7 @@ async fn write_http_stream_headers(
      content_type: &str,
  ) -> anyhow::Result<()> {
      let response = format!(
@@ -50,7 +365,7 @@ diff --git a/crates/codex-plus-core/src/launcher.rs b/crates/codex-plus-core/src
      );
      stream.write_all(response.as_bytes()).await?;
      Ok(())
-@@ -1157,6 +1163,10 @@
+@@ -1647,6 +1779,10 @@ pub fn build_codex_command(app_dir: &Path, debug_port: u16, extra_args: &[String
              .to_string_lossy()
              .to_string(),
      ];
@@ -61,10 +376,21 @@ diff --git a/crates/codex-plus-core/src/launcher.rs b/crates/codex-plus-core/src
      command.extend(build_codex_arguments(debug_port, extra_args));
      command
  }
-@@ -1173,12 +1183,206 @@
+@@ -1662,6 +1798,10 @@ pub fn build_codex_command_with_native_menu_inspector(
+             .to_string_lossy()
+             .to_string(),
+     ];
++    if cfg!(target_os = "linux") && app_dir.join("start.sh").exists() {
++        command.push("--new-instance".to_string());
++        command.push("--".to_string());
++    }
+     command.extend(build_codex_arguments_with_native_menu_inspector(
+         debug_port,
+         inspector_port,
+@@ -1699,12 +1835,225 @@ pub fn build_packaged_activation_with_native_menu_inspector(
      })
  }
- 
+
 +pub fn codex_process_environment_for_app(app_dir: &Path) -> HashMap<String, String> {
 +    let env = std::env::vars().collect::<HashMap<_, _>>();
 +    codex_process_environment_for_app_from(app_dir, &env, crate::proxy::detect_system_proxy)
@@ -97,6 +423,22 @@ diff --git a/crates/codex-plus-core/src/launcher.rs b/crates/codex-plus-core/src
 +    "NODE_OPTIONS",
 +];
 +
++const LINUX_RUNTIME_ENV_VARS: &[&str] = &[
++    "CONDA_DEFAULT_ENV",
++    "CONDA_PREFIX",
++    "CPATH",
++    "CPLUS_INCLUDE_PATH",
++    "C_INCLUDE_PATH",
++    "GI_TYPELIB_PATH",
++    "GIO_MODULE_DIR",
++    "LD_LIBRARY_PATH",
++    "LIBRARY_PATH",
++    "PIXI_HOME",
++    "PIXI_PROJECT_ENVIRONMENT",
++    "PIXI_PROJECT_ROOT",
++    "PKG_CONFIG_PATH",
++];
++
 +const LINUX_CODEX_PLUSPLUS_WEBVIEW_PORT: &str = "5176";
 +const LINUX_CODEX_PLUSPLUS_MULTI_LAUNCH_PORT_RANGE: &str = "5176-5185";
 +
@@ -108,6 +450,9 @@ diff --git a/crates/codex-plus-core/src/launcher.rs b/crates/codex-plus-core/src
 +    if cfg!(target_os = "linux") {
 +        env.remove("ELECTRON_RUN_AS_NODE");
 +        env.remove("ELECTRON_NO_ATTACH_CONSOLE");
++        for name in LINUX_RUNTIME_ENV_VARS {
++            env.remove(*name);
++        }
 +        if should_hydrate_linux_network_environment(&env) {
 +            hydrate_linux_network_environment(&mut env);
 +        }
