@@ -24,6 +24,7 @@ See link:LICENSE[LICENSE].
 * A recurring adaptation workflow in `docs/modules/ROOT/pages/adapter-workflow.adoc`.
 * Patch attachments in `docs/modules/ROOT/attachments/patches/`.
 * A bilingual PowerShell installer and manager script: `scripts/Installer-and-Manager.ps1`.
+* Upstream source snapshots under `CodexPlusPlus/src` and `codex-desktop-linux/src` for research and reproducible comparison; nested `.git` metadata and local build caches are intentionally not tracked.
 
 The manager script can install, update, uninstall, and reapply the Linux adaptation from an original Codex++ source package.
 

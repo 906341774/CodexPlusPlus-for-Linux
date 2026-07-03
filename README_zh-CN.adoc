@@ -24,6 +24,7 @@ link:README.adoc[English] | 简体中文
 * `docs/modules/ROOT/pages/adapter-workflow_zh-CN.adoc` 中的定期适配工作流。
 * `docs/modules/ROOT/attachments/patches/` 中的补丁附件。
 * 双语 PowerShell 安装与管理脚本：`scripts/Installer-and-Manager.ps1`。
+* `CodexPlusPlus/src` 和 `codex-desktop-linux/src` 下的上游源码快照，供研究和可复现对照使用；嵌套 `.git` 元数据和本地构建缓存有意不纳入跟踪。
 
 管理脚本可从原始 Codex++ 源码包安装、更新、卸载并重新应用 Linux 适配。
 

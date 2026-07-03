@@ -1,0 +1,144 @@
+"use strict";
+
+const {
+  applyLinuxAboutDialogPatch,
+  applyLinuxWindowOptionsPatch,
+  applyLinuxNativeTitlebarPatch,
+  applyLinuxMenuPatch,
+  applyLinuxSetIconPatch,
+  applyLinuxReadyToShowWindowStatePatch,
+  applyLinuxResizeRepaintPatch,
+  applyLinuxOpaqueBackgroundPatch,
+  applyLinuxFileManagerPatch,
+  patchLinuxWorkerFileManagerTarget,
+  applyLinuxTerminalUserPathPatch,
+  applyLinuxBuildInfoTrayPatch,
+  applyLinuxTrayPatch,
+  applyLinuxSingleInstancePatch,
+  applyLinuxGitOriginsSourceFallbackPatch,
+} = require("../../../../main-process.js");
+const { applyLinuxAvatarOverlayMousePassthroughPatch } = require("../../../../avatar-overlay.js");
+
+module.exports = [
+  {
+    id: "linux-about-dialog",
+    phase: "main-bundle",
+    order: 55,
+    ciPolicy: "optional",
+    apply: (source, context) => applyLinuxAboutDialogPatch(source, context.iconPathExpression),
+  },
+  {
+    id: "linux-window-options",
+    phase: "main-bundle",
+    order: 50,
+    ciPolicy: "required-upstream",
+    apply: (source, context) => applyLinuxWindowOptionsPatch(source, context.iconAsset),
+  },
+  {
+    id: "linux-menu",
+    phase: "main-bundle",
+    order: 60,
+    ciPolicy: "optional",
+    apply: applyLinuxMenuPatch,
+  },
+  {
+    id: "linux-native-titlebar",
+    phase: "main-bundle",
+    order: 85,
+    ciPolicy: "required-upstream",
+    apply: applyLinuxNativeTitlebarPatch,
+  },
+  {
+    id: "linux-set-icon",
+    phase: "main-bundle",
+    order: 70,
+    ciPolicy: "optional",
+    apply: (source, context) => applyLinuxSetIconPatch(source, context.iconAsset),
+  },
+  {
+    id: "linux-ready-to-show-window-state",
+    phase: "main-bundle",
+    order: 75,
+    ciPolicy: "optional",
+    apply: applyLinuxReadyToShowWindowStatePatch,
+  },
+  {
+    id: "linux-resize-repaint",
+    phase: "main-bundle",
+    order: 78,
+    ciPolicy: "optional",
+    apply: applyLinuxResizeRepaintPatch,
+  },
+  {
+    id: "linux-opaque-background",
+    phase: "main-bundle",
+    order: 80,
+    ciPolicy: "required-upstream",
+    apply: applyLinuxOpaqueBackgroundPatch,
+  },
+  {
+    id: "linux-avatar-overlay-mouse-passthrough",
+    phase: "main-bundle",
+    order: 90,
+    ciPolicy: "required-upstream",
+    apply: applyLinuxAvatarOverlayMousePassthroughPatch,
+  },
+  {
+    id: "linux-file-manager",
+    phase: "main-bundle",
+    order: 100,
+    ciPolicy: "optional",
+    apply: applyLinuxFileManagerPatch,
+  },
+  {
+    id: "linux-worker-file-manager",
+    phase: "extracted-app",
+    order: 101,
+    ciPolicy: "optional",
+    apply: patchLinuxWorkerFileManagerTarget,
+    status: (result, warnings) => {
+      if (result?.changed) {
+        return warnings.length > 0 ? "applied-with-warnings" : "applied";
+      }
+      if (warnings.length > 0 || result?.matched === 0 || result?.reason != null) {
+        return { status: "skipped-optional", reason: result?.reason ?? warnings[0] };
+      }
+      return "already-applied";
+    },
+  },
+  {
+    id: "linux-terminal-user-path",
+    phase: "main-bundle",
+    order: 105,
+    ciPolicy: "optional",
+    apply: applyLinuxTerminalUserPathPatch,
+  },
+  {
+    id: "linux-tray",
+    phase: "main-bundle",
+    order: 110,
+    ciPolicy: "required-upstream",
+    apply: (source, context) => applyLinuxTrayPatch(source, context.iconPathExpression),
+  },
+  {
+    id: "linux-build-info-tray",
+    phase: "main-bundle",
+    order: 115,
+    ciPolicy: "optional",
+    apply: applyLinuxBuildInfoTrayPatch,
+  },
+  {
+    id: "linux-single-instance",
+    phase: "main-bundle",
+    order: 120,
+    ciPolicy: "optional",
+    apply: applyLinuxSingleInstancePatch,
+  },
+  {
+    id: "linux-git-origins-source-fallback",
+    phase: "main-bundle",
+    order: 240,
+    ciPolicy: "optional",
+    apply: applyLinuxGitOriginsSourceFallbackPatch,
+  },
+];
