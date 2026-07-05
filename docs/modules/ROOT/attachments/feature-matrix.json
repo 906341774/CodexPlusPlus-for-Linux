@@ -165,9 +165,13 @@
       "name": "Project sidebar visibility for existing local conversations",
       "patchIds": ["080-linux-local-thread-catalog-sync", "900-regression-tests"],
       "whiteBoxChecks": [
-        "Regression test: provider_sync_backfills_new_local_thread_catalog_from_legacy_state_db",
+        "Regression test: provider_sync_backfills_local_thread_catalog_from_legacy_state_db",
+        "Regression test: provider_sync_restores_local_thread_catalog_rows_marked_missing",
+        "Regression test: preserves provider-sync backfilled rollout catalog rows during full scans",
         "Source marker: local_thread_catalog",
-        "Source marker: collect_local_catalog_threads"
+        "Source marker: collect_local_catalog_threads",
+        "Patch descriptor: linux-local-thread-catalog-preserve-backfill",
+        "Patch descriptor: linux-local-thread-catalog-initial-snapshot"
       ],
       "blackBoxChecks": [
         "Codex++ Manager local sessions and Codex Desktop project sidebars agree on visible unarchived conversations",

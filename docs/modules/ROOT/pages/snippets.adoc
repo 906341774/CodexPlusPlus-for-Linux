@@ -69,14 +69,14 @@ Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility
 |`080-linux-local-thread-catalog-sync`
 |Required
 |`crates/codex-plus-core/src/codex_sqlite.rs`, `crates/codex-plus-data/src/provider_sync.rs`
-|Backfill the new Codex Desktop `local_thread_catalog` tables from legacy `threads` rows during provider sync so project sidebars can see existing local conversations.
+|Backfill and restore Codex Desktop `local_thread_catalog` rows from legacy `threads` rows during provider sync so project sidebars can see existing local conversations.
 |Needed when Codex++ can list local sessions but Linux Codex Desktop project sidebars show no conversations after a Codex storage schema update.
 |xref:attachment$patches/compatibility/080-linux-local-thread-catalog-sync.patch[patch]
 
 |`900-regression-tests`
 |Optional
 |`crates/codex-plus-core/tests/*.rs`, `crates/codex-plus-data/tests/provider_sync.rs`
-|Add regression coverage for the Linux path, CDP target selection, Linux launcher environment, helper private-network preflights and bridge route fallback, Pure API config, plugin details, delete stability, floating menu positioning, Fast badge composer placement, renamed or merged Codex asset chunk fallback, skipping unimportable Linux `app://-/assets/` chunk records, minified dispatcher export drift, hotkey-window dispatcher guard, user-script location aliasing, local thread catalog backfill, and transient backend-check clickability.
+|Add regression coverage for CDP target selection, Linux launcher and watcher process cleanup, helper bridge route fallback, plugin details, delete stability, floating menu positioning, Fast badge composer placement, renamed or merged Codex asset chunk fallback, skipping unimportable Linux `app://-/assets/` chunk records, minified dispatcher export drift, hotkey-window dispatcher guard, local thread catalog backfill/restoration, and transient backend-check clickability.
 |Recommended for source builds and CI; can be disabled for a faster production-only patch.
 |xref:attachment$patches/compatibility/900-regression-tests.patch[patch]
 |===
@@ -182,7 +182,7 @@ The manager script extracts the JSON block between the markers below.
       "crates/codex-plus-core/src/codex_sqlite.rs",
       "crates/codex-plus-data/src/provider_sync.rs"
     ],
-    "purpose": "Backfill Codex Desktop local_thread_catalog rows from legacy local session threads so project sidebars keep showing existing conversations after storage schema updates."
+    "purpose": "Backfill and restore Codex Desktop local_thread_catalog rows from legacy local session threads so project sidebars keep showing existing conversations after storage schema updates."
   },
   {
     "id": "900-regression-tests",
@@ -191,14 +191,12 @@ The manager script extracts the JSON block between the markers below.
     "kind": "test",
     "patch": "docs/modules/ROOT/attachments/patches/compatibility/900-regression-tests.patch",
     "targets": [
-      "crates/codex-plus-core/tests/bridge_routes.rs",
       "crates/codex-plus-core/tests/cdp_bridge.rs",
-      "crates/codex-plus-core/tests/installers.rs",
       "crates/codex-plus-core/tests/launcher.rs",
-      "crates/codex-plus-core/tests/relay_config.rs",
+      "crates/codex-plus-core/tests/watcher.rs",
       "crates/codex-plus-data/tests/provider_sync.rs"
     ],
-    "purpose": "Add regression tests for the Linux adaptation snippets, including helper private-network preflights, helper bridge route fallback, Fast badge placement, renamed or merged Codex asset chunk fallback, unimportable app:// asset records, minified dispatcher export drift, hotkey-window dispatcher guard, user-script location aliasing, local thread catalog backfill, and transient backend-check clickability in the current Linux composer footer."
+    "purpose": "Add regression tests for the Linux adaptation snippets, including helper bridge route fallback, Fast badge placement, renamed or merged Codex asset chunk fallback, unimportable app:// asset records, minified dispatcher export drift, hotkey-window dispatcher guard, launcher/watcher cleanup, local thread catalog backfill/restoration, and transient backend-check clickability in the current Linux composer footer."
   }
 ]
 ----

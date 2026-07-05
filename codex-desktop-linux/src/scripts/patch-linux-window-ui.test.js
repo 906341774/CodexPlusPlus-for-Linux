@@ -52,6 +52,8 @@ const {
   applyLinuxMenuPatch,
   applyLinuxNativeTitlebarPatch,
   applyLinuxLocalAppServerFeatureEnablementHandlerPatch,
+  applyLinuxLocalThreadCatalogPreserveBackfillPatch,
+  patchLinuxLocalThreadCatalogBackfillAssets,
   applyLinuxMultiInstanceBootstrapPatch,
   applyLinuxAppSunsetPatch,
   applyLinuxBrowserUseAvailabilityPatch,
@@ -119,6 +121,7 @@ const {
   applyPersistentRateLimitFooterPatch,
   applyLinuxAppServerFeatureEnablementPatch,
   applyLinuxChatSearchHydrationPatch,
+  applyLinuxLocalThreadCatalogInitialSnapshotPatch,
   applyLinuxConfigWriteVersionConflictPatch,
   applyLinuxI18nGatePatch,
   applyLinuxProfileSettingsMenuPatch,
@@ -752,6 +755,8 @@ test("default core patch descriptors are grouped and unique", () => {
     "linux-app-sunset-gate",
     "linux-app-server-feature-enablement",
     "linux-app-server-backfill-wait",
+    "linux-local-thread-catalog-preserve-backfill",
+    "linux-local-thread-catalog-initial-snapshot",
     "linux-skills-list-dedupe",
     "linux-config-write-version-conflict",
     "opaque-window-default-general-settings",
@@ -838,6 +843,19 @@ test("app-server feature enablement descriptor matches current app-main chunks",
     true,
   );
   assert.equal(descriptor.pattern.test("experimental-feature-visibility-Bvp90zWX.js"), false);
+});
+
+test("local thread catalog descriptor matches the current app bootstrap chunk", () => {
+  const descriptor = corePatchDescriptors().find(
+    (descriptor) => descriptor.id === "linux-local-thread-catalog-initial-snapshot",
+  );
+
+  assert.ok(descriptor);
+  assert.equal(descriptor.phase, "webview-asset");
+  assert.equal(
+    descriptor.pattern.test("app-initial~app-main~automations-page-Da2pvR4p.js"),
+    true,
+  );
 });
 
 test("patch descriptors reject unsupported ciPolicy values", () => {
@@ -4722,6 +4740,118 @@ test("drops stale expectedVersion from Linux webview config writes", () => {
   assert.equal((patched.match(/expectedVersion:null/g) || []).length, 2);
   assert.equal(patched.includes("expectedVersion:B.expectedVersion"), false);
   assert.equal(patched.includes("expectedVersion:v?.configWriteTarget?.expectedVersion??null"), false);
+});
+
+test("loads the local thread catalog snapshot immediately after subscribing", () => {
+  const source = [
+    "function nU(e){let t=(0,iU.c)(5),n;t[0]===e?n=t[1]:(n=e===void 0?{}:e,t[0]=e,t[1]=n);let{enabled:r}=n,i=qr(`567837310`),a=$n.localThreadCatalog,o;return t[2]!==r||t[3]!==i?(o=!(r??i)||a==null?null:(0,oU.jsx)(rU,{service:a}),t[2]=r,t[3]=i,t[4]=o):o=t[4],o}",
+    "function rU({service:e}){let t=G(V),n=z(cU),r=z(yee),i=(0,aU.useRef)(!1),a=(0,aU.useRef)(new Set);return(0,aU.useEffect)(()=>{try{var n=yc();Ro(t,!0);let r=!1,i=0,a=!1,o=async()=>{if(!r){r=!0;try{let n;do{n=i;let r=await e.readSnapshot();if(a)return;Sn(t,{type:`snapshot`,snapshot:r})}while(n!==i)}finally{r=!1}}};return n.u(e.subscribe(e=>{Sn(t,e)===`gap`&&(i+=1,o())})),()=>{try{var n=yc();a=!0,Ro(t,!1),n.u(e.unsubscribe())}catch(e){n.e=e}finally{n.d()}}}catch(e){n.e=e}finally{n.d()}},[t,e]),(0,aU.useEffect)(()=>{if(!r.initialized)return;let t,n=globalThis.setTimeout(()=>{let n=window.requestIdleCallback?.bind(window),r=window.cancelIdleCallback?.bind(window),a=()=>{i.current=!0,e.requestStartupSync()}},sU);return()=>{globalThis.clearTimeout(n),t?.()}},[r.initialized,e]),(0,aU.useEffect)(()=>{let t=new Set(n),r=n.some(e=>!a.current.has(e));a.current=t,i.current&&r&&e.requestSync()},[n,e]),null}",
+  ].join("");
+
+  const patched = applyPatchTwice(
+    applyLinuxLocalThreadCatalogInitialSnapshotPatch,
+    source,
+  );
+
+  assert.match(patched, /e\.subscribe\(e=>\{Sn\(t,e\)===`gap`&&\(i\+=1,o\(\)\)\}\)\),o\(\),\(\)=>/);
+  assert.match(patched, /let r=await e\.readSnapshot\(\)/);
+});
+
+test("enables the local thread catalog provider on Linux when the feature gate is off", () => {
+  const source = [
+    "function nU(e){let t=(0,iU.c)(5),n;t[0]===e?n=t[1]:(n=e===void 0?{}:e,t[0]=e,t[1]=n);let{enabled:r}=n,i=qr(`567837310`),a=$n.localThreadCatalog,o;return t[2]!==r||t[3]!==i?(o=!(r??i)||a==null?null:(0,oU.jsx)(rU,{service:a}),t[2]=r,t[3]=i,t[4]=o):o=t[4],o}",
+    "function rU({service:e}){let t=G(V),n=z(cU),r=z(yee),i=(0,aU.useRef)(!1),a=(0,aU.useRef)(new Set);return(0,aU.useEffect)(()=>{try{var n=yc();Ro(t,!0);let r=!1,i=0,a=!1,o=async()=>{if(!r){r=!0;try{let n;do{n=i;let r=await e.readSnapshot();if(a)return;Sn(t,{type:`snapshot`,snapshot:r})}while(n!==i)}finally{r=!1}}};return n.u(e.subscribe(e=>{Sn(t,e)===`gap`&&(i+=1,o())})),()=>{try{var n=yc();a=!0,Ro(t,!1),n.u(e.unsubscribe())}catch(e){n.e=e}finally{n.d()}}}catch(e){n.e=e}finally{n.d()}},[t,e]),(0,aU.useEffect)(()=>{if(!r.initialized)return;let t,n=globalThis.setTimeout(()=>{let n=window.requestIdleCallback?.bind(window),r=window.cancelIdleCallback?.bind(window),a=()=>{i.current=!0,e.requestStartupSync()}},sU);return()=>{globalThis.clearTimeout(n),t?.()}},[r.initialized,e]),(0,aU.useEffect)(()=>{let t=new Set(n),r=n.some(e=>!a.current.has(e));a.current=t,i.current&&r&&e.requestSync()},[n,e]),null}",
+  ].join("");
+
+  const patched = applyPatchTwice(
+    applyLinuxLocalThreadCatalogInitialSnapshotPatch,
+    source,
+  );
+
+  assert.match(
+    patched,
+    /o=\(!\(r\?\?i\)&&document\.documentElement\.dataset\.codexOs!==`linux`\)\|\|a==null\?null:\(0,oU\.jsx\)\(rU,\{service:a\}\)/,
+  );
+});
+
+test("normalizes local thread catalog seconds timestamps before rendering summaries", () => {
+  const source =
+    "function cFt(e){return{conversationId:J(e.threadId),hostId:e.hostId,createdAt:e.sourceCreatedAt,updatedAt:e.sourceUpdatedAt,recencyAt:e.sourceUpdatedAt,title:e.displayTitle,cwd:e.cwd,gitInfo:null,hasUnreadTurn:!1,modelProvider:e.modelProvider,parentThreadId:null,source:null,threadSource:null,threadRuntimeStatus:{type:`idle`},workspaceKind:e.cwd===`~`?`projectless`:`project`}}";
+
+  const patched = applyPatchTwice(
+    applyLinuxLocalThreadCatalogInitialSnapshotPatch,
+    source,
+  );
+  const context = {
+    result: null,
+  };
+  vm.runInNewContext(
+    `const J = (value) => value; ${patched}; result = cFt({threadId:'thread-1',hostId:'local',sourceCreatedAt:1782237000.5,sourceUpdatedAt:1782237420.117,displayTitle:'Title',cwd:'/tmp/project',modelProvider:'openai'});`,
+    context,
+  );
+
+  assert.equal(context.result.createdAt, 1782237000500);
+  assert.equal(context.result.updatedAt, 1782237420117);
+  assert.equal(context.result.recencyAt, 1782237420117);
+});
+
+test("preserves provider-sync backfilled rollout catalog rows during full scans", () => {
+  const source = [
+    "class F7{completeScan(e,t){this.assertActiveScan(e);let n=this.runInTransaction(()=>{let n=[],r=[];if(e.mode===`full`){let i=this.mutateThreadIds(`UPDATE local_thread_catalog AS catalog\\n           SET missing_candidate = 0,\\n               observation_sequence = ?\\n           WHERE host_id = ?\\n             AND missing_candidate != 0\\n             AND observation_sequence <= ?\\n             AND EXISTS (\\n               SELECT 1 FROM local_thread_catalog_seen AS seen\\n               WHERE seen.host_id = catalog.host_id\\n                 AND seen.thread_id = catalog.thread_id\\n             )\\n           RETURNING thread_id`,e.observationSequence,this.hostId,e.observationSequence),a=this.mutateThreadIds(`UPDATE local_thread_catalog AS catalog\\n           SET missing_candidate = 1,\\n               observation_sequence = ?\\n           WHERE host_id = ?\\n             AND missing_candidate = 0\\n             AND observation_sequence <= ?\\n             AND NOT EXISTS (\\n               SELECT 1 FROM local_thread_catalog_seen AS seen\\n               WHERE seen.host_id = catalog.host_id\\n                 AND seen.thread_id = catalog.thread_id\\n             )\\n           RETURNING thread_id`,e.observationSequence,this.hostId,e.observationSequence);this.db.prepare(`DELETE FROM local_thread_catalog AS catalog\\n             WHERE host_id = ?\\n               AND missing_candidate != 0\\n               AND observation_sequence < ?\\n               AND NOT EXISTS (\\n                 SELECT 1 FROM local_thread_catalog_seen AS seen\\n                 WHERE seen.host_id = catalog.host_id\\n                   AND seen.thread_id = catalog.thread_id\\n               )`).run(this.hostId,e.observationSequence)}})}}",
+  ].join("");
+
+  const patched = applyPatchTwice(
+    applyLinuxLocalThreadCatalogPreserveBackfillPatch,
+    source,
+  );
+
+  assert.equal(
+    (patched.match(/source_kind = 'rollout'/g) || []).length,
+    2,
+  );
+  assert.match(
+    patched,
+    /AND NOT \(source_kind = 'rollout' AND COALESCE\(source_detail, ''\) <> ''\)(?:\\n|\n)             AND NOT EXISTS/,
+  );
+  assert.match(
+    patched,
+    /AND NOT \(source_kind = 'rollout' AND COALESCE\(source_detail, ''\) <> ''\)(?:\\n|\n)               AND NOT EXISTS/,
+  );
+});
+
+test("patches local thread catalog pruning SQL in non-main build chunks", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-local-thread-catalog-build-"));
+  try {
+    const buildDir = path.join(tempRoot, ".vite", "build");
+    fs.mkdirSync(buildDir, { recursive: true });
+    const mainPath = path.join(buildDir, "main-current.js");
+    const catalogPath = path.join(buildDir, "src-current.js");
+    fs.writeFileSync(mainPath, "function main(){return true}", "utf8");
+    fs.writeFileSync(
+      catalogPath,
+      [
+        "class F7{completeScan(e,t){this.assertActiveScan(e);let n=this.runInTransaction(()=>{let n=[],r=[];if(e.mode===`full`){let i=this.mutateThreadIds(`UPDATE local_thread_catalog AS catalog\\n           SET missing_candidate = 0\\n           WHERE host_id = ?\\n             AND missing_candidate != 0\\n             AND observation_sequence <= ?\\n             AND EXISTS (\\n               SELECT 1 FROM local_thread_catalog_seen AS seen\\n               WHERE seen.host_id = catalog.host_id\\n                 AND seen.thread_id = catalog.thread_id\\n             )\\n           RETURNING thread_id`,e.observationSequence,this.hostId,e.observationSequence),a=this.mutateThreadIds(`UPDATE local_thread_catalog AS catalog\\n           SET missing_candidate = 1\\n           WHERE host_id = ?\\n             AND missing_candidate = 0\\n             AND observation_sequence <= ?\\n             AND NOT EXISTS (\\n               SELECT 1 FROM local_thread_catalog_seen AS seen\\n               WHERE seen.host_id = catalog.host_id\\n                 AND seen.thread_id = catalog.thread_id\\n             )\\n           RETURNING thread_id`,e.observationSequence,this.hostId,e.observationSequence);this.db.prepare(`DELETE FROM local_thread_catalog AS catalog\\n             WHERE host_id = ?\\n               AND missing_candidate != 0\\n               AND observation_sequence < ?\\n               AND NOT EXISTS (\\n                 SELECT 1 FROM local_thread_catalog_seen AS seen\\n                 WHERE seen.host_id = catalog.host_id\\n                   AND seen.thread_id = catalog.thread_id\\n               )`).run(this.hostId,e.observationSequence)}})}}",
+      ].join(""),
+      "utf8",
+    );
+
+    assert.deepEqual(
+      patchLinuxLocalThreadCatalogBackfillAssets(tempRoot),
+      { matched: 1, changed: 1 },
+    );
+    const patched = fs.readFileSync(catalogPath, "utf8");
+    assert.equal(
+      (patched.match(/source_kind = 'rollout'/g) || []).length,
+      2,
+    );
+    assert.equal(fs.readFileSync(mainPath, "utf8"), "function main(){return true}");
+    assert.deepEqual(
+      patchLinuxLocalThreadCatalogBackfillAssets(tempRoot),
+      { matched: 1, changed: 0 },
+    );
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("leaves already-null config write versions unchanged", () => {

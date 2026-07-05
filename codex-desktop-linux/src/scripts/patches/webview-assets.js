@@ -880,6 +880,71 @@ function applyLinuxAppServerBackfillWaitPatch(currentSource) {
   return patchedSource;
 }
 
+function applyLinuxLocalThreadCatalogInitialSnapshotPatch(currentSource) {
+  let patchedSource = currentSource;
+  if (
+    patchedSource.includes("function cFt(") &&
+    patchedSource.includes("sourceUpdatedAt") &&
+    !patchedSource.includes("function codexLinuxLocalCatalogTimestampMs(")
+  ) {
+    const summaryTimestampRegex =
+      /function cFt\(([A-Za-z_$][\w$]*)\)\{return\{conversationId:J\(\1\.threadId\),hostId:\1\.hostId,createdAt:\1\.sourceCreatedAt,updatedAt:\1\.sourceUpdatedAt,recencyAt:\1\.sourceUpdatedAt,/u;
+    patchedSource = patchedSource.replace(
+      summaryTimestampRegex,
+      (_match, entryVar) =>
+        `function codexLinuxLocalCatalogTimestampMs(e){return typeof e===\`number\`&&Number.isFinite(e)&&e>0&&e<1e12?e*1e3:e}function cFt(${entryVar}){let codexLinuxCreatedAt=codexLinuxLocalCatalogTimestampMs(${entryVar}.sourceCreatedAt),codexLinuxUpdatedAt=codexLinuxLocalCatalogTimestampMs(${entryVar}.sourceUpdatedAt);return{conversationId:J(${entryVar}.threadId),hostId:${entryVar}.hostId,createdAt:codexLinuxCreatedAt,updatedAt:codexLinuxUpdatedAt,recencyAt:codexLinuxUpdatedAt,`,
+    );
+  }
+
+  if (
+    !patchedSource.includes("localThreadCatalog") ||
+    !patchedSource.includes("requestStartupSync") ||
+    !patchedSource.includes("readSnapshot")
+  ) {
+    return patchedSource;
+  }
+
+  const linuxProviderGateRegex =
+    /o=\(!\([A-Za-z_$][\w$]*\?\?[A-Za-z_$][\w$]*\)&&document\.documentElement\.dataset\.codexOs!==`linux`\)\|\|[A-Za-z_$][\w$]*==null\?null:/u;
+  let providerGateChanged = false;
+  if (!linuxProviderGateRegex.test(patchedSource)) {
+    const providerGateRegex =
+      /o=!\(([A-Za-z_$][\w$]*)\?\?([A-Za-z_$][\w$]*)\)\|\|([A-Za-z_$][\w$]*)==null\?null:/u;
+    const providerGatePatchedSource = patchedSource.replace(
+      providerGateRegex,
+      (_match, enabledVar, featureGateVar, serviceVar) =>
+        `o=(!(${enabledVar}??${featureGateVar})&&document.documentElement.dataset.codexOs!==\`linux\`)||${serviceVar}==null?null:`,
+    );
+    providerGateChanged = providerGatePatchedSource !== patchedSource;
+    patchedSource = providerGatePatchedSource;
+  }
+
+  const alreadyPatchedRegex =
+    /[A-Za-z_$][\w$]*\.u\([A-Za-z_$][\w$]*\.subscribe\([A-Za-z_$][\w$]*=>\{Sn\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\)===`gap`&&\([A-Za-z_$][\w$]*\+=1,[A-Za-z_$][\w$]*\(\)\)\}\)\),[A-Za-z_$][\w$]*\(\),\(\)=>/u;
+  const alreadyPatchedSnapshot = alreadyPatchedRegex.test(patchedSource);
+  let snapshotChanged = false;
+
+  const subscribeRegex =
+    /([A-Za-z_$][\w$]*)\.u\(([A-Za-z_$][\w$]*)\.subscribe\(([A-Za-z_$][\w$]*)=>\{Sn\(([A-Za-z_$][\w$]*),\3\)===`gap`&&\(([A-Za-z_$][\w$]*)\+=1,([A-Za-z_$][\w$]*)\(\)\)\}\)\),\(\)=>/u;
+  if (!alreadyPatchedSnapshot) {
+    const snapshotPatchedSource = patchedSource.replace(
+      subscribeRegex,
+      (_match, scopeVar, serviceVar, eventVar, storeVar, generationVar, readSnapshotVar) =>
+        `${scopeVar}.u(${serviceVar}.subscribe(${eventVar}=>{Sn(${storeVar},${eventVar})===\`gap\`&&(${generationVar}+=1,${readSnapshotVar}())})),${readSnapshotVar}(),()=>`,
+    );
+    snapshotChanged = snapshotPatchedSource !== patchedSource;
+    patchedSource = snapshotPatchedSource;
+  }
+
+  if (!providerGateChanged && !snapshotChanged && !alreadyPatchedSnapshot && !linuxProviderGateRegex.test(currentSource)) {
+    console.warn(
+      "WARN: Could not find local thread catalog subscription needle — existing local sessions may not load until a catalog event arrives",
+    );
+  }
+
+  return patchedSource;
+}
+
 function applyLinuxI18nGatePatch(currentSource) {
   const alreadyPatchedI18nGateRegexes = [
     /([A-Za-z_$][\w$]*)=[^;]*?\.get\(`enable_i18n`,!1\)[^;]*;let [^;]*,([A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*\.localeOverride\),[A-Za-z_$][\w$]*=\1\|\|\2!=null/u,
@@ -1874,6 +1939,7 @@ module.exports = {
   applyLinuxAppServerBackfillWaitPatch,
   applyLinuxAppServerFeatureEnablementPatch,
   applyLinuxChatSearchHydrationPatch,
+  applyLinuxLocalThreadCatalogInitialSnapshotPatch,
   applyLinuxBrowserUseAvailabilityPatch,
   applyLinuxBrowserUseExternalAvailabilityPatch,
   applyLinuxBrowserUseNonLocalNavigationPatch,

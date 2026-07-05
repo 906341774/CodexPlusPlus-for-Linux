@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const DEFAULT_PROVIDER: &str = "openai";
 const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
 const BACKUP_KEEP_COUNT: usize = 5;
+const LOCK_STALE_AFTER_SECS: u64 = 6 * 60 * 60;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -102,18 +103,40 @@ struct SqliteUpdateCounts {
     provider_rows: usize,
     user_event_rows: usize,
     cwd_rows: usize,
+    local_catalog_rows: usize,
 }
 
 impl SqliteUpdateCounts {
     fn total(&self) -> usize {
-        self.provider_rows + self.user_event_rows + self.cwd_rows
+        self.provider_rows + self.user_event_rows + self.cwd_rows + self.local_catalog_rows
     }
 
     fn add(&mut self, other: Self) {
         self.provider_rows += other.provider_rows;
         self.user_event_rows += other.user_event_rows;
         self.cwd_rows += other.cwd_rows;
+        self.local_catalog_rows += other.local_catalog_rows;
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct LocalCatalogThread {
+    thread_id: String,
+    display_title: String,
+    source_created_at: f64,
+    source_updated_at: f64,
+    cwd: String,
+    source_kind: String,
+    source_detail: Option<String>,
+    model_provider: String,
+    git_branch: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LockOwner {
+    pid: Option<u64>,
+    #[serde(rename = "startedAt")]
+    started_at: Option<u64>,
 }
 
 pub fn run_provider_sync(codex_home: Option<&Path>) -> ProviderSyncResult {
@@ -178,17 +201,33 @@ pub fn run_provider_sync_with_target(
             .filter(|change| change.has_user_event)
             .filter_map(|change| change.thread_id.clone())
             .collect::<HashSet<_>>();
+        let projectless_thread_ids = collected
+            .changes
+            .iter()
+            .filter(|change| change.has_user_event)
+            .filter(|change| change.cwd.is_none())
+            .filter_map(|change| change.thread_id.clone())
+            .collect::<HashSet<_>>();
         let cwd_by_thread_id = collected
             .changes
             .iter()
             .filter_map(|change| Some((change.thread_id.clone()?, change.cwd.clone()?)))
+            .filter(|(thread_id, _)| !projectless_thread_ids.contains(thread_id))
             .collect::<HashMap<_, _>>();
         let sqlite_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
+        let local_catalog_threads = collect_local_catalog_threads(
+            &sqlite_paths,
+            &target_provider,
+            &thread_ids_with_user_events,
+            &cwd_by_thread_id,
+            &projectless_thread_ids,
+        )?;
         let sqlite_update_count = count_sqlite_updates_for_paths(
             &sqlite_paths,
             &target_provider,
             &thread_ids_with_user_events,
             &cwd_by_thread_id,
+            &local_catalog_threads,
         )?;
         let global_state_update_count =
             count_global_state_updates(&home.join(".codex-global-state.json"))?;
@@ -214,6 +253,7 @@ pub fn run_provider_sync_with_target(
                 &target_provider,
                 &thread_ids_with_user_events,
                 &cwd_by_thread_id,
+                &local_catalog_threads,
             )?;
             let updated_workspace_roots =
                 apply_global_state_update(&home.join(".codex-global-state.json"))?;
@@ -472,11 +512,72 @@ fn toml_string_value(raw: &str) -> Option<String> {
 
 fn acquire_lock(path: &Path) -> std::io::Result<()> {
     fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))?;
+    match create_lock(path) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::AlreadyExists
+                && provider_sync_lock_is_stale(path) =>
+        {
+            fs::remove_dir_all(path)?;
+            create_lock(path)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn create_lock(path: &Path) -> std::io::Result<()> {
     fs::create_dir(path)?;
-    fs::write(
+    if let Err(error) = fs::write(
         path.join("owner.json"),
         json!({"pid": std::process::id(), "startedAt": now_secs()}).to_string(),
-    )
+    ) {
+        let _ = fs::remove_dir_all(path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn provider_sync_lock_is_stale(path: &Path) -> bool {
+    let now = now_secs();
+    if let Ok(text) = fs::read_to_string(path.join("owner.json")) {
+        if let Ok(owner) = serde_json::from_str::<LockOwner>(&text) {
+            if let Some(pid) = owner.pid {
+                if pid == u64::from(std::process::id()) {
+                    return false;
+                }
+                if matches!(process_is_running(pid), Some(false)) {
+                    return true;
+                }
+            }
+            if let Some(started_at) = owner.started_at {
+                return now.saturating_sub(started_at) > LOCK_STALE_AFTER_SECS;
+            }
+        }
+    }
+
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| {
+            SystemTime::now()
+                .duration_since(modified)
+                .ok()
+                .map(|duration| duration.as_secs())
+        })
+        .is_some_and(|age| age > LOCK_STALE_AFTER_SECS)
+}
+
+#[cfg(target_os = "linux")]
+fn process_is_running(pid: u64) -> Option<bool> {
+    if pid == 0 || pid > i32::MAX as u64 {
+        return Some(false);
+    }
+    Some(Path::new("/proc").join(pid.to_string()).exists())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_is_running(_pid: u64) -> Option<bool> {
+    None
 }
 
 fn release_lock(path: &Path) -> std::io::Result<()> {
@@ -802,6 +903,16 @@ fn table_columns(db: &Connection, table: &str) -> anyhow::Result<HashSet<String>
         .collect::<rusqlite::Result<HashSet<_>>>()?)
 }
 
+fn has_table(db: &Connection, table: &str) -> anyhow::Result<bool> {
+    Ok(db
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
+            [table],
+            |_| Ok(()),
+        )
+        .is_ok())
+}
+
 fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -824,42 +935,235 @@ fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
     Ok(sorted_provider_ids(ids))
 }
 
+fn collect_local_catalog_threads(
+    paths: &[PathBuf],
+    target_provider: &str,
+    user_event_thread_ids: &HashSet<String>,
+    cwd_by_thread_id: &HashMap<String, String>,
+    projectless_thread_ids: &HashSet<String>,
+) -> anyhow::Result<Vec<LocalCatalogThread>> {
+    let mut by_id = HashMap::new();
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        let db = Connection::open(path)?;
+        if !has_table(&db, "threads")? {
+            continue;
+        }
+        let columns = table_columns(&db, "threads")?;
+        if !["id", "cwd", "archived", "has_user_event"]
+            .iter()
+            .all(|column| columns.contains(*column))
+        {
+            continue;
+        }
+        let selected_columns = [
+            ("id", true),
+            ("has_user_event", true),
+            ("title", columns.contains("title")),
+            ("created_at", columns.contains("created_at")),
+            ("updated_at", columns.contains("updated_at")),
+            ("cwd", true),
+            ("rollout_path", columns.contains("rollout_path")),
+            ("model_provider", columns.contains("model_provider")),
+            ("git_branch", columns.contains("git_branch")),
+            ("created_at_ms", columns.contains("created_at_ms")),
+            ("updated_at_ms", columns.contains("updated_at_ms")),
+            ("recency_at", columns.contains("recency_at")),
+            ("recency_at_ms", columns.contains("recency_at_ms")),
+        ]
+        .into_iter()
+        .filter_map(|(column, include)| include.then_some(column))
+        .collect::<Vec<_>>();
+        let sql = format!(
+            "SELECT {} FROM threads WHERE COALESCE(archived, 0) = 0",
+            selected_columns.join(", ")
+        );
+        let mut stmt = db.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let mut index_by_column = HashMap::new();
+            for (index, column) in selected_columns.iter().enumerate() {
+                index_by_column.insert(*column, index);
+            }
+            let Some(thread) = local_catalog_thread_from_row(
+                row,
+                &index_by_column,
+                target_provider,
+                user_event_thread_ids,
+                cwd_by_thread_id,
+            )?
+            else {
+                continue;
+            };
+            if projectless_thread_ids.contains(&thread.thread_id) {
+                continue;
+            }
+            let replace = by_id
+                .get(&thread.thread_id)
+                .map(|existing: &LocalCatalogThread| {
+                    thread.source_updated_at > existing.source_updated_at
+                })
+                .unwrap_or(true);
+            if replace {
+                by_id.insert(thread.thread_id.clone(), thread);
+            }
+        }
+    }
+    let mut threads = by_id.into_values().collect::<Vec<_>>();
+    threads.sort_by(|left, right| left.thread_id.cmp(&right.thread_id));
+    Ok(threads)
+}
+
+fn local_catalog_thread_from_row(
+    row: &rusqlite::Row<'_>,
+    index_by_column: &HashMap<&str, usize>,
+    target_provider: &str,
+    user_event_thread_ids: &HashSet<String>,
+    cwd_by_thread_id: &HashMap<String, String>,
+) -> anyhow::Result<Option<LocalCatalogThread>> {
+    let Some(thread_id) = optional_string(row, index_by_column, "id")? else {
+        return Ok(None);
+    };
+    if thread_id.trim().is_empty() {
+        return Ok(None);
+    }
+    let has_user_event = optional_i64(row, index_by_column, "has_user_event")?.unwrap_or(0) != 0
+        || user_event_thread_ids.contains(&thread_id);
+    if !has_user_event {
+        return Ok(None);
+    }
+    let raw_cwd = if let Some(cwd) = cwd_by_thread_id.get(&thread_id) {
+        Some(cwd.clone())
+    } else {
+        optional_string(row, index_by_column, "cwd")?
+    };
+    let Some(cwd) = raw_cwd.and_then(|value| to_desktop_workspace_path(&value)) else {
+        return Ok(None);
+    };
+    if cwd.trim().is_empty() {
+        return Ok(None);
+    }
+    let title = optional_string(row, index_by_column, "title")?
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| thread_id.clone());
+    let source_created_at =
+        optional_timestamp_seconds(row, index_by_column, "created_at_ms", "created_at")?
+            .unwrap_or(0.0);
+    let source_updated_at =
+        optional_timestamp_seconds(row, index_by_column, "updated_at_ms", "updated_at")?
+            .or(optional_timestamp_seconds(
+                row,
+                index_by_column,
+                "recency_at_ms",
+                "recency_at",
+            )?)
+            .unwrap_or(source_created_at);
+    let source_detail = optional_string(row, index_by_column, "rollout_path")?
+        .filter(|value| !value.trim().is_empty());
+    let model_provider = optional_string(row, index_by_column, "model_provider")?
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| target_provider.to_string());
+    Ok(Some(LocalCatalogThread {
+        thread_id,
+        display_title: title,
+        source_created_at,
+        source_updated_at,
+        cwd,
+        source_kind: "rollout".to_string(),
+        source_detail,
+        model_provider: if model_provider == target_provider {
+            model_provider
+        } else {
+            target_provider.to_string()
+        },
+        git_branch: optional_string(row, index_by_column, "git_branch")?
+            .filter(|value| !value.trim().is_empty()),
+    }))
+}
+
+fn optional_string(
+    row: &rusqlite::Row<'_>,
+    index_by_column: &HashMap<&str, usize>,
+    column: &str,
+) -> anyhow::Result<Option<String>> {
+    let Some(index) = index_by_column.get(column) else {
+        return Ok(None);
+    };
+    Ok(row.get::<_, Option<String>>(*index)?)
+}
+
+fn optional_i64(
+    row: &rusqlite::Row<'_>,
+    index_by_column: &HashMap<&str, usize>,
+    column: &str,
+) -> anyhow::Result<Option<i64>> {
+    let Some(index) = index_by_column.get(column) else {
+        return Ok(None);
+    };
+    Ok(row.get::<_, Option<i64>>(*index)?)
+}
+
+fn optional_timestamp_seconds(
+    row: &rusqlite::Row<'_>,
+    index_by_column: &HashMap<&str, usize>,
+    millis_column: &str,
+    seconds_column: &str,
+) -> anyhow::Result<Option<f64>> {
+    if let Some(index) = index_by_column.get(millis_column) {
+        if let Some(value) = row.get::<_, Option<i64>>(*index)? {
+            return Ok(Some(value as f64 / 1000.0));
+        }
+    }
+    if let Some(index) = index_by_column.get(seconds_column) {
+        return Ok(row.get::<_, Option<f64>>(*index)?);
+    }
+    Ok(None)
+}
+
 fn count_sqlite_updates(
     path: &Path,
     target_provider: &str,
     user_event_thread_ids: &HashSet<String>,
     cwd_by_thread_id: &HashMap<String, String>,
+    local_catalog_threads: &[LocalCatalogThread],
 ) -> anyhow::Result<usize> {
     if !path.exists() {
         return Ok(0);
     }
     let db = Connection::open(path)?;
-    let columns = table_columns(&db, "threads")?;
-    if !columns.contains("model_provider") {
-        return Ok(0);
-    }
-    let mut total: usize = db.query_row(
-        "SELECT COUNT(*) FROM threads WHERE COALESCE(model_provider, '') <> ?1",
-        [target_provider],
-        |row| row.get::<_, i64>(0),
-    )? as usize;
-    if columns.contains("has_user_event") {
-        for thread_id in user_event_thread_ids {
+    let mut total = 0;
+    if has_table(&db, "threads")? {
+        let columns = table_columns(&db, "threads")?;
+        if columns.contains("model_provider") {
             total += db.query_row(
-                "SELECT COUNT(*) FROM threads WHERE id = ?1 AND COALESCE(has_user_event, 0) <> 1",
-                [thread_id],
+                "SELECT COUNT(*) FROM threads WHERE COALESCE(model_provider, '') <> ?1",
+                [target_provider],
                 |row| row.get::<_, i64>(0),
             )? as usize;
+            if columns.contains("has_user_event") {
+                for thread_id in user_event_thread_ids {
+                    total += db.query_row(
+                        "SELECT COUNT(*) FROM threads WHERE id = ?1 AND COALESCE(has_user_event, 0) <> 1",
+                        [thread_id],
+                        |row| row.get::<_, i64>(0),
+                    )? as usize;
+                }
+            }
+            if columns.contains("cwd") {
+                for (thread_id, cwd) in cwd_by_thread_id {
+                    total += db.query_row(
+                        "SELECT COUNT(*) FROM threads WHERE id = ?1 AND COALESCE(cwd, '') <> ?2",
+                        (thread_id, cwd),
+                        |row| row.get::<_, i64>(0),
+                    )? as usize;
+                }
+            }
         }
     }
-    if columns.contains("cwd") {
-        for (thread_id, cwd) in cwd_by_thread_id {
-            total += db.query_row(
-                "SELECT COUNT(*) FROM threads WHERE id = ?1 AND COALESCE(cwd, '') <> ?2",
-                (thread_id, cwd),
-                |row| row.get::<_, i64>(0),
-            )? as usize;
-        }
+    if is_local_thread_catalog_db(&db)? {
+        total += count_local_thread_catalog_updates(&db, local_catalog_threads)?;
     }
     Ok(total)
 }
@@ -869,6 +1173,7 @@ fn count_sqlite_updates_for_paths(
     target_provider: &str,
     user_event_thread_ids: &HashSet<String>,
     cwd_by_thread_id: &HashMap<String, String>,
+    local_catalog_threads: &[LocalCatalogThread],
 ) -> anyhow::Result<usize> {
     let mut total = 0;
     for path in paths {
@@ -877,6 +1182,7 @@ fn count_sqlite_updates_for_paths(
             target_provider,
             user_event_thread_ids,
             cwd_by_thread_id,
+            local_catalog_threads,
         )?;
     }
     Ok(total)
@@ -887,36 +1193,41 @@ fn apply_sqlite_update(
     target_provider: &str,
     user_event_thread_ids: &HashSet<String>,
     cwd_by_thread_id: &HashMap<String, String>,
+    local_catalog_threads: &[LocalCatalogThread],
 ) -> anyhow::Result<SqliteUpdateCounts> {
     if !path.exists() {
         return Ok(SqliteUpdateCounts::default());
     }
     let mut db = Connection::open(path)?;
-    let columns = table_columns(&db, "threads")?;
-    if !columns.contains("model_provider") {
-        return Ok(SqliteUpdateCounts::default());
-    }
     let tx = db.transaction()?;
     let mut counts = SqliteUpdateCounts::default();
-    counts.provider_rows = tx.execute(
-        "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1",
-        [target_provider],
-    )?;
-    if columns.contains("has_user_event") {
-        for thread_id in user_event_thread_ids {
-            counts.user_event_rows += tx.execute(
-                "UPDATE threads SET has_user_event = 1 WHERE id = ?1 AND COALESCE(has_user_event, 0) <> 1",
-                [thread_id],
+    if has_table(&tx, "threads")? {
+        let columns = table_columns(&tx, "threads")?;
+        if columns.contains("model_provider") {
+            counts.provider_rows = tx.execute(
+                "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1",
+                [target_provider],
             )?;
+            if columns.contains("has_user_event") {
+                for thread_id in user_event_thread_ids {
+                    counts.user_event_rows += tx.execute(
+                        "UPDATE threads SET has_user_event = 1 WHERE id = ?1 AND COALESCE(has_user_event, 0) <> 1",
+                        [thread_id],
+                    )?;
+                }
+            }
+            if columns.contains("cwd") {
+                for (thread_id, cwd) in cwd_by_thread_id {
+                    counts.cwd_rows += tx.execute(
+                        "UPDATE threads SET cwd = ?1 WHERE id = ?2 AND COALESCE(cwd, '') <> ?1",
+                        (cwd, thread_id),
+                    )?;
+                }
+            }
         }
     }
-    if columns.contains("cwd") {
-        for (thread_id, cwd) in cwd_by_thread_id {
-            counts.cwd_rows += tx.execute(
-                "UPDATE threads SET cwd = ?1 WHERE id = ?2 AND COALESCE(cwd, '') <> ?1",
-                (cwd, thread_id),
-            )?;
-        }
+    if is_local_thread_catalog_db(&tx)? {
+        counts.local_catalog_rows = apply_local_thread_catalog_update(&tx, local_catalog_threads)?;
     }
     tx.commit()?;
     Ok(counts)
@@ -927,6 +1238,7 @@ fn apply_sqlite_update_for_paths(
     target_provider: &str,
     user_event_thread_ids: &HashSet<String>,
     cwd_by_thread_id: &HashMap<String, String>,
+    local_catalog_threads: &[LocalCatalogThread],
 ) -> anyhow::Result<SqliteUpdateCounts> {
     let mut total = SqliteUpdateCounts::default();
     for path in paths {
@@ -935,9 +1247,223 @@ fn apply_sqlite_update_for_paths(
             target_provider,
             user_event_thread_ids,
             cwd_by_thread_id,
+            local_catalog_threads,
         )?);
     }
     Ok(total)
+}
+
+fn is_local_thread_catalog_db(db: &Connection) -> anyhow::Result<bool> {
+    Ok(has_table(db, "local_thread_catalog")?
+        && has_table(db, "local_thread_catalog_hosts")?
+        && has_table(db, "local_thread_catalog_metadata")?
+        && has_table(db, "local_thread_catalog_sync_state")?)
+}
+
+fn count_local_thread_catalog_updates(
+    db: &Connection,
+    threads: &[LocalCatalogThread],
+) -> anyhow::Result<usize> {
+    if threads.is_empty() {
+        return Ok(0);
+    }
+    let mut total = 0;
+    for thread in threads {
+        let existing = local_thread_catalog_row(db, &thread.thread_id)?;
+        if existing.as_ref() != Some(thread) {
+            total += 1;
+        }
+    }
+    let sync_state_needs_update = db
+        .query_row(
+            "SELECT COALESCE(initial_build_complete, 0), COALESCE(observation_sequence, 0), watermark_updated_at FROM local_thread_catalog_sync_state WHERE host_id = 'local'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<f64>>(2)?,
+                ))
+            },
+        )
+        .map(|(complete, sequence, watermark)| {
+            let next_sequence = next_local_catalog_observation_sequence(db).unwrap_or(sequence);
+            let next_watermark = latest_local_catalog_updated_at(threads);
+            complete != 1 || sequence != next_sequence || watermark != next_watermark
+        })
+        .unwrap_or(true);
+    if sync_state_needs_update {
+        total += 1;
+    }
+    Ok(total)
+}
+
+fn apply_local_thread_catalog_update(
+    tx: &rusqlite::Transaction<'_>,
+    threads: &[LocalCatalogThread],
+) -> anyhow::Result<usize> {
+    if threads.is_empty() {
+        return Ok(0);
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO local_thread_catalog_hosts (host_id, host_kind) VALUES ('local', 'local')",
+        [],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO local_thread_catalog_metadata (id, catalog_revision) VALUES (1, 0)",
+        [],
+    )?;
+    let next_sequence = next_local_catalog_observation_sequence(tx)?;
+    let mut changed = 0;
+    for thread in threads {
+        let existing = local_thread_catalog_row(tx, &thread.thread_id)?;
+        if existing.as_ref() == Some(thread) {
+            continue;
+        }
+        changed += 1;
+        tx.execute(
+            "INSERT INTO local_thread_catalog (
+                host_id,
+                thread_id,
+                display_title,
+                source_created_at,
+                source_updated_at,
+                cwd,
+                source_kind,
+                source_detail,
+                model_provider,
+                git_branch,
+                observation_sequence,
+                missing_candidate
+            ) VALUES (
+                'local',
+                ?1,
+                ?2,
+                ?3,
+                ?4,
+                ?5,
+                ?6,
+                ?7,
+                ?8,
+                ?9,
+                ?10,
+                0
+            )
+            ON CONFLICT(host_id, thread_id) DO UPDATE SET
+                display_title = excluded.display_title,
+                source_created_at = excluded.source_created_at,
+                source_updated_at = excluded.source_updated_at,
+                cwd = excluded.cwd,
+                source_kind = excluded.source_kind,
+                source_detail = excluded.source_detail,
+                model_provider = excluded.model_provider,
+                git_branch = excluded.git_branch,
+                observation_sequence = excluded.observation_sequence,
+                missing_candidate = 0",
+            (
+                &thread.thread_id,
+                &thread.display_title,
+                thread.source_created_at,
+                thread.source_updated_at,
+                &thread.cwd,
+                &thread.source_kind,
+                thread.source_detail.as_deref(),
+                &thread.model_provider,
+                thread.git_branch.as_deref(),
+                next_sequence,
+            ),
+        )?;
+    }
+    let latest_updated_at = latest_local_catalog_updated_at(threads);
+    let sync_state_changed = tx
+        .query_row(
+            "SELECT COALESCE(initial_build_complete, 0), COALESCE(observation_sequence, 0), watermark_updated_at FROM local_thread_catalog_sync_state WHERE host_id = 'local'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<f64>>(2)?,
+                ))
+            },
+        )
+        .map(|(complete, sequence, watermark)| {
+            complete != 1 || sequence != next_sequence || watermark != latest_updated_at
+        })
+        .unwrap_or(true);
+    tx.execute(
+        "INSERT INTO local_thread_catalog_sync_state (
+            host_id,
+            watermark_updated_at,
+            initial_build_complete,
+            observation_sequence
+        ) VALUES (
+            'local',
+            ?1,
+            1,
+            ?2
+        )
+        ON CONFLICT(host_id) DO UPDATE SET
+            watermark_updated_at = excluded.watermark_updated_at,
+            initial_build_complete = 1,
+            observation_sequence = excluded.observation_sequence",
+        (latest_updated_at, next_sequence),
+    )?;
+    if sync_state_changed {
+        changed += 1;
+    }
+    if changed > 0 {
+        tx.execute(
+            "UPDATE local_thread_catalog_metadata SET catalog_revision = catalog_revision + 1 WHERE id = 1",
+            [],
+        )?;
+    }
+    Ok(changed)
+}
+
+fn local_thread_catalog_row(
+    db: &Connection,
+    thread_id: &str,
+) -> anyhow::Result<Option<LocalCatalogThread>> {
+    let mut stmt = db.prepare(
+        "SELECT thread_id, display_title, source_created_at, source_updated_at, cwd, source_kind, source_detail, model_provider, git_branch, missing_candidate FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = ?1",
+    )?;
+    let mut rows = stmt.query([thread_id])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    if row.get::<_, i64>(9)? != 0 {
+        return Ok(None);
+    }
+    Ok(Some(LocalCatalogThread {
+        thread_id: row.get(0)?,
+        display_title: row.get(1)?,
+        source_created_at: row.get(2)?,
+        source_updated_at: row.get(3)?,
+        cwd: row.get(4)?,
+        source_kind: row.get(5)?,
+        source_detail: row.get(6)?,
+        model_provider: row.get(7)?,
+        git_branch: row.get(8)?,
+    }))
+}
+
+fn next_local_catalog_observation_sequence(db: &Connection) -> anyhow::Result<i64> {
+    let current = db
+        .query_row(
+            "SELECT COALESCE(MAX(observation_sequence), 0) FROM local_thread_catalog_sync_state",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0);
+    Ok(current + 1)
+}
+
+fn latest_local_catalog_updated_at(threads: &[LocalCatalogThread]) -> Option<f64> {
+    threads
+        .iter()
+        .map(|thread| thread.source_updated_at)
+        .max_by(f64::total_cmp)
 }
 
 fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {

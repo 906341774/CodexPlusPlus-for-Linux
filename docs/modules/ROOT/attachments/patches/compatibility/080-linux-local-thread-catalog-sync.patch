@@ -4,7 +4,7 @@ index 1a9716f..5b9bc24 100644
 +++ b/crates/codex-plus-core/src/codex_sqlite.rs
 @@ -87,7 +87,12 @@ fn is_sqlite_candidate(path: &Path) -> bool {
  }
-
+ 
  fn has_session_table(path: &Path) -> bool {
 -    ["threads", "automation_runs", "inbox_items"]
 +    [
@@ -17,22 +17,30 @@ index 1a9716f..5b9bc24 100644
          .any(|table| sqlite_has_table(path, table))
  }
 diff --git a/crates/codex-plus-data/src/provider_sync.rs b/crates/codex-plus-data/src/provider_sync.rs
-index 4e6235a..895b570 100644
+index 61bc0db..b30baa6 100644
 --- a/crates/codex-plus-data/src/provider_sync.rs
 +++ b/crates/codex-plus-data/src/provider_sync.rs
-@@ -102,20 +102,35 @@ struct SqliteUpdateCounts {
+@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
+ const DEFAULT_PROVIDER: &str = "openai";
+ const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
+ const BACKUP_KEEP_COUNT: usize = 5;
++const LOCK_STALE_AFTER_SECS: u64 = 6 * 60 * 60;
+ 
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(rename_all = "snake_case")]
+@@ -102,20 +103,42 @@ struct SqliteUpdateCounts {
      provider_rows: usize,
      user_event_rows: usize,
      cwd_rows: usize,
 +    local_catalog_rows: usize,
  }
-
+ 
  impl SqliteUpdateCounts {
      fn total(&self) -> usize {
 -        self.provider_rows + self.user_event_rows + self.cwd_rows
 +        self.provider_rows + self.user_event_rows + self.cwd_rows + self.local_catalog_rows
      }
-
+ 
      fn add(&mut self, other: Self) {
          self.provider_rows += other.provider_rows;
          self.user_event_rows += other.user_event_rows;
@@ -40,7 +48,7 @@ index 4e6235a..895b570 100644
 +        self.local_catalog_rows += other.local_catalog_rows;
      }
  }
-
+ 
 +#[derive(Debug, Clone, PartialEq)]
 +struct LocalCatalogThread {
 +    thread_id: String,
@@ -54,16 +62,39 @@ index 4e6235a..895b570 100644
 +    git_branch: Option<String>,
 +}
 +
++#[derive(Debug, Deserialize)]
++struct LockOwner {
++    pid: Option<u64>,
++    #[serde(rename = "startedAt")]
++    started_at: Option<u64>,
++}
++
  pub fn run_provider_sync(codex_home: Option<&Path>) -> ProviderSyncResult {
      run_provider_sync_with_target(codex_home, None)
  }
-@@ -187,11 +202,17 @@ pub fn run_provider_sync_with_target(
-             .filter(|(thread_id, _)| !projectless_thread_ids.contains(thread_id))
+@@ -178,17 +201,33 @@ pub fn run_provider_sync_with_target(
+             .filter(|change| change.has_user_event)
+             .filter_map(|change| change.thread_id.clone())
+             .collect::<HashSet<_>>();
++        let projectless_thread_ids = collected
++            .changes
++            .iter()
++            .filter(|change| change.has_user_event)
++            .filter(|change| change.cwd.is_none())
++            .filter_map(|change| change.thread_id.clone())
++            .collect::<HashSet<_>>();
+         let cwd_by_thread_id = collected
+             .changes
+             .iter()
+             .filter_map(|change| Some((change.thread_id.clone()?, change.cwd.clone()?)))
++            .filter(|(thread_id, _)| !projectless_thread_ids.contains(thread_id))
              .collect::<HashMap<_, _>>();
          let sqlite_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
 +        let local_catalog_threads = collect_local_catalog_threads(
 +            &sqlite_paths,
 +            &target_provider,
++            &thread_ids_with_user_events,
++            &cwd_by_thread_id,
 +            &projectless_thread_ids,
 +        )?;
          let sqlite_update_count = count_sqlite_updates_for_paths(
@@ -75,7 +106,7 @@ index 4e6235a..895b570 100644
          )?;
          let global_state_update_count =
              count_global_state_updates(&home.join(".codex-global-state.json"))?;
-@@ -217,6 +238,7 @@ pub fn run_provider_sync_with_target(
+@@ -214,6 +253,7 @@ pub fn run_provider_sync_with_target(
                  &target_provider,
                  &thread_ids_with_user_events,
                  &cwd_by_thread_id,
@@ -83,10 +114,85 @@ index 4e6235a..895b570 100644
              )?;
              let updated_workspace_roots =
                  apply_global_state_update(&home.join(".codex-global-state.json"))?;
-@@ -805,6 +827,16 @@ fn table_columns(db: &Connection, table: &str) -> anyhow::Result<HashSet<String>
+@@ -472,11 +512,72 @@ fn toml_string_value(raw: &str) -> Option<String> {
+ 
+ fn acquire_lock(path: &Path) -> std::io::Result<()> {
+     fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))?;
++    match create_lock(path) {
++        Ok(()) => Ok(()),
++        Err(error)
++            if error.kind() == std::io::ErrorKind::AlreadyExists
++                && provider_sync_lock_is_stale(path) =>
++        {
++            fs::remove_dir_all(path)?;
++            create_lock(path)
++        }
++        Err(error) => Err(error),
++    }
++}
++
++fn create_lock(path: &Path) -> std::io::Result<()> {
+     fs::create_dir(path)?;
+-    fs::write(
++    if let Err(error) = fs::write(
+         path.join("owner.json"),
+         json!({"pid": std::process::id(), "startedAt": now_secs()}).to_string(),
+-    )
++    ) {
++        let _ = fs::remove_dir_all(path);
++        return Err(error);
++    }
++    Ok(())
++}
++
++fn provider_sync_lock_is_stale(path: &Path) -> bool {
++    let now = now_secs();
++    if let Ok(text) = fs::read_to_string(path.join("owner.json")) {
++        if let Ok(owner) = serde_json::from_str::<LockOwner>(&text) {
++            if let Some(pid) = owner.pid {
++                if pid == u64::from(std::process::id()) {
++                    return false;
++                }
++                if matches!(process_is_running(pid), Some(false)) {
++                    return true;
++                }
++            }
++            if let Some(started_at) = owner.started_at {
++                return now.saturating_sub(started_at) > LOCK_STALE_AFTER_SECS;
++            }
++        }
++    }
++
++    fs::metadata(path)
++        .and_then(|metadata| metadata.modified())
++        .ok()
++        .and_then(|modified| {
++            SystemTime::now()
++                .duration_since(modified)
++                .ok()
++                .map(|duration| duration.as_secs())
++        })
++        .is_some_and(|age| age > LOCK_STALE_AFTER_SECS)
++}
++
++#[cfg(target_os = "linux")]
++fn process_is_running(pid: u64) -> Option<bool> {
++    if pid == 0 || pid > i32::MAX as u64 {
++        return Some(false);
++    }
++    Some(Path::new("/proc").join(pid.to_string()).exists())
++}
++
++#[cfg(not(target_os = "linux"))]
++fn process_is_running(_pid: u64) -> Option<bool> {
++    None
+ }
+ 
+ fn release_lock(path: &Path) -> std::io::Result<()> {
+@@ -802,6 +903,16 @@ fn table_columns(db: &Connection, table: &str) -> anyhow::Result<HashSet<String>
          .collect::<rusqlite::Result<HashSet<_>>>()?)
  }
-
+ 
 +fn has_table(db: &Connection, table: &str) -> anyhow::Result<bool> {
 +    Ok(db
 +        .query_row(
@@ -100,13 +206,15 @@ index 4e6235a..895b570 100644
  fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
      if !path.exists() {
          return Ok(Vec::new());
-@@ -827,42 +859,208 @@ fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
+@@ -824,42 +935,235 @@ fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
      Ok(sorted_provider_ids(ids))
  }
-
+ 
 +fn collect_local_catalog_threads(
 +    paths: &[PathBuf],
 +    target_provider: &str,
++    user_event_thread_ids: &HashSet<String>,
++    cwd_by_thread_id: &HashMap<String, String>,
 +    projectless_thread_ids: &HashSet<String>,
 +) -> anyhow::Result<Vec<LocalCatalogThread>> {
 +    let mut by_id = HashMap::new();
@@ -127,6 +235,7 @@ index 4e6235a..895b570 100644
 +        }
 +        let selected_columns = [
 +            ("id", true),
++            ("has_user_event", true),
 +            ("title", columns.contains("title")),
 +            ("created_at", columns.contains("created_at")),
 +            ("updated_at", columns.contains("updated_at")),
@@ -143,7 +252,7 @@ index 4e6235a..895b570 100644
 +        .filter_map(|(column, include)| include.then_some(column))
 +        .collect::<Vec<_>>();
 +        let sql = format!(
-+            "SELECT {} FROM threads WHERE COALESCE(archived, 0) = 0 AND COALESCE(has_user_event, 0) = 1 AND COALESCE(cwd, '') <> ''",
++            "SELECT {} FROM threads WHERE COALESCE(archived, 0) = 0",
 +            selected_columns.join(", ")
 +        );
 +        let mut stmt = db.prepare(&sql)?;
@@ -153,8 +262,13 @@ index 4e6235a..895b570 100644
 +            for (index, column) in selected_columns.iter().enumerate() {
 +                index_by_column.insert(*column, index);
 +            }
-+            let Some(thread) =
-+                local_catalog_thread_from_row(row, &index_by_column, target_provider)?
++            let Some(thread) = local_catalog_thread_from_row(
++                row,
++                &index_by_column,
++                target_provider,
++                user_event_thread_ids,
++                cwd_by_thread_id,
++            )?
 +            else {
 +                continue;
 +            };
@@ -181,6 +295,8 @@ index 4e6235a..895b570 100644
 +    row: &rusqlite::Row<'_>,
 +    index_by_column: &HashMap<&str, usize>,
 +    target_provider: &str,
++    user_event_thread_ids: &HashSet<String>,
++    cwd_by_thread_id: &HashMap<String, String>,
 +) -> anyhow::Result<Option<LocalCatalogThread>> {
 +    let Some(thread_id) = optional_string(row, index_by_column, "id")? else {
 +        return Ok(None);
@@ -188,9 +304,17 @@ index 4e6235a..895b570 100644
 +    if thread_id.trim().is_empty() {
 +        return Ok(None);
 +    }
-+    let Some(cwd) = optional_string(row, index_by_column, "cwd")?
-+        .and_then(|value| to_desktop_workspace_path(&value))
-+    else {
++    let has_user_event = optional_i64(row, index_by_column, "has_user_event")?.unwrap_or(0) != 0
++        || user_event_thread_ids.contains(&thread_id);
++    if !has_user_event {
++        return Ok(None);
++    }
++    let raw_cwd = if let Some(cwd) = cwd_by_thread_id.get(&thread_id) {
++        Some(cwd.clone())
++    } else {
++        optional_string(row, index_by_column, "cwd")?
++    };
++    let Some(cwd) = raw_cwd.and_then(|value| to_desktop_workspace_path(&value)) else {
 +        return Ok(None);
 +    };
 +    if cwd.trim().is_empty() {
@@ -211,10 +335,8 @@ index 4e6235a..895b570 100644
 +                "recency_at",
 +            )?)
 +            .unwrap_or(source_created_at);
-+    let source_detail =
-+        optional_string(row, index_by_column, "rollout_path")?.filter(|value| {
-+            !value.trim().is_empty()
-+        });
++    let source_detail = optional_string(row, index_by_column, "rollout_path")?
++        .filter(|value| !value.trim().is_empty());
 +    let model_provider = optional_string(row, index_by_column, "model_provider")?
 +        .filter(|value| !value.trim().is_empty())
 +        .unwrap_or_else(|| target_provider.to_string());
@@ -245,6 +367,17 @@ index 4e6235a..895b570 100644
 +        return Ok(None);
 +    };
 +    Ok(row.get::<_, Option<String>>(*index)?)
++}
++
++fn optional_i64(
++    row: &rusqlite::Row<'_>,
++    index_by_column: &HashMap<&str, usize>,
++    column: &str,
++) -> anyhow::Result<Option<i64>> {
++    let Some(index) = index_by_column.get(column) else {
++        return Ok(None);
++    };
++    Ok(row.get::<_, Option<i64>>(*index)?)
 +}
 +
 +fn optional_timestamp_seconds(
@@ -330,7 +463,7 @@ index 4e6235a..895b570 100644
      }
      Ok(total)
  }
-@@ -872,6 +1070,7 @@ fn count_sqlite_updates_for_paths(
+@@ -869,6 +1173,7 @@ fn count_sqlite_updates_for_paths(
      target_provider: &str,
      user_event_thread_ids: &HashSet<String>,
      cwd_by_thread_id: &HashMap<String, String>,
@@ -338,7 +471,7 @@ index 4e6235a..895b570 100644
  ) -> anyhow::Result<usize> {
      let mut total = 0;
      for path in paths {
-@@ -880,6 +1079,7 @@ fn count_sqlite_updates_for_paths(
+@@ -877,6 +1182,7 @@ fn count_sqlite_updates_for_paths(
              target_provider,
              user_event_thread_ids,
              cwd_by_thread_id,
@@ -346,7 +479,7 @@ index 4e6235a..895b570 100644
          )?;
      }
      Ok(total)
-@@ -890,36 +1090,41 @@ fn apply_sqlite_update(
+@@ -887,36 +1193,41 @@ fn apply_sqlite_update(
      target_provider: &str,
      user_event_thread_ids: &HashSet<String>,
      cwd_by_thread_id: &HashMap<String, String>,
@@ -408,7 +541,7 @@ index 4e6235a..895b570 100644
      }
      tx.commit()?;
      Ok(counts)
-@@ -930,6 +1135,7 @@ fn apply_sqlite_update_for_paths(
+@@ -927,6 +1238,7 @@ fn apply_sqlite_update_for_paths(
      target_provider: &str,
      user_event_thread_ids: &HashSet<String>,
      cwd_by_thread_id: &HashMap<String, String>,
@@ -416,7 +549,7 @@ index 4e6235a..895b570 100644
  ) -> anyhow::Result<SqliteUpdateCounts> {
      let mut total = SqliteUpdateCounts::default();
      for path in paths {
-@@ -938,11 +1144,222 @@ fn apply_sqlite_update_for_paths(
+@@ -935,11 +1247,225 @@ fn apply_sqlite_update_for_paths(
              target_provider,
              user_event_thread_ids,
              cwd_by_thread_id,
@@ -425,7 +558,7 @@ index 4e6235a..895b570 100644
      }
      Ok(total)
  }
-
+ 
 +fn is_local_thread_catalog_db(db: &Connection) -> anyhow::Result<bool> {
 +    Ok(has_table(db, "local_thread_catalog")?
 +        && has_table(db, "local_thread_catalog_hosts")?
@@ -599,12 +732,15 @@ index 4e6235a..895b570 100644
 +    thread_id: &str,
 +) -> anyhow::Result<Option<LocalCatalogThread>> {
 +    let mut stmt = db.prepare(
-+        "SELECT thread_id, display_title, source_created_at, source_updated_at, cwd, source_kind, source_detail, model_provider, git_branch FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = ?1",
++        "SELECT thread_id, display_title, source_created_at, source_updated_at, cwd, source_kind, source_detail, model_provider, git_branch, missing_candidate FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = ?1",
 +    )?;
 +    let mut rows = stmt.query([thread_id])?;
 +    let Some(row) = rows.next()? else {
 +        return Ok(None);
 +    };
++    if row.get::<_, i64>(9)? != 0 {
++        return Ok(None);
++    }
 +    Ok(Some(LocalCatalogThread {
 +        thread_id: row.get(0)?,
 +        display_title: row.get(1)?,

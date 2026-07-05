@@ -74,6 +74,148 @@ fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
     }
 }
 
+fn create_legacy_state_db_for_catalog(path: &Path) {
+    let db = Connection::open(path).unwrap();
+    db.execute(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            rollout_path TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            model_provider TEXT NOT NULL,
+            cwd TEXT NOT NULL,
+            title TEXT NOT NULL,
+            sandbox_policy TEXT NOT NULL,
+            approval_mode TEXT NOT NULL,
+            has_user_event INTEGER NOT NULL DEFAULT 0,
+            archived INTEGER NOT NULL DEFAULT 0,
+            git_branch TEXT,
+            created_at_ms INTEGER,
+            updated_at_ms INTEGER,
+            recency_at INTEGER NOT NULL DEFAULT 0,
+            recency_at_ms INTEGER NOT NULL DEFAULT 0
+        )",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads (
+            id,
+            rollout_path,
+            created_at,
+            updated_at,
+            source,
+            model_provider,
+            cwd,
+            title,
+            sandbox_policy,
+            approval_mode,
+            has_user_event,
+            archived,
+            git_branch,
+            created_at_ms,
+            updated_at_ms,
+            recency_at,
+            recency_at_ms
+        ) VALUES (
+            'thread-visible',
+            '/tmp/rollout-thread-visible.jsonl',
+            1700000000,
+            1700000060,
+            'local',
+            'old-provider',
+            '/home/deck/workspace',
+            'Visible legacy thread',
+            'workspace-write',
+            'on-request',
+            1,
+            0,
+            'main',
+            1700000000000,
+            1700000060000,
+            1700000060,
+            1700000060000
+        )",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads (
+            id,
+            rollout_path,
+            created_at,
+            updated_at,
+            source,
+            model_provider,
+            cwd,
+            title,
+            sandbox_policy,
+            approval_mode,
+            has_user_event,
+            archived
+        ) VALUES (
+            'thread-archived',
+            '/tmp/rollout-thread-archived.jsonl',
+            1700000000,
+            1700000060,
+            'local',
+            'old-provider',
+            '/home/deck/workspace',
+            'Archived legacy thread',
+            'workspace-write',
+            'on-request',
+            1,
+            1
+        )",
+        [],
+    )
+    .unwrap();
+}
+
+fn create_local_thread_catalog_db(path: &Path) {
+    let db = Connection::open(path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE local_thread_catalog (
+            host_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            display_title TEXT NOT NULL,
+            source_created_at REAL NOT NULL,
+            source_updated_at REAL NOT NULL,
+            cwd TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_detail TEXT,
+            model_provider TEXT NOT NULL,
+            git_branch TEXT,
+            observation_sequence INTEGER NOT NULL,
+            missing_candidate INTEGER NOT NULL DEFAULT 0 CHECK (missing_candidate IN (0, 1)),
+            PRIMARY KEY (host_id, thread_id)
+        );
+        CREATE TABLE local_thread_catalog_sync_state (
+            host_id TEXT PRIMARY KEY,
+            watermark_updated_at REAL,
+            initial_build_complete INTEGER NOT NULL DEFAULT 0,
+            observation_sequence INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE local_thread_catalog_hosts (
+            host_id TEXT PRIMARY KEY,
+            host_kind TEXT NOT NULL CHECK (host_kind IN ('local', 'ssh', 'wsl', 'remote-control'))
+        );
+        CREATE TABLE local_thread_catalog_metadata (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            catalog_revision INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO local_thread_catalog_sync_state (
+            host_id,
+            watermark_updated_at,
+            initial_build_complete,
+            observation_sequence
+        ) VALUES ('local', NULL, 0, 33);
+        INSERT INTO local_thread_catalog_metadata (id, catalog_revision) VALUES (1, 0);",
+    )
+    .unwrap();
+}
+
 #[test]
 fn provider_sync_targets_merge_config_rollout_sqlite_and_sort_current_first() {
     let tmp = tempdir().unwrap();
@@ -348,6 +490,179 @@ fn provider_sync_updates_new_codex_sqlite_directory_db() {
     );
     let backup_dir = result.backup_dir.unwrap();
     assert!(backup_dir.join("db/sqlite/codex-dev.db").exists());
+}
+
+#[test]
+fn provider_sync_backfills_local_thread_catalog_from_legacy_state_db() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    create_legacy_state_db_for_catalog(&home.join("state_5.sqlite"));
+    let catalog_path = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(&catalog_path);
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert!(result.sqlite_rows_updated >= 2);
+    let db = Connection::open(&catalog_path).unwrap();
+    let count: i64 = db
+        .query_row("SELECT COUNT(*) FROM local_thread_catalog", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+    let row = db
+        .query_row(
+            "SELECT display_title, source_created_at, source_updated_at, cwd, source_kind, source_detail, model_provider, git_branch, missing_candidate FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = 'thread-visible'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (
+            "Visible legacy thread".to_string(),
+            1700000000.0,
+            1700000060.0,
+            "/home/deck/workspace".to_string(),
+            "rollout".to_string(),
+            Some("/tmp/rollout-thread-visible.jsonl".to_string()),
+            "custom".to_string(),
+            Some("main".to_string()),
+            0,
+        )
+    );
+    let sync_state = db
+        .query_row(
+            "SELECT initial_build_complete, observation_sequence, watermark_updated_at FROM local_thread_catalog_sync_state WHERE host_id = 'local'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<f64>>(2)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(sync_state, (1, 34, Some(1700000060.0)));
+}
+
+#[test]
+fn provider_sync_restores_local_thread_catalog_rows_marked_missing() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    create_legacy_state_db_for_catalog(&home.join("state_5.sqlite"));
+    let catalog_path = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(&catalog_path);
+    let db = Connection::open(&catalog_path).unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog (
+            host_id,
+            thread_id,
+            display_title,
+            source_created_at,
+            source_updated_at,
+            cwd,
+            source_kind,
+            source_detail,
+            model_provider,
+            git_branch,
+            observation_sequence,
+            missing_candidate
+        ) VALUES (
+            'local',
+            'thread-visible',
+            'Visible legacy thread',
+            1700000000,
+            1700000060,
+            '/home/deck/workspace',
+            'rollout',
+            '/tmp/rollout-thread-visible.jsonl',
+            'custom',
+            'main',
+            33,
+            1
+        )",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    let db = Connection::open(&catalog_path).unwrap();
+    let missing_candidate: i64 = db
+        .query_row(
+            "SELECT missing_candidate FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = 'thread-visible'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(missing_candidate, 0);
+}
+
+#[test]
+fn provider_sync_backfills_catalog_rows_that_become_visible_from_rollout_events() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    write_rollout(
+        &home.join("sessions/2026/rollout-visible-from-rollout.jsonl"),
+        "openai",
+        "thread-1",
+        "C:/workspace",
+    );
+    create_state_db(&home.join("state_5.sqlite"));
+    let catalog_path = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(&catalog_path);
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    let db = Connection::open(&catalog_path).unwrap();
+    let row = db
+        .query_row(
+            "SELECT cwd, display_title, model_provider FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = 'thread-1'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (
+            "C:/workspace".to_string(),
+            "thread-1".to_string(),
+            "custom".to_string(),
+        )
+    );
 }
 
 #[test]
@@ -707,6 +1022,37 @@ fn provider_sync_skips_when_home_missing_or_lock_exists_and_prunes_backups() {
         .filter(|entry| entry.as_ref().unwrap().path().is_dir())
         .count();
     assert_eq!(backups, 5);
+}
+
+#[test]
+fn provider_sync_removes_stale_lock_and_runs() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_rollout(
+        &home.join("sessions/rollout-new.jsonl"),
+        "openai",
+        "thread-1",
+        "C:/workspace",
+    );
+    let lock_dir = home.join("tmp/provider-sync.lock");
+    fs::create_dir_all(&lock_dir).unwrap();
+    fs::write(
+        lock_dir.join("owner.json"),
+        json!({
+            "pid": 999_999_999_u64,
+            "startedAt": 1_u64
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.changed_session_files, 1);
+    assert!(!lock_dir.exists());
 }
 
 #[test]

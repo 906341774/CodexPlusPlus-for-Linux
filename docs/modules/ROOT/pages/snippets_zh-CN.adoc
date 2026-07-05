@@ -69,14 +69,14 @@ xref:snippets.adoc[English] | 简体中文
 |`080-linux-local-thread-catalog-sync`
 |必需
 |`crates/codex-plus-core/src/codex_sqlite.rs`, `crates/codex-plus-data/src/provider_sync.rs`
-|在 provider sync 阶段把旧 `threads` 行回填到新版 Codex Desktop 的 `local_thread_catalog` 表中，让项目侧边栏继续显示已有本地对话。
+|在 provider sync 阶段把旧 `threads` 行回填并恢复到新版 Codex Desktop 的 `local_thread_catalog` 表中，让项目侧边栏继续显示已有本地对话。
 |当 Codex++ 能列出本机会话，但 Codex Desktop Linux 项目侧边栏在 Codex 存储结构升级后显示“暂无对话”时需要。
 |xref:attachment$patches/compatibility/080-linux-local-thread-catalog-sync.patch[patch]
 
 |`900-regression-tests`
 |可选
 |`crates/codex-plus-core/tests/*.rs`, `crates/codex-plus-data/tests/provider_sync.rs`
-|为 Linux path、CDP target selection、Linux launcher environment、helper private-network 预检和 bridge route fallback、Pure API config、plugin details、delete stability、floating menu positioning、Fast badge composer placement、已重命名或合并的 Codex asset chunk fallback、跳过 Linux `app://-/assets/` 中不可动态 import 的 chunk 记录、混淆 dispatcher export 漂移、hotkey window dispatcher guard、user-script location aliasing、local thread catalog backfill 和后端短暂 checking 时的点击可用性添加回归覆盖。
+|为 CDP target selection、Linux launcher/watcher 进程清理、helper bridge route fallback、plugin details、delete stability、floating menu positioning、Fast badge composer placement、已重命名或合并的 Codex asset chunk fallback、跳过 Linux `app://-/assets/` 中不可动态 import 的 chunk 记录、混淆 dispatcher export 漂移、hotkey window dispatcher guard、local thread catalog backfill/restoration 和后端短暂 checking 时的点击可用性添加回归覆盖。
 |推荐在源码构建和 CI 中启用；如果只需要更快的 production-only patch，可以禁用。
 |xref:attachment$patches/compatibility/900-regression-tests.patch[patch]
 |===
@@ -182,7 +182,7 @@ xref:snippets.adoc[English] | 简体中文
       "crates/codex-plus-core/src/codex_sqlite.rs",
       "crates/codex-plus-data/src/provider_sync.rs"
     ],
-    "purpose": "Backfill Codex Desktop local_thread_catalog rows from legacy local session threads so project sidebars keep showing existing conversations after storage schema updates."
+    "purpose": "Backfill and restore Codex Desktop local_thread_catalog rows from legacy local session threads so project sidebars keep showing existing conversations after storage schema updates."
   },
   {
     "id": "900-regression-tests",
@@ -191,14 +191,12 @@ xref:snippets.adoc[English] | 简体中文
     "kind": "test",
     "patch": "docs/modules/ROOT/attachments/patches/compatibility/900-regression-tests.patch",
     "targets": [
-      "crates/codex-plus-core/tests/bridge_routes.rs",
       "crates/codex-plus-core/tests/cdp_bridge.rs",
-      "crates/codex-plus-core/tests/installers.rs",
       "crates/codex-plus-core/tests/launcher.rs",
-      "crates/codex-plus-core/tests/relay_config.rs",
+      "crates/codex-plus-core/tests/watcher.rs",
       "crates/codex-plus-data/tests/provider_sync.rs"
     ],
-    "purpose": "Add regression tests for the Linux adaptation snippets, including helper private-network preflights, helper bridge route fallback, Fast badge placement, renamed or merged Codex asset chunk fallback, unimportable app:// asset records, minified dispatcher export drift, hotkey-window dispatcher guard, user-script location aliasing, local thread catalog backfill, and transient backend-check clickability in the current Linux composer footer."
+    "purpose": "Add regression tests for the Linux adaptation snippets, including helper bridge route fallback, Fast badge placement, renamed or merged Codex asset chunk fallback, unimportable app:// asset records, minified dispatcher export drift, hotkey-window dispatcher guard, launcher/watcher cleanup, local thread catalog backfill/restoration, and transient backend-check clickability in the current Linux composer footer."
   }
 ]
 ----

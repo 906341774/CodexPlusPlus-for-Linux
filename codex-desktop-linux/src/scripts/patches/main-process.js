@@ -5,6 +5,7 @@
 // core/ and the patcher CLI import implementations from here.
 module.exports = {
   ...require("./main-process/browser.js"),
+  ...require("./main-process/local-thread-catalog.js"),
   ...require("./main-process/misc.js"),
   ...require("./main-process/quit-lifecycle.js"),
   ...require("./main-process/tray.js"),
