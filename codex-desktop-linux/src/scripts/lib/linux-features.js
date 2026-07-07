@@ -130,6 +130,19 @@ function normalizeEnabledFeatureIds(value, sourcePath) {
   return ids;
 }
 
+function normalizeEnvFeatureIds(value, sourcePath) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return [];
+  }
+  return normalizeEnabledFeatureIds(
+    value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+    sourcePath,
+  );
+}
+
 function normalizeLinuxFeatureSettings(value, sourcePath) {
   if (value == null) {
     return {};
@@ -157,11 +170,27 @@ function normalizeLinuxFeatureSettings(value, sourcePath) {
 
 function linuxFeaturesConfig(options = {}) {
   const { config, configPath } = readLinuxFeaturesConfig(options);
+  const enableFromEnv = normalizeEnvFeatureIds(process.env.CODEX_LINUX_FEATURES, "CODEX_LINUX_FEATURES");
+  const disableFromEnv = new Set(
+    normalizeEnvFeatureIds(process.env.CODEX_LINUX_DISABLE_FEATURES, "CODEX_LINUX_DISABLE_FEATURES"),
+  );
   if (config == null) {
-    return { enabled: [], settings: {}, configPath };
+    return {
+      enabled: enableFromEnv.filter((id) => !disableFromEnv.has(id)),
+      settings: {},
+      configPath,
+    };
+  }
+  const enabled = normalizeEnabledFeatureIds(config.enabled, configPath);
+  const seen = new Set(enabled);
+  for (const id of enableFromEnv) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      enabled.push(id);
+    }
   }
   return {
-    enabled: normalizeEnabledFeatureIds(config.enabled, configPath),
+    enabled: enabled.filter((id) => !disableFromEnv.has(id)),
     settings: normalizeLinuxFeatureSettings(config.settings, configPath),
     configPath,
   };

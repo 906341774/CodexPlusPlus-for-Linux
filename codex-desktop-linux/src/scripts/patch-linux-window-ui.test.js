@@ -553,6 +553,46 @@ test("build info captures DMG hash, features, distro profile, and source revisio
   }
 });
 
+test("linux features helper honors CODEX_LINUX_FEATURES during direct install builds", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-linux-features-env-"));
+  const pinnedFeaturesConfig = process.env.CODEX_LINUX_FEATURES_CONFIG;
+  const previousFeatures = process.env.CODEX_LINUX_FEATURES;
+  const previousDisableFeatures = process.env.CODEX_LINUX_DISABLE_FEATURES;
+  delete process.env.CODEX_LINUX_FEATURES_CONFIG;
+  try {
+    const featuresRoot = path.join(tempRoot, "linux-features");
+    fs.mkdirSync(path.join(featuresRoot, "read-aloud"), { recursive: true });
+    fs.writeFileSync(path.join(featuresRoot, "features.example.json"), JSON.stringify({ enabled: [] }));
+    fs.writeFileSync(
+      path.join(featuresRoot, "read-aloud", "feature.json"),
+      JSON.stringify({ id: "read-aloud", name: "Read Aloud" }),
+    );
+    fs.writeFileSync(path.join(featuresRoot, "read-aloud", "README.md"), "# Read Aloud\n");
+
+    process.env.CODEX_LINUX_FEATURES = "read-aloud";
+    delete process.env.CODEX_LINUX_DISABLE_FEATURES;
+
+    assert.deepEqual(enabledLinuxFeatureIds({ featuresRoot }), ["read-aloud"]);
+  } finally {
+    if (pinnedFeaturesConfig == null) {
+      delete process.env.CODEX_LINUX_FEATURES_CONFIG;
+    } else {
+      process.env.CODEX_LINUX_FEATURES_CONFIG = pinnedFeaturesConfig;
+    }
+    if (previousFeatures == null) {
+      delete process.env.CODEX_LINUX_FEATURES;
+    } else {
+      process.env.CODEX_LINUX_FEATURES = previousFeatures;
+    }
+    if (previousDisableFeatures == null) {
+      delete process.env.CODEX_LINUX_DISABLE_FEATURES;
+    } else {
+      process.env.CODEX_LINUX_DISABLE_FEATURES = previousDisableFeatures;
+    }
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("build info sanitizes staged source metadata from packaged update-builder", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-build-info-staged-source-"));
   try {

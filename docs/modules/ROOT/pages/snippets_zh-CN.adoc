@@ -69,14 +69,14 @@ xref:snippets.adoc[English] | 简体中文
 |`080-linux-local-thread-catalog-sync`
 |必需
 |`crates/codex-plus-core/src/codex_sqlite.rs`, `crates/codex-plus-data/src/provider_sync.rs`, `codex-desktop-linux` 本地对话 webview 补丁
-|在 provider sync 阶段把旧 `threads` 行回填并恢复到新版 Codex Desktop 的 `local_thread_catalog` 表中，让项目侧边栏继续显示已有本地对话；同时在按路由打开本地对话时先完成 hydration，避免已经显示出来的历史记录点击后一直停留在 Codex 加载图标。
-|当 Codex++ 能列出本机会话，但 Codex Desktop Linux 项目侧边栏在 Codex 存储结构升级后显示“暂无对话”，或显示了对话但点击后始终无法加载时需要。
+|在 provider sync 阶段把旧 `threads` 行回填并恢复到新版 Codex Desktop 的 `local_thread_catalog` 表中，让项目侧边栏继续显示已有本地对话；同时把跨 host 的、没有可打开来源的可见 catalog 行标记为 missing，并在按路由打开本地对话时先完成 hydration，避免已经显示出来的历史记录点击后一直停留在 Codex 加载图标。
+|当 Codex++ 能列出本机会话，但 Codex Desktop Linux 项目侧边栏在 Codex 存储结构升级后显示“暂无对话”；当远端空来源 catalog 行仍作为空历史记录可见；或显示了对话但点击后始终无法加载时需要。
 |xref:attachment$patches/compatibility/080-linux-local-thread-catalog-sync.patch[patch]
 
 |`900-regression-tests`
 |可选
 |`crates/codex-plus-core/tests/*.rs`, `crates/codex-plus-data/tests/provider_sync.rs`
-|为 CDP target selection、Linux launcher/watcher 进程清理、helper bridge route fallback、plugin details、delete stability、floating menu positioning、Fast badge composer placement、已重命名或合并的 Codex asset chunk fallback、跳过 Linux `app://-/assets/` 中不可动态 import 的 chunk 记录、混淆 dispatcher export 漂移、hotkey window dispatcher guard、local thread catalog backfill/restoration 和后端短暂 checking 时的点击可用性添加回归覆盖。
+|为 CDP target selection、Linux launcher/watcher 进程清理、helper bridge route fallback、plugin details、delete stability、floating menu positioning、Fast badge composer placement、已重命名或合并的 Codex asset chunk fallback、跳过 Linux `app://-/assets/` 中不可动态 import 的 chunk 记录、混淆 dispatcher export 漂移、hotkey window dispatcher guard、local thread catalog backfill/restoration、远端空来源 catalog 隐藏和后端短暂 checking 时的点击可用性添加回归覆盖。
 |推荐在源码构建和 CI 中启用；如果只需要更快的 production-only patch，可以禁用。
 |xref:attachment$patches/compatibility/900-regression-tests.patch[patch]
 |===
@@ -184,7 +184,7 @@ xref:snippets.adoc[English] | 简体中文
       "crates/codex-plus-data/src/provider_sync.rs",
       "codex-desktop-linux local conversation webview patches"
     ],
-    "purpose": "Backfill and restore Codex Desktop local_thread_catalog rows from legacy local session threads, and hydrate route-opened local conversations before resume, so project sidebars keep showing and opening existing conversations after storage schema updates."
+    "purpose": "Backfill and restore Codex Desktop local_thread_catalog rows from legacy local session threads, mark visible catalog rows without an openable source as missing across hosts, and hydrate route-opened local conversations before resume, so project sidebars keep showing and opening existing conversations after storage schema updates."
   },
   {
     "id": "900-regression-tests",
@@ -198,7 +198,7 @@ xref:snippets.adoc[English] | 简体中文
       "crates/codex-plus-core/tests/watcher.rs",
       "crates/codex-plus-data/tests/provider_sync.rs"
     ],
-    "purpose": "Add regression tests for the Linux adaptation snippets, including helper bridge route fallback, Fast badge placement, renamed or merged Codex asset chunk fallback, unimportable app:// asset records, minified dispatcher export drift, hotkey-window dispatcher guard, launcher/watcher cleanup, local thread catalog backfill/restoration, route-opened local conversation hydration, and transient backend-check clickability in the current Linux composer footer."
+    "purpose": "Add regression tests for the Linux adaptation snippets, including helper bridge route fallback, Fast badge placement, renamed or merged Codex asset chunk fallback, unimportable app:// asset records, minified dispatcher export drift, hotkey-window dispatcher guard, launcher/watcher cleanup, local thread catalog backfill/restoration, remote source-less catalog hiding, route-opened local conversation hydration, and transient backend-check clickability in the current Linux composer footer."
   }
 ]
 ----

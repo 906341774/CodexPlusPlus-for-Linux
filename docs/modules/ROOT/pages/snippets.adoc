@@ -69,14 +69,14 @@ Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility
 |`080-linux-local-thread-catalog-sync`
 |Required
 |`crates/codex-plus-core/src/codex_sqlite.rs`, `crates/codex-plus-data/src/provider_sync.rs`, `codex-desktop-linux` local conversation webview patches
-|Backfill and restore Codex Desktop `local_thread_catalog` rows from legacy `threads` rows during provider sync so project sidebars can see existing local conversations, and hydrate route-opened local conversations before resume so visible history rows open instead of staying on the Codex loading icon.
-|Needed when Codex++ can list local sessions but Linux Codex Desktop project sidebars show no conversations, or show conversations that never load after click, after a Codex storage schema update.
+|Backfill and restore Codex Desktop `local_thread_catalog` rows from legacy `threads` rows during provider sync so project sidebars can see existing local conversations, mark visible catalog rows without an openable source as missing across hosts, and hydrate route-opened local conversations before resume so visible history rows open instead of staying on the Codex loading icon.
+|Needed when Codex++ can list local sessions but Linux Codex Desktop project sidebars show no conversations, when source-less remote catalog rows remain visible as empty history entries, or when shown conversations never load after click, after a Codex storage schema update.
 |xref:attachment$patches/compatibility/080-linux-local-thread-catalog-sync.patch[patch]
 
 |`900-regression-tests`
 |Optional
 |`crates/codex-plus-core/tests/*.rs`, `crates/codex-plus-data/tests/provider_sync.rs`
-|Add regression coverage for CDP target selection, Linux launcher and watcher process cleanup, helper bridge route fallback, plugin details, delete stability, floating menu positioning, Fast badge composer placement, renamed or merged Codex asset chunk fallback, skipping unimportable Linux `app://-/assets/` chunk records, minified dispatcher export drift, hotkey-window dispatcher guard, local thread catalog backfill/restoration, and transient backend-check clickability.
+|Add regression coverage for CDP target selection, Linux launcher and watcher process cleanup, helper bridge route fallback, plugin details, delete stability, floating menu positioning, Fast badge composer placement, renamed or merged Codex asset chunk fallback, skipping unimportable Linux `app://-/assets/` chunk records, minified dispatcher export drift, hotkey-window dispatcher guard, local thread catalog backfill/restoration, remote source-less catalog hiding, and transient backend-check clickability.
 |Recommended for source builds and CI; can be disabled for a faster production-only patch.
 |xref:attachment$patches/compatibility/900-regression-tests.patch[patch]
 |===
@@ -184,7 +184,7 @@ The manager script extracts the JSON block between the markers below.
       "crates/codex-plus-data/src/provider_sync.rs",
       "codex-desktop-linux local conversation webview patches"
     ],
-    "purpose": "Backfill and restore Codex Desktop local_thread_catalog rows from legacy local session threads, and hydrate route-opened local conversations before resume, so project sidebars keep showing and opening existing conversations after storage schema updates."
+    "purpose": "Backfill and restore Codex Desktop local_thread_catalog rows from legacy local session threads, mark visible catalog rows without an openable source as missing across hosts, and hydrate route-opened local conversations before resume, so project sidebars keep showing and opening existing conversations after storage schema updates."
   },
   {
     "id": "900-regression-tests",
@@ -198,7 +198,7 @@ The manager script extracts the JSON block between the markers below.
       "crates/codex-plus-core/tests/watcher.rs",
       "crates/codex-plus-data/tests/provider_sync.rs"
     ],
-    "purpose": "Add regression tests for the Linux adaptation snippets, including helper bridge route fallback, Fast badge placement, renamed or merged Codex asset chunk fallback, unimportable app:// asset records, minified dispatcher export drift, hotkey-window dispatcher guard, launcher/watcher cleanup, local thread catalog backfill/restoration, route-opened local conversation hydration, and transient backend-check clickability in the current Linux composer footer."
+    "purpose": "Add regression tests for the Linux adaptation snippets, including helper bridge route fallback, Fast badge placement, renamed or merged Codex asset chunk fallback, unimportable app:// asset records, minified dispatcher export drift, hotkey-window dispatcher guard, launcher/watcher cleanup, local thread catalog backfill/restoration, remote source-less catalog hiding, route-opened local conversation hydration, and transient backend-check clickability in the current Linux composer footer."
   }
 ]
 ----

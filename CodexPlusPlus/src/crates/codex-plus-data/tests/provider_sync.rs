@@ -751,7 +751,7 @@ fn provider_sync_marks_catalog_rows_without_openable_source_missing() {
 }
 
 #[test]
-fn provider_sync_keeps_remote_catalog_rows_without_local_source_visible() {
+fn provider_sync_marks_remote_catalog_rows_without_openable_source_missing() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     let sqlite_dir = home.join("sqlite");
@@ -813,7 +813,7 @@ fn provider_sync_keeps_remote_catalog_rows_without_local_source_visible() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(missing_candidate, 0);
+    assert_eq!(missing_candidate, 1);
 }
 
 #[test]

@@ -134,6 +134,7 @@ Assert-TextContains 'scripts/Installer-and-Manager.ps1' '$env:RUSTUP_HOME = $rus
 Assert-TextContains 'scripts/Installer-and-Manager.ps1' '$env:CARGO_HOME = $cargoHome' 'temporary Rust exports CARGO_HOME to current process'
 Assert-TextContains 'scripts/Installer-and-Manager.ps1' '$MinimumNodeMajorVersion = 20' 'Node dependency minimum major version'
 Assert-TextContains 'scripts/Installer-and-Manager.ps1' 'Test-NodeMeetsMinimum' 'Node dependency version gate'
+Assert-TextContains 'scripts/Installer-and-Manager.ps1' 'launcher.provider_sync_launch_timeout' 'installed launcher binary verification uses a release-stable provider sync marker'
 
 # EN: Documentation must point maintainers to the machine-checkable feature matrix.
 # ZH: 文档必须把维护者引向可机器检查的功能矩阵。

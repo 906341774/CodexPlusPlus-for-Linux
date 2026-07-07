@@ -1443,7 +1443,6 @@ fn count_unopenable_local_thread_catalog_rows(
     Ok(db.query_row(
         "SELECT COUNT(*) FROM local_thread_catalog
          WHERE missing_candidate = 0
-           AND host_id = 'local'
            AND COALESCE(source_detail, '') = ''",
         [],
         |row| row.get::<_, i64>(0),
@@ -1460,7 +1459,6 @@ fn mark_unopenable_local_thread_catalog_rows_missing(
          SET missing_candidate = 1,
              observation_sequence = ?1
          WHERE missing_candidate = 0
-           AND host_id = 'local'
            AND COALESCE(source_detail, '') = ''",
         [observation_sequence],
     )?)

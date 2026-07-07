@@ -1,11 +1,11 @@
 diff --git a/crates/codex-plus-core/tests/cdp_bridge.rs b/crates/codex-plus-core/tests/cdp_bridge.rs
-index 47fbed0..d2f7b73 100644
+index c0d06e3..dcd4113 100644
 --- a/crates/codex-plus-core/tests/cdp_bridge.rs
 +++ b/crates/codex-plus-core/tests/cdp_bridge.rs
 @@ -122,6 +122,18 @@ fn injection_script_times_out_backend_bridge_calls_and_falls_back_to_helper() {
      assert!(script.contains("backend_status_bridge_and_http_failed"));
  }
- 
+
 +#[test]
 +fn injection_script_falls_back_to_helper_for_bridge_routes_when_binding_is_missing() {
 +    let script = assets::injection_script(57321);
@@ -21,52 +21,34 @@ index 47fbed0..d2f7b73 100644
  #[test]
  fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
      let script = assets::injection_script(57321);
-@@ -130,13 +142,13 @@ fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
+@@ -130,14 +142,13 @@ fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
  }
- 
+
  #[test]
--fn injection_script_menu_exposes_marketplace_and_force_install_plugin_switches() {
+-fn injection_script_menu_exposes_marketplace_plugin_switch_only() {
 +fn injection_script_menu_exposes_marketplace_switch_without_force_install_plugin_switch() {
      let script = assets::injection_script(57321);
- 
+
      assert!(script.contains("插件市场解锁"));
      assert!(script.contains("data-codex-plus-setting=\"pluginMarketplaceUnlock\""));
--    assert!(script.contains("特殊插件强制安装"));
--    assert!(script.contains("data-codex-plus-setting=\"forcePluginInstall\""));
-+    assert!(!script.contains("特殊插件强制安装"));
-+    assert!(!script.contains("data-codex-plus-setting=\"forcePluginInstall\""));
+     assert!(!script.contains("特殊插件强制安装"));
+     assert!(!script.contains("data-codex-plus-setting=\"forcePluginInstall\""));
+-    assert!(!script.contains("forcePluginInstall"));
      assert!(!script.contains("强制解锁入口"));
      assert!(!script.contains("data-codex-plus-setting=\"pluginEntryUnlock\""));
  }
-@@ -190,9 +202,14 @@ fn injection_script_defers_backend_mapped_toggles_until_settings_load() {
+@@ -218,7 +229,7 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
      let script = assets::injection_script(57321);
- 
-     assert!(script.contains("const codexPlusBackendMappedSettings = new Set"));
--    assert!(script.contains("codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded"));
-+    assert!(
-+        script
-+            .contains("codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded")
-+    );
-     assert!(script.contains("button.dataset.pending = String(waitsForBackend)"));
--    assert!(script.contains("button.disabled = waitsForBackend || button.dataset.relayUnneeded === \"true\""));
-+    assert!(script.contains(
-+        "button.disabled = waitsForBackend || button.dataset.relayUnneeded === \"true\""
-+    ));
-     assert!(script.contains("toggle.disabled || toggle.dataset.pending === \"true\""));
- }
- 
-@@ -212,7 +229,7 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
-     let script = assets::injection_script(57321);
- 
+
      assert!(script.contains("function pluginPatchDisabledInRelayMode()"));
 -    assert!(script.contains("!codexPlusBackendSettingsLoaded"));
 +    assert!(script.contains("codexPlusBackendSettings.launchMode === \"relay\""));
      assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
      assert!(script.contains("clearPluginPatchArtifacts()"));
  }
-@@ -234,23 +251,31 @@ fn injection_script_gates_legacy_and_modern_plugin_unlock_by_codex_version() {
+@@ -240,23 +251,31 @@ fn injection_script_gates_legacy_and_modern_plugin_unlock_by_codex_version() {
      let script = assets::injection_script(57321);
- 
+
      assert!(script.contains("const pluginUnlockStrategy = codexPluginUnlockStrategy()"));
 +    assert!(script.contains("if ((pluginUnlockStrategy === \"legacy\" || pluginUnlockStrategy === \"unknown\") && settings.pluginMarketplaceUnlock)"));
 +    assert!(script.contains("enablePluginEntry();"));
@@ -75,12 +57,12 @@ index 47fbed0..d2f7b73 100644
      assert!(script.contains("plugin_unlock_strategy_selected"));
      assert!(script.contains("window.__codexPluginUnlockStrategyLogged"));
  }
- 
+
  #[test]
 -fn injection_script_removes_legacy_plugin_sidebar_entry_unlock() {
 +fn injection_script_keeps_linux_plugin_sidebar_entry_unlock_without_debug_suffix() {
      let script = assets::injection_script(57321);
- 
+
 -    assert!(!script.contains("pluginEntryUnlock"));
      assert!(!script.contains("codexAppPluginEntryUnlock"));
 -    assert!(!script.contains("function spoofChatGPTAuthMethod(element)"));
@@ -102,49 +84,54 @@ index 47fbed0..d2f7b73 100644
 +    ));
 +    assert!(!script.contains("\"Plugins - Unlocked\" : \"插件 - 已解锁\""));
  }
- 
+
  #[test]
-@@ -283,16 +308,15 @@ fn injection_script_localizes_codex_menu_commands() {
- }
- 
- #[test]
--fn injection_script_unlocks_nested_disabled_plugin_install_buttons() {
-+fn injection_script_does_not_unlock_disabled_plugin_install_buttons() {
-     let script = assets::injection_script(57321);
- 
+@@ -295,9 +314,8 @@ fn injection_script_does_not_unlock_disabled_plugin_install_buttons() {
      assert!(script.contains("button[aria-disabled=\"true\"]"));
      assert!(script.contains("[role=\"button\"][data-disabled]"));
--    assert!(script.contains("installButtonUnlockNodes"));
--    assert!(script.contains("patchReactDisabledProps"));
--    assert!(script.contains("props[\"data-disabled\"] = undefined"));
--    assert!(script.contains("button.querySelectorAll?.(\"button, [role='button'], [disabled], [aria-disabled], [data-disabled]"));
--    assert!(script.contains("button.dataset.codexForceInstallUnlocked"));
-+    assert!(!script.contains("installButtonUnlockNodes"));
-+    assert!(!script.contains("props[\"data-disabled\"] = undefined"));
+     assert!(!script.contains("installButtonUnlockNodes"));
+-    assert!(!script.contains("patchReactDisabledProps"));
+     assert!(!script.contains("props[\"data-disabled\"] = undefined"));
+-    assert!(!script.contains("button.querySelectorAll?.(\"button, [role='button'], [disabled], [aria-disabled], [data-disabled]"));
 +    assert!(!script.contains("installPluginButtonGuard"));
-+    assert!(!script.contains("button.dataset.codexForceInstallUnlocked"));
+     assert!(!script.contains("button.dataset.codexForceInstallUnlocked"));
  }
- 
- #[test]
-@@ -402,13 +426,12 @@ fn injection_script_logs_marketplace_grouping_diagnostics() {
+
+@@ -408,13 +426,12 @@ fn injection_script_logs_marketplace_grouping_diagnostics() {
  }
- 
+
  #[test]
--fn injection_script_keeps_force_install_unlock_visual_state_sticky() {
+-fn injection_script_omits_force_install_unlock_loop() {
 +fn injection_script_does_not_keep_force_install_unlock_visual_state_sticky() {
      let script = assets::injection_script(57321);
- 
--    assert!(script.contains("codex-force-install-unlocked"));
--    assert!(script.contains("codexForcePluginInstallRefreshIntervalMs"));
--    assert!(script.contains("refreshForcePluginInstallUnlockLoop"));
--    assert!(script.contains("setInterval(() => {"));
-+    assert!(!script.contains("codex-force-install-unlocked"));
-+    assert!(!script.contains("codexForcePluginInstallRefreshIntervalMs"));
-+    assert!(!script.contains("refreshForcePluginInstallUnlockLoop"));
+
+     assert!(!script.contains("codex-force-install-unlocked"));
+     assert!(!script.contains("codexForcePluginInstallRefreshIntervalMs"));
+     assert!(!script.contains("refreshForcePluginInstallUnlockLoop"));
+-    assert!(!script.contains("__codexForcePluginInstallRefreshTimer"));
  }
- 
+
  #[test]
-@@ -591,7 +614,9 @@ fn injection_script_exposes_fast_service_tier_control() {
+@@ -465,6 +482,18 @@ fn injection_script_exposes_sidebar_thread_id_badge_control() {
+     assert!(script.contains("refreshThreadIdBadges();"));
+ }
+
++#[test]
++fn injection_script_groups_derived_workspace_projects_in_sidebar_projection() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("function workspaceLooksLikeDerivedProject"));
++    assert!(script.contains("function sameWorkspaceProjectFamily"));
++    assert!(script.contains("candidateName.startsWith(`${baseName}-`)"));
++    assert!(script.contains("sameWorkspaceProjectFamily(projectPath, targetPath(target))"));
++    assert!(script.contains("sameWorkspaceProjectFamily(project.path, targetPath(target))"));
++    assert!(script.contains("dev|worktree|branch|feature|fix|ga|exp|experiment|deepfeatures"));
++}
++
+ #[test]
+ fn injection_script_keeps_session_action_buttons_in_pr_style() {
+     let script = assets::injection_script(57321);
+@@ -597,7 +626,9 @@ fn injection_script_exposes_fast_service_tier_control() {
      assert!(script.contains("codexServiceTierBadgeFooterGroup"));
      assert!(script.contains("codexServiceTierFindComposerEl"));
      assert!(script.contains("codexServiceTierVisibleComposerFooters"));
@@ -154,14 +141,20 @@ index 47fbed0..d2f7b73 100644
      assert!(script.contains("codexServiceTierComposerCandidates"));
      assert!(script.contains("codexServiceTierComposerScore"));
      assert!(script.contains("data-codex-service-tier-badge"));
-@@ -606,6 +631,96 @@ fn injection_script_exposes_fast_service_tier_control() {
-     assert!(script.contains("fast"));
+@@ -613,41 +644,105 @@ fn injection_script_exposes_fast_service_tier_control() {
  }
- 
-+#[test]
+
+ #[test]
+-fn injection_script_prompts_for_markdown_export_path_when_supported() {
 +fn linux_renderer_asset_loader_can_find_renamed_dynamic_chunks() {
-+    let script = assets::injection_script(57321);
-+
+     let script = assets::injection_script(57321);
+
+-    assert!(script.contains("showSaveFilePicker"));
+-    assert!(script.contains("suggestedName: filename"));
+-    assert!(script.contains("createWritable()"));
+-    assert!(script.contains("await writable.write(markdown)"));
+-    assert!(script.contains("status: \"cancelled\""));
+-    assert!(script.contains("导出已取消"));
 +    assert!(script.contains("function codexAppAssetUrlFromScriptText"));
 +    assert!(script.contains("new RegExp(`"));
 +    assert!(script.contains("return new URL(match[1], src).href;"));
@@ -233,12 +226,18 @@ index 47fbed0..d2f7b73 100644
 +            "const linuxTriggerFooter = codexServiceTierComposerFromIntelligenceTrigger();"
 +        )
 +    );
-+}
-+
-+#[test]
+ }
+
+ #[test]
+-fn injection_script_discovers_vscode_api_asset_without_hardcoded_hash() {
 +fn linux_renderer_patch_keeps_fast_badge_clickable_during_backend_checking() {
-+    let script = assets::injection_script(57321);
-+
+     let script = assets::injection_script(57321);
+
+-    assert!(script.contains("loadCodexAppModule(\"vscode-api-\""));
+-    assert!(script.contains("codexAppAssetUrlFromScriptText"));
+-    assert!(script.contains("fetch(src"));
+-    assert!(!script.contains("vscode-api-Dc9pX2Bc.js"));
+-    assert!(!script.contains("import(\"./assets/vscode-api-"));
 +    assert!(script.contains("function codexServiceTierBackendBlocksLocalOverride()"));
 +    assert!(script.contains("status !== \"ok\" && status !== \"checking\""));
 +    assert!(script.contains("if (codexServiceTierBackendBlocksLocalOverride())"));
@@ -246,12 +245,64 @@ index 47fbed0..d2f7b73 100644
 +    assert!(script.contains(
 +        "codexServiceTierState.status === \"loading\" && badge.dataset.tier === \"loading\""
 +    ));
+ }
+
+ #[test]
+-fn injection_script_clears_project_state_when_moving_to_projectless() {
++fn injection_script_prompts_for_markdown_export_path_when_supported() {
+     let script = assets::injection_script(57321);
+
+-    assert!(script.contains("async function clearThreadWorkspaceHints"));
+-    assert!(script.contains("async function clearThreadWritableRoots"));
+-    assert!(script.contains("async function clearThreadProjectlessOutputDirectories"));
+-    assert!(script.contains("thread-workspace-root-hints"));
+-    assert!(script.contains("thread-writable-roots"));
+-    assert!(script.contains("thread-projectless-output-directories"));
+-    assert!(script.contains("await clearThreadWorkspaceHints(ref)"));
+-    assert!(script.contains("await clearThreadWritableRoots(ref)"));
+-    assert!(script.contains("await clearThreadProjectlessOutputDirectories(ref)"));
++    assert!(script.contains("showSaveFilePicker"));
++    assert!(script.contains("suggestedName: filename"));
++    assert!(script.contains("createWritable()"));
++    assert!(script.contains("await writable.write(markdown)"));
++    assert!(script.contains("status: \"cancelled\""));
++    assert!(script.contains("导出已取消"));
+ }
+
+ #[test]
+@@ -1088,6 +1183,31 @@ fn pick_injectable_codex_page_target_rejects_non_codex_pages() {
+     );
+ }
+
++#[test]
++fn pick_injectable_codex_page_target_accepts_linux_local_app_route() {
++    let targets = vec![
++        target(
++            "other-local-page",
++            "page",
++            "Local Preview",
++            "http://127.0.0.1:5173/dashboard",
++            Some("ws://other"),
++        ),
++        target(
++            "linux-app-page",
++            "page",
++            "",
++            "http://127.0.0.1:5176/conversation?thread_id=019ee62e-98ba-7c42-8a70-aa5a6f39e45f",
++            Some("ws://codex"),
++        ),
++    ];
++
++    let picked = pick_injectable_codex_page_target(&targets)
++        .expect("Linux local Codex app route should be selected for injection");
++
++    assert_eq!(picked.id, "linux-app-page");
 +}
 +
  #[test]
- fn injection_script_prompts_for_markdown_export_path_when_supported() {
-     let script = assets::injection_script(57321);
-@@ -1649,3 +1764,59 @@ fn noop_handler() -> bridge::BridgeHandler {
+ fn pick_injectable_codex_page_target_requires_websocket() {
+     let targets = vec![target("codex", "page", "Codex", "https://codex.test", None)];
+@@ -1681,3 +1801,59 @@ fn noop_handler() -> bridge::BridgeHandler {
              as Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send>>
      })
  }
@@ -312,7 +363,7 @@ index 47fbed0..d2f7b73 100644
 +    assert!(script.contains("attributeFilter: [\"class\", \"disabled\", \"aria-disabled\", \"data-disabled\", \"aria-current\"]"));
 +}
 diff --git a/crates/codex-plus-core/tests/launcher.rs b/crates/codex-plus-core/tests/launcher.rs
-index 26e2c57..87d34f9 100644
+index ec12600..d2adfb6 100644
 --- a/crates/codex-plus-core/tests/launcher.rs
 +++ b/crates/codex-plus-core/tests/launcher.rs
 @@ -14,6 +14,7 @@ use codex_plus_core::launcher::{
@@ -326,7 +377,7 @@ index 26e2c57..87d34f9 100644
 @@ -24,6 +25,39 @@ use codex_plus_core::ports::{
  use codex_plus_core::settings::{BackendSettings, RelayProfile, RelayProtocol};
  use codex_plus_core::status::StatusStore;
- 
+
 +#[cfg(target_os = "linux")]
 +fn linux_app_paths_env_lock() -> &'static Mutex<()> {
 +    static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
@@ -366,7 +417,7 @@ index 26e2c57..87d34f9 100644
 @@ -194,6 +228,104 @@ fn app_paths_saved_path_is_used_when_no_explicit_path_is_provided() {
      );
  }
- 
+
 +#[cfg(target_os = "linux")]
 +#[test]
 +fn app_paths_linux_falls_back_to_adapter_state_when_saved_path_is_stale() {
@@ -468,10 +519,22 @@ index 26e2c57..87d34f9 100644
  #[test]
  fn launcher_builds_debug_arguments_and_commands() {
      let app_dir = PathBuf::from(r"C:\Codex\app");
-@@ -317,6 +449,24 @@ fn launcher_native_menu_inspector_arguments_are_added_before_extra_args() {
+@@ -261,10 +393,7 @@ fn launcher_appends_extra_codex_arguments_after_debug_arguments() {
+
+ #[test]
+ fn launcher_fast_startup_adds_statsig_fast_fail_argument_when_enabled() {
+-    let settings = BackendSettings {
+-        codex_app_fast_startup: true,
+-        ..BackendSettings::default()
+-    };
++    let settings = BackendSettings::default();
+     let args = build_codex_arguments_for_settings(9229, &settings);
+
+     assert!(args.iter().any(|arg| {
+@@ -320,6 +449,24 @@ fn launcher_native_menu_inspector_arguments_are_added_before_extra_args() {
      assert_eq!(command[4], "--force_high_performance_gpu");
  }
- 
+
 +#[cfg(target_os = "linux")]
 +#[test]
 +fn launcher_linux_native_menu_inspector_preserves_start_sh_passthrough_separator() {
@@ -493,19 +556,19 @@ index 26e2c57..87d34f9 100644
  #[test]
  fn launcher_constructs_windows_packaged_activation_without_real_app() {
      let app_dir = PathBuf::from(
-@@ -517,7 +667,7 @@ async fn default_helper_serves_backend_status_over_http() {
+@@ -520,7 +667,7 @@ async fn default_helper_serves_backend_status_over_http() {
      let port = listener.local_addr().unwrap().port();
      drop(listener);
- 
+
 -    hooks.start_helper(port).await.unwrap();
 +    hooks.start_helper(port, None).await.unwrap();
      let client = reqwest::Client::builder().no_proxy().build().unwrap();
      let response = client
          .post(format!("http://127.0.0.1:{port}/backend/status"))
-@@ -544,6 +694,76 @@ async fn default_helper_serves_backend_status_over_http() {
+@@ -547,6 +694,76 @@ async fn default_helper_serves_backend_status_over_http() {
      hooks.shutdown_helper(port).await;
  }
- 
+
 +#[tokio::test]
 +async fn default_helper_serves_settings_bridge_routes_over_http() {
 +    let temp = tempfile::tempdir().unwrap();
@@ -579,19 +642,43 @@ index 26e2c57..87d34f9 100644
  #[tokio::test]
  async fn default_helper_accepts_diagnostic_log_events_over_http() {
      let temp = tempfile::tempdir().unwrap();
-@@ -554,7 +774,7 @@ async fn default_helper_accepts_diagnostic_log_events_over_http() {
+@@ -557,7 +774,7 @@ async fn default_helper_accepts_diagnostic_log_events_over_http() {
      let port = listener.local_addr().unwrap().port();
      drop(listener);
- 
+
 -    hooks.start_helper(port).await.unwrap();
 +    hooks.start_helper(port, None).await.unwrap();
      let response = reqwest::Client::builder()
          .no_proxy()
          .build()
-@@ -1289,6 +1509,97 @@ async fn default_launch_hooks_provider_sync_enabled_returns_explicit_error() {
+@@ -651,6 +868,23 @@ async fn launch_lifecycle_runs_enabled_maintenance_without_applying_relay_profil
      );
  }
- 
+
++#[test]
++fn launch_lifecycle_does_not_scan_large_logs_database_on_startup() {
++    let source = include_str!("../src/launcher.rs");
++    let start = source
++        .find("pub async fn launch_and_inject_with_hooks")
++        .expect("launch flow should exist");
++    let end = source[start..]
++        .find("fn relay_protocol_proxy_enabled")
++        .map(|offset| start + offset)
++        .expect("launch flow should end before relay helper");
++    let body = &source[start..end];
++
++    assert!(body.contains("sanitize_thread_model_suffixes"));
++    assert!(!body.contains("sanitize_historical_model_suffixes"));
++    assert!(!body.contains("sanitize_logs_model_suffixes"));
++}
++
+ #[tokio::test]
+ async fn launch_lifecycle_passes_configured_extra_args_to_codex_launch() {
+     let temp = tempfile::tempdir().unwrap();
+@@ -1292,6 +1526,100 @@ async fn default_launch_hooks_provider_sync_enabled_returns_explicit_error() {
+     );
+ }
+
 +#[test]
 +fn linux_start_script_command_uses_new_instance_separator() {
 +    let temp = tempfile::tempdir().unwrap();
@@ -628,7 +715,10 @@ index 26e2c57..87d34f9 100644
 +            "http://env-proxy.example.test:8080".to_string(),
 +        ),
 +        ("CONDA_PREFIX".to_string(), "/tmp/conda".to_string()),
-+        ("GI_TYPELIB_PATH".to_string(), "/tmp/girepository".to_string()),
++        (
++            "GI_TYPELIB_PATH".to_string(),
++            "/tmp/girepository".to_string(),
++        ),
 +        ("LD_LIBRARY_PATH".to_string(), "/tmp/lib".to_string()),
 +        ("PIXI_PROJECT_ROOT".to_string(), "/tmp/pixi".to_string()),
 +        ("ELECTRON_RUN_AS_NODE".to_string(), "1".to_string()),
@@ -686,10 +776,10 @@ index 26e2c57..87d34f9 100644
  #[derive(Clone)]
  struct FakeHooks {
      events: Arc<Mutex<Vec<String>>>,
-@@ -1411,7 +1722,11 @@ impl LaunchHooks for FakeHooks {
+@@ -1414,7 +1742,11 @@ impl LaunchHooks for FakeHooks {
          Ok(())
      }
- 
+
 -    async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
 +    async fn start_helper(
 +        &self,
@@ -699,10 +789,10 @@ index 26e2c57..87d34f9 100644
          self.event(format!("start-helper:{helper_port}"));
          Ok(())
      }
-@@ -1448,7 +1763,13 @@ impl LaunchHooks for FakeHooks {
+@@ -1451,7 +1783,13 @@ impl LaunchHooks for FakeHooks {
          Ok(())
      }
- 
+
 -    async fn ensure_injection(&self, debug_port: u16, helper_port: u16, _app_dir: &Path) -> bool {
 +    async fn ensure_injection(
 +        &self,
@@ -726,12 +816,12 @@ index 84fa2da..8b4a74d 100644
 +    filter_killable_unix_launcher_processes, process_ids_still_running,
 +    should_recover_stale_launcher, watcher_disabled_flag,
  };
- 
+
  #[cfg(windows)]
 @@ -99,6 +100,43 @@ fn launcher_process_filter_protects_current_process_ancestry() {
      assert_eq!(filter_killable_launcher_processes(processes, 30), vec![40]);
  }
- 
+
 +#[test]
 +fn unix_launcher_process_filter_kills_stale_silent_launcher_only() {
 +    let processes = [
@@ -773,13 +863,13 @@ index 84fa2da..8b4a74d 100644
  fn stale_launcher_recovery_only_runs_when_codex_and_cdp_are_absent() {
      assert!(should_recover_stale_launcher(false, false));
 diff --git a/crates/codex-plus-data/tests/provider_sync.rs b/crates/codex-plus-data/tests/provider_sync.rs
-index d952b26..0c3566b 100644
+index 2584939..913f2fe 100644
 --- a/crates/codex-plus-data/tests/provider_sync.rs
 +++ b/crates/codex-plus-data/tests/provider_sync.rs
 @@ -74,6 +74,148 @@ fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
      }
  }
- 
+
 +fn create_legacy_state_db_for_catalog(path: &Path) {
 +    let db = Connection::open(path).unwrap();
 +    db.execute(
@@ -925,10 +1015,10 @@ index d952b26..0c3566b 100644
  #[test]
  fn provider_sync_targets_merge_config_rollout_sqlite_and_sort_current_first() {
      let tmp = tempdir().unwrap();
-@@ -350,6 +492,179 @@ fn provider_sync_updates_new_codex_sqlite_directory_db() {
+@@ -350,6 +492,562 @@ fn provider_sync_updates_new_codex_sqlite_directory_db() {
      assert!(backup_dir.join("db/sqlite/codex-dev.db").exists());
  }
- 
+
 +#[test]
 +fn provider_sync_backfills_local_thread_catalog_from_legacy_state_db() {
 +    let tmp = tempdir().unwrap();
@@ -1059,6 +1149,389 @@ index d952b26..0c3566b 100644
 +}
 +
 +#[test]
++fn provider_sync_replaces_vscode_catalog_rows_with_rollout_source_details() {
++    let tmp = tempdir().unwrap();
++    let home = tmp.path().join(".codex");
++    let sqlite_dir = home.join("sqlite");
++    fs::create_dir_all(&sqlite_dir).unwrap();
++    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
++    create_legacy_state_db_for_catalog(&home.join("state_5.sqlite"));
++    let catalog_path = sqlite_dir.join("codex-dev.db");
++    create_local_thread_catalog_db(&catalog_path);
++    let db = Connection::open(&catalog_path).unwrap();
++    db.execute(
++        "INSERT INTO local_thread_catalog (
++            host_id,
++            thread_id,
++            display_title,
++            source_created_at,
++            source_updated_at,
++            cwd,
++            source_kind,
++            source_detail,
++            model_provider,
++            git_branch,
++            observation_sequence,
++            missing_candidate
++        ) VALUES (
++            'local',
++            'thread-visible',
++            'Visible legacy thread',
++            1700000000,
++            1700000060,
++            '/home/deck/workspace',
++            'vscode',
++            NULL,
++            'custom',
++            'main',
++            33,
++            0
++        )",
++        [],
++    )
++    .unwrap();
++    drop(db);
++
++    let result = run_provider_sync(Some(&home));
++
++    assert_eq!(result.status, ProviderSyncStatus::Synced);
++    let db = Connection::open(&catalog_path).unwrap();
++    let row = db
++        .query_row(
++            "SELECT source_kind, source_detail, missing_candidate FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = 'thread-visible'",
++            [],
++            |row| {
++                Ok((
++                    row.get::<_, String>(0)?,
++                    row.get::<_, Option<String>>(1)?,
++                    row.get::<_, i64>(2)?,
++                ))
++            },
++        )
++        .unwrap();
++    assert_eq!(
++        row,
++        (
++            "rollout".to_string(),
++            Some("/tmp/rollout-thread-visible.jsonl".to_string()),
++            0,
++        )
++    );
++}
++
++#[test]
++fn provider_sync_marks_catalog_rows_without_openable_source_missing() {
++    let tmp = tempdir().unwrap();
++    let home = tmp.path().join(".codex");
++    let sqlite_dir = home.join("sqlite");
++    fs::create_dir_all(&sqlite_dir).unwrap();
++    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
++    create_legacy_state_db_for_catalog(&home.join("state_5.sqlite"));
++    let catalog_path = sqlite_dir.join("codex-dev.db");
++    create_local_thread_catalog_db(&catalog_path);
++    let db = Connection::open(&catalog_path).unwrap();
++    db.execute(
++        "INSERT INTO local_thread_catalog (
++            host_id,
++            thread_id,
++            display_title,
++            source_created_at,
++            source_updated_at,
++            cwd,
++            source_kind,
++            source_detail,
++            model_provider,
++            git_branch,
++            observation_sequence,
++            missing_candidate
++        ) VALUES (
++            'local',
++            'orphan-vscode-thread',
++            'Orphan vscode thread',
++            1700000000,
++            1700000060,
++            '/home/deck/workspace',
++            'vscode',
++            NULL,
++            'custom',
++            NULL,
++            33,
++            0
++        )",
++        [],
++    )
++    .unwrap();
++    drop(db);
++
++    let result = run_provider_sync(Some(&home));
++
++    assert_eq!(result.status, ProviderSyncStatus::Synced);
++    let db = Connection::open(&catalog_path).unwrap();
++    let missing_candidate: i64 = db
++        .query_row(
++            "SELECT missing_candidate FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = 'orphan-vscode-thread'",
++            [],
++            |row| row.get(0),
++        )
++        .unwrap();
++    assert_eq!(missing_candidate, 1);
++}
++
++#[test]
++fn provider_sync_marks_remote_catalog_rows_without_openable_source_missing() {
++    let tmp = tempdir().unwrap();
++    let home = tmp.path().join(".codex");
++    let sqlite_dir = home.join("sqlite");
++    fs::create_dir_all(&sqlite_dir).unwrap();
++    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
++    create_legacy_state_db_for_catalog(&home.join("state_5.sqlite"));
++    let catalog_path = sqlite_dir.join("codex-dev.db");
++    create_local_thread_catalog_db(&catalog_path);
++    let db = Connection::open(&catalog_path).unwrap();
++    db.execute(
++        "INSERT INTO local_thread_catalog_hosts (host_id, host_kind) VALUES (
++            'remote-ssh-discovered:test-host',
++            'ssh'
++        )",
++        [],
++    )
++    .unwrap();
++    db.execute(
++        "INSERT INTO local_thread_catalog (
++            host_id,
++            thread_id,
++            display_title,
++            source_created_at,
++            source_updated_at,
++            cwd,
++            source_kind,
++            source_detail,
++            model_provider,
++            git_branch,
++            observation_sequence,
++            missing_candidate
++        ) VALUES (
++            'remote-ssh-discovered:test-host',
++            'remote-thread',
++            'Remote thread',
++            1700000000,
++            1700000060,
++            '/home/deck/remote-workspace',
++            'vscode',
++            NULL,
++            'custom',
++            NULL,
++            33,
++            0
++        )",
++        [],
++    )
++    .unwrap();
++    drop(db);
++
++    let result = run_provider_sync(Some(&home));
++
++    assert_eq!(result.status, ProviderSyncStatus::Synced);
++    let db = Connection::open(&catalog_path).unwrap();
++    let missing_candidate: i64 = db
++        .query_row(
++            "SELECT missing_candidate FROM local_thread_catalog WHERE host_id = 'remote-ssh-discovered:test-host' AND thread_id = 'remote-thread'",
++            [],
++            |row| row.get(0),
++        )
++        .unwrap();
++    assert_eq!(missing_candidate, 1);
++}
++
++#[test]
++fn provider_sync_marks_catalog_rows_with_legacy_thread_but_no_rollout_path_missing() {
++    let tmp = tempdir().unwrap();
++    let home = tmp.path().join(".codex");
++    let sqlite_dir = home.join("sqlite");
++    fs::create_dir_all(&sqlite_dir).unwrap();
++    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
++    let state_path = home.join("state_5.sqlite");
++    let state_db = Connection::open(&state_path).unwrap();
++    state_db
++        .execute(
++            "CREATE TABLE threads (
++                id TEXT PRIMARY KEY,
++                created_at INTEGER NOT NULL,
++                updated_at INTEGER NOT NULL,
++                source TEXT NOT NULL,
++                model_provider TEXT NOT NULL,
++                cwd TEXT NOT NULL,
++                title TEXT NOT NULL,
++                sandbox_policy TEXT NOT NULL,
++                approval_mode TEXT NOT NULL,
++                has_user_event INTEGER NOT NULL DEFAULT 0,
++                archived INTEGER NOT NULL DEFAULT 0
++            )",
++            [],
++        )
++        .unwrap();
++    state_db
++        .execute(
++            "INSERT INTO threads VALUES (
++                'legacy-without-rollout',
++                1700000000,
++                1700000060,
++                'local',
++                'old-provider',
++                '/home/deck/workspace',
++                'Legacy without rollout',
++                'workspace-write',
++                'on-request',
++                1,
++                0
++            )",
++            [],
++        )
++        .unwrap();
++    drop(state_db);
++    let catalog_path = sqlite_dir.join("codex-dev.db");
++    create_local_thread_catalog_db(&catalog_path);
++    let catalog_db = Connection::open(&catalog_path).unwrap();
++    catalog_db
++        .execute(
++            "INSERT INTO local_thread_catalog (
++                host_id,
++                thread_id,
++                display_title,
++                source_created_at,
++                source_updated_at,
++                cwd,
++                source_kind,
++                source_detail,
++                model_provider,
++                git_branch,
++                observation_sequence,
++                missing_candidate
++            ) VALUES (
++                'local',
++                'legacy-without-rollout',
++                'Legacy without rollout',
++                1700000000,
++                1700000060,
++                '/home/deck/workspace',
++                'vscode',
++                NULL,
++                'custom',
++                NULL,
++                33,
++                0
++            )",
++            [],
++        )
++        .unwrap();
++    drop(catalog_db);
++
++    let result = run_provider_sync(Some(&home));
++
++    assert_eq!(result.status, ProviderSyncStatus::Synced);
++    let catalog_db = Connection::open(&catalog_path).unwrap();
++    let missing_candidate: i64 = catalog_db
++        .query_row(
++            "SELECT missing_candidate FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = 'legacy-without-rollout'",
++            [],
++            |row| row.get(0),
++        )
++        .unwrap();
++    assert_eq!(missing_candidate, 1);
++}
++
++#[test]
++fn provider_sync_does_not_keep_catalog_rows_from_current_threads_without_rollout_path() {
++    let tmp = tempdir().unwrap();
++    let home = tmp.path().join(".codex");
++    let sqlite_dir = home.join("sqlite");
++    fs::create_dir_all(&sqlite_dir).unwrap();
++    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
++    let catalog_path = sqlite_dir.join("codex-dev.db");
++    create_local_thread_catalog_db(&catalog_path);
++    let db = Connection::open(&catalog_path).unwrap();
++    db.execute(
++        "CREATE TABLE threads (
++            id TEXT PRIMARY KEY,
++            created_at INTEGER NOT NULL,
++            updated_at INTEGER NOT NULL,
++            source TEXT NOT NULL,
++            model_provider TEXT NOT NULL,
++            cwd TEXT NOT NULL,
++            title TEXT NOT NULL,
++            sandbox_policy TEXT NOT NULL,
++            approval_mode TEXT NOT NULL,
++            has_user_event INTEGER NOT NULL DEFAULT 0,
++            archived INTEGER NOT NULL DEFAULT 0
++        )",
++        [],
++    )
++    .unwrap();
++    db.execute(
++        "INSERT INTO threads VALUES (
++            'current-without-rollout',
++            1700000000,
++            1700000060,
++            'local',
++            'old-provider',
++            '/home/deck/workspace',
++            'Current without rollout',
++            'workspace-write',
++            'on-request',
++            1,
++            0
++        )",
++        [],
++    )
++    .unwrap();
++    db.execute(
++        "INSERT INTO local_thread_catalog (
++            host_id,
++            thread_id,
++            display_title,
++            source_created_at,
++            source_updated_at,
++            cwd,
++            source_kind,
++            source_detail,
++            model_provider,
++            git_branch,
++            observation_sequence,
++            missing_candidate
++        ) VALUES (
++            'local',
++            'current-without-rollout',
++            'Current without rollout',
++            1700000000,
++            1700000060,
++            '/home/deck/workspace',
++            'vscode',
++            NULL,
++            'custom',
++            NULL,
++            33,
++            0
++        )",
++        [],
++    )
++    .unwrap();
++    drop(db);
++
++    let result = run_provider_sync(Some(&home));
++
++    assert_eq!(result.status, ProviderSyncStatus::Synced);
++    let db = Connection::open(&catalog_path).unwrap();
++    let missing_candidate: i64 = db
++        .query_row(
++            "SELECT missing_candidate FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = 'current-without-rollout'",
++            [],
++            |row| row.get(0),
++        )
++        .unwrap();
++    assert_eq!(missing_candidate, 1);
++}
++
++#[test]
 +fn provider_sync_backfills_catalog_rows_that_become_visible_from_rollout_events() {
 +    let tmp = tempdir().unwrap();
 +    let home = tmp.path().join(".codex");
@@ -1105,10 +1578,52 @@ index d952b26..0c3566b 100644
  #[test]
  fn provider_sync_backup_metadata_contains_reference_fields_and_managed_marker() {
      let tmp = tempdir().unwrap();
-@@ -709,6 +1024,37 @@ fn provider_sync_skips_when_home_missing_or_lock_exists_and_prunes_backups() {
+@@ -497,41 +1195,6 @@ fn provider_sync_repairs_sqlite_when_rollout_provider_matches_and_normalizes_pat
+     );
+ }
+
+-#[test]
+-fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
+-    let tmp = tempdir().unwrap();
+-    let home = tmp.path().join(".codex");
+-    fs::create_dir(&home).unwrap();
+-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+-    write_rollout(
+-        &home.join("sessions/rollout-projectless.jsonl"),
+-        "apigather",
+-        "thread-1",
+-        "C:/old/project",
+-    );
+-    create_state_db(&home.join("state_5.sqlite"));
+-    fs::write(
+-        home.join(".codex-global-state.json"),
+-        json!({
+-            "projectless-thread-ids": ["thread-1"]
+-        })
+-        .to_string(),
+-    )
+-    .unwrap();
+-
+-    let result = run_provider_sync(Some(&home));
+-
+-    assert_eq!(result.status, ProviderSyncStatus::Synced);
+-    assert_eq!(result.sqlite_cwd_rows_updated, 0);
+-    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+-    let row: String = db
+-        .query_row("SELECT cwd FROM threads WHERE id = 'thread-1'", [], |row| {
+-            row.get(0)
+-        })
+-        .unwrap();
+-    assert_eq!(row, "C:/old");
+-}
+-
+ #[test]
+ fn provider_sync_normalizes_open_in_target_preferences_per_path() {
+     let tmp = tempdir().unwrap();
+@@ -744,6 +1407,57 @@ fn provider_sync_skips_when_home_missing_or_lock_exists_and_prunes_backups() {
      assert_eq!(backups, 5);
  }
- 
+
 +#[test]
 +fn provider_sync_removes_stale_lock_and_runs() {
 +    let tmp = tempdir().unwrap();
@@ -1137,6 +1652,26 @@ index d952b26..0c3566b 100644
 +
 +    assert_eq!(result.status, ProviderSyncStatus::Synced);
 +    assert_eq!(result.changed_session_files, 1);
++    assert!(!lock_dir.exists());
++}
++
++#[test]
++fn provider_sync_releases_lock_after_successful_run() {
++    let tmp = tempdir().unwrap();
++    let home = tmp.path().join(".codex");
++    fs::create_dir(&home).unwrap();
++    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
++    write_rollout(
++        &home.join("sessions/rollout-new.jsonl"),
++        "openai",
++        "thread-1",
++        "C:/workspace",
++    );
++    let lock_dir = home.join("tmp/provider-sync.lock");
++
++    let result = run_provider_sync(Some(&home));
++
++    assert_eq!(result.status, ProviderSyncStatus::Synced);
 +    assert!(!lock_dir.exists());
 +}
 +

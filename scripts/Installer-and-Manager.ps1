@@ -1060,10 +1060,10 @@ function Assert-InstalledLinuxAdaptationApplied {
     Assert-BinaryContainsAsciiLiteral $launcher 'start.sh' 'Linux start.sh launcher marker'
     Assert-BinaryContainsAsciiLiteral $launcher 'CODEX_WEBVIEW_PORT' 'Linux webview environment marker'
     Assert-BinaryContainsAsciiLiteral $launcher 'Access-Control-Allow-Private-Network' 'Linux helper private-network CORS marker'
-    # EN: Optimized release builds may keep the cleanup function symbol but fold away the timeout log string.
-    # ZH: 优化后的 release 构建可能保留清理函数符号，但会折叠掉超时日志字符串。
+    # EN: Optimized release builds may keep behavior markers while folding away wrapper filename literals.
+    # ZH: 优化后的 release 构建可能保留行为标记，但会折叠掉 wrapper 文件名字面量。
     Assert-BinaryContainsAsciiLiteral $launcher 'filter_killable_unix_launcher_processes' 'Linux stale launcher cleanup marker'
-    Assert-BinaryContainsAsciiLiteral $launcher 'launch-codex-plus-plus' 'Linux launcher wrapper cleanup marker'
+    Assert-BinaryContainsAsciiLiteral $launcher 'launcher.provider_sync_launch_timeout' 'Linux provider sync launch marker'
     Assert-BinaryContainsAsciiLiteral $launcher 'codexServiceTierLinuxComposerFooters' 'Linux Fast badge composer marker'
     Assert-BinaryContainsAsciiLiteral $launcher 'codexServiceTierBackendBlocksLocalOverride' 'Linux Fast badge transient backend checking marker'
     Assert-BinaryContainsAsciiLiteral $launcher 'codexPlusLinuxUserScriptLocation' 'Linux user script location alias marker'
