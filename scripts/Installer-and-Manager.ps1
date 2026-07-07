@@ -442,6 +442,12 @@ function Get-AdapterApplicationsDir {
     return Join-Path (Get-AdapterXdgDataHome) 'applications'
 }
 
+function Get-CodexPlusPlusLegacyUserBinDir {
+    # EN: Older Linux adaptation runs created user commands here; keep them repaired for compatibility.
+    # ZH: 早期 Linux 适配曾在这里创建用户命令；继续维护它们以兼容既有链接。
+    return Join-Path (Get-AdapterXdgDataHome) 'codex-plusplus/bin'
+}
+
 function New-AdapterJsonObject {
     return [pscustomobject]@{}
 }
@@ -540,6 +546,31 @@ function Sync-CodexPlusPlusState {
     Add-AdapterLog "Synced Codex++ state path: $path"
 }
 
+function Repair-CodexDesktopResourcePathsInConfig {
+    param([string]$CodexAppDir)
+    $configPath = Join-Path (Join-Path (Get-AdapterUserHome) '.codex') 'config.toml'
+    if (-not (Test-Path $configPath)) { return }
+
+    $appDirFull = [System.IO.Path]::GetFullPath($CodexAppDir)
+    $nestedAppDir = Join-Path $appDirFull 'codex-app'
+    $resourceDir = Join-Path $appDirFull 'resources'
+    if (-not (Test-Path $resourceDir)) { return }
+
+    $text = [System.IO.File]::ReadAllText($configPath)
+    $updated = $text
+    # EN: Older adaptation runs could leave Codex Desktop resource paths under a stale codex-app child.
+    # ZH: 早期适配运行可能把 Codex Desktop 资源路径残留在旧的 codex-app 子目录下。
+    $updated = $updated.Replace((Join-Path $nestedAppDir 'resources/node_repl'), (Join-Path $resourceDir 'node_repl'))
+    $updated = $updated.Replace((Join-Path $nestedAppDir 'resources/node-runtime/bin/node'), (Join-Path $resourceDir 'node-runtime/bin/node'))
+
+    if ($updated -ne $text) {
+        $backupPath = "$configPath.codex-plusplus-linux-pathfix-$(Get-Date -Format 'yyyyMMddHHmmss').bak"
+        [System.IO.File]::WriteAllText($backupPath, $text)
+        [System.IO.File]::WriteAllText($configPath, $updated)
+        Add-AdapterLog "Repaired stale Codex Desktop resource paths in config.toml: $configPath"
+    }
+}
+
 function Clear-CodexPlusPlusLatestStatus {
     param([string]$CodexAppDir)
     $path = Get-CodexPlusPlusSessionPath 'latest-status.json'
@@ -583,7 +614,53 @@ function Sync-CodexPlusPlusUserState {
         -SourceRoot $SourceRoot `
         -CodexPlusPlusVersion $CodexPlusPlusVersion `
         -CodexDesktopVersion $CodexDesktopVersion
+    Install-LegacyCodexPlusPlusUserCommands -InstallRoot $InstallRoot
+    Repair-CodexDesktopResourcePathsInConfig -CodexAppDir $CodexAppDir
     Clear-CodexPlusPlusLatestStatus -CodexAppDir $CodexAppDir
+}
+
+function Write-AdapterShellWrapper {
+    param(
+        [string]$PathValue,
+        [string]$TargetPath
+    )
+    [void][System.IO.Directory]::CreateDirectory(([System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($PathValue))))
+    $targetQuoted = Quote-ShSingle ([System.IO.Path]::GetFullPath($TargetPath))
+    $wrapperText = @"
+#!/bin/sh
+# Managed by CodexPlusPlus on Linux.
+exec $targetQuoted "`$@"
+"@
+    [System.IO.File]::WriteAllText($PathValue, $wrapperText)
+    if (Test-CommandAvailable 'chmod') {
+        Invoke-External -FilePath 'chmod' -Arguments @('+x', $PathValue) | Out-Null
+    }
+}
+
+function Install-LegacyCodexPlusPlusUserCommands {
+    param([string]$InstallRoot)
+    # EN: Preserve the existing user-level command/link names, but make their targets follow the current install root.
+    # ZH: 保留既有用户级命令/链接名称，但让其目标跟随当前安装根目录。
+    $legacyBinDir = Get-CodexPlusPlusLegacyUserBinDir
+    $binDir = Join-Path $InstallRoot 'install'
+    Write-AdapterShellWrapper `
+        -PathValue (Join-Path $legacyBinDir 'codex-plusplus') `
+        -TargetPath (Join-Path $binDir 'launch-codex-plus-plus')
+    Write-AdapterShellWrapper `
+        -PathValue (Join-Path $legacyBinDir 'codexplusplus') `
+        -TargetPath (Join-Path $binDir 'codex-plus-plus-manager')
+    Add-AdapterLog "Repaired legacy Codex++ user commands: $legacyBinDir"
+}
+
+function Remove-LegacyCodexPlusPlusUserCommands {
+    $legacyBinDir = Get-CodexPlusPlusLegacyUserBinDir
+    foreach ($name in @('codex-plusplus', 'codexplusplus')) {
+        $path = Join-Path $legacyBinDir $name
+        if (Test-Path $path) { Remove-Item -LiteralPath $path -Force }
+    }
+    if ((Test-Path $legacyBinDir) -and (@(Get-ChildItem -LiteralPath $legacyBinDir -Force -ErrorAction SilentlyContinue).Count -eq 0)) {
+        Remove-Item -LiteralPath $legacyBinDir -Force
+    }
 }
 
 function Test-AdapterSamePath {
@@ -774,6 +851,39 @@ function Find-ExtractedSourceRoot {
     throw "Could not locate Codex++ source root in $Directory"
 }
 
+function Test-CodexPlusPlusSourceRoot {
+    param([string]$PathValue)
+    if ([string]::IsNullOrWhiteSpace($PathValue)) { return $false }
+    # EN: Cargo.toml alone is not enough; wrapper/project folders may contain metadata without Codex++ core sources.
+    # ZH: 仅有 Cargo.toml 并不足够；外层项目目录可能只有元数据，却没有 Codex++ 核心源码。
+    return (Test-Path (Join-Path $PathValue 'Cargo.toml')) -and
+        (Test-Path (Join-Path $PathValue 'crates/codex-plus-core/src/app_paths.rs'))
+}
+
+function Resolve-CodexPlusPlusSourceRoot {
+    param([string]$PathValue)
+    $root = Expand-AdapterPath $PathValue
+    $rootFull = [System.IO.Path]::GetFullPath($root)
+
+    if (Test-CodexPlusPlusSourceRoot $rootFull) { return $rootFull }
+
+    $nestedSrc = Join-Path $rootFull 'src'
+    if (Test-CodexPlusPlusSourceRoot $nestedSrc) {
+        # EN: The adaptation repo may vendor upstream Codex++ under CodexPlusPlus/src for study and traceability.
+        # ZH: 适配项目可能为了便于研究与追踪，把上游 Codex++ 收纳在 CodexPlusPlus/src 下。
+        return [System.IO.Path]::GetFullPath($nestedSrc)
+    }
+
+    # EN: One extra shallow scan covers release archives or local staging folders without accepting unrelated trees.
+    # ZH: 额外做一层浅扫描，兼容 release 解包和本地暂存目录，同时避免误收无关目录。
+    $candidates = @(Get-ChildItem -LiteralPath $rootFull -Directory -ErrorAction SilentlyContinue | Where-Object {
+        Test-CodexPlusPlusSourceRoot $_.FullName
+    })
+    if ($candidates.Count -eq 1) { return [System.IO.Path]::GetFullPath($candidates[0].FullName) }
+
+    throw "Codex++ local source does not look like a source root: $rootFull. Expected Cargo.toml and crates/codex-plus-core/src/app_paths.rs, or a nested src directory with those files."
+}
+
 # =============================================================================
 # Snippet manifest / 片段清单
 # =============================================================================
@@ -819,6 +929,13 @@ function Apply-SnippetPatch {
     $patchPath = Join-Path $repo ([string]$Snippet.patch)
     if (-not (Test-Path $patchPath)) {
         throw "Patch attachment not found: $patchPath"
+    }
+    $patchText = [System.IO.File]::ReadAllText($patchPath)
+    if ([string]::IsNullOrWhiteSpace($patchText)) {
+        # EN: Some adaptation snippets become no-ops after the pinned upstream baseline absorbs the same fix.
+        # ZH: 当固定的上游基线已经吸收同类修复时，部分适配片段会变成空补丁，应明确跳过。
+        Add-AdapterLog "Snippet is empty on this upstream baseline; skipping: $($Snippet.id)"
+        return
     }
     # EN: The install work tree may live under another Git repository, such as CodexDesktop itself.
     # ZH: 安装工作目录可能位于另一个 Git 仓库内部，例如 CodexDesktop 自身仓库。
@@ -913,6 +1030,8 @@ function Assert-SourceLinuxAdaptationApplied {
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/launcher.rs') '"--new-instance"' 'Linux start.sh new-instance argument'
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/launcher.rs') 'CODEX_WEBVIEW_PORT' 'Linux Codex++ webview port environment'
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/launcher.rs') 'Access-Control-Allow-Private-Network' 'Linux helper private-network CORS marker'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/watcher.rs') 'filter_killable_unix_launcher_processes' 'Linux stale launcher cleanup marker'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/watcher.rs') 'launch-codex-plus-plus' 'Linux launcher wrapper cleanup marker'
     Assert-TextFileContains (Join-Path $SourceRoot 'apps/codex-plus-manager/src-tauri/src/commands.rs') 'inspect_entrypoints_for_app(codex_app_path.as_deref())' 'Linux manager overview entrypoint resolver'
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/install/mod.rs') 'linuxAdapterInstallRoot' 'Linux adapter state install root'
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/install/mod.rs') 'codex-plus-plus.desktop' 'Linux upstream-style desktop entry name'
@@ -927,6 +1046,7 @@ function Assert-SourceLinuxAdaptationApplied {
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/user_scripts.rs') 'codexPlusLinuxUserScriptLocation' 'Linux user script location alias'
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/codex_sqlite.rs') 'local_thread_catalog' 'Linux Codex local thread catalog discovery'
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-data/src/provider_sync.rs') 'collect_local_catalog_threads' 'Linux local thread catalog provider sync backfill'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/app_paths.rs') 'linuxAdapterDesktopEntryPath' 'Linux stale state desktop entry recovery'
     Add-AdapterLog "Verified Linux adaptation markers in patched source."
 }
 
@@ -940,10 +1060,16 @@ function Assert-InstalledLinuxAdaptationApplied {
     Assert-BinaryContainsAsciiLiteral $launcher 'start.sh' 'Linux start.sh launcher marker'
     Assert-BinaryContainsAsciiLiteral $launcher 'CODEX_WEBVIEW_PORT' 'Linux webview environment marker'
     Assert-BinaryContainsAsciiLiteral $launcher 'Access-Control-Allow-Private-Network' 'Linux helper private-network CORS marker'
+    # EN: Optimized release builds may keep the cleanup function symbol but fold away the timeout log string.
+    # ZH: 优化后的 release 构建可能保留清理函数符号，但会折叠掉超时日志字符串。
+    Assert-BinaryContainsAsciiLiteral $launcher 'filter_killable_unix_launcher_processes' 'Linux stale launcher cleanup marker'
+    Assert-BinaryContainsAsciiLiteral $launcher 'launch-codex-plus-plus' 'Linux launcher wrapper cleanup marker'
     Assert-BinaryContainsAsciiLiteral $launcher 'codexServiceTierLinuxComposerFooters' 'Linux Fast badge composer marker'
     Assert-BinaryContainsAsciiLiteral $launcher 'codexServiceTierBackendBlocksLocalOverride' 'Linux Fast badge transient backend checking marker'
     Assert-BinaryContainsAsciiLiteral $launcher 'codexPlusLinuxUserScriptLocation' 'Linux user script location alias marker'
+    Assert-BinaryContainsAsciiLiteral $launcher 'linuxAdapterDesktopEntryPath' 'Linux stale state desktop entry recovery marker'
     Assert-BinaryContainsAsciiLiteral $manager 'linuxAdapterInstallRoot' 'Linux state entrypoint marker'
+    Assert-BinaryContainsAsciiLiteral $manager 'linuxAdapterDesktopEntryPath' 'Linux stale state desktop entry recovery marker'
     Assert-BinaryContainsAsciiLiteral $manager 'codex-plus-plus.desktop' 'Linux desktop entry marker'
     Add-AdapterLog "Verified Linux adaptation markers in installed binaries."
 }
@@ -988,7 +1114,15 @@ function Prepare-Source {
     [void][System.IO.Directory]::CreateDirectory($downloadRoot)
 
     if (-not [string]::IsNullOrWhiteSpace($CodexPlusPlusLocalSource)) {
-        $local = Expand-AdapterPath $CodexPlusPlusLocalSource
+        $local = Resolve-CodexPlusPlusSourceRoot $CodexPlusPlusLocalSource
+        $sourceRootFull = [System.IO.Path]::GetFullPath($sourceRoot)
+        $localFull = [System.IO.Path]::GetFullPath($local)
+        if (Test-AdapterSamePath $localFull $sourceRootFull) {
+            # EN: Reuse the prepared work/source tree in place instead of deleting it while copying from itself.
+            # ZH: 当本地源码就是已准备好的 work/source 时，原地复用，避免从自身复制前先删除自身。
+            Add-AdapterLog "Using prepared Codex++ work/source in place: $localFull"
+            return $sourceRoot
+        }
         Add-AdapterLog "Using local Codex++ source: $local"
         Copy-DirectoryTree -Source $local -Destination $sourceRoot
         return $sourceRoot
@@ -1021,15 +1155,9 @@ function Prepare-Source {
     try {
         Invoke-WebRequest -Uri $CodexPlusPlusVersionZipUrl -OutFile $zip
     } catch {
-        # EN: Falling back keeps the script usable, but the pinned tag is the supported patch baseline.
-        # ZH: 回退分支保证脚本可用，但固定 tag 才是当前补丁支持的基线。
-        Add-AdapterLog "$CodexPlusPlusReleaseTag.zip failed, trying main.zip"
-        try {
-            Invoke-WebRequest -Uri $CodexPlusPlusMainZipUrl -OutFile $zip
-        } catch {
-            Add-AdapterLog "main.zip failed, trying master.zip"
-            Invoke-WebRequest -Uri $CodexPlusPlusMasterZipUrl -OutFile $zip
-        }
+        # EN: Never switch to main/master implicitly; every adaptation round is tied to one upstream baseline.
+        # ZH: 严禁隐式切换到 main/master；每轮适配都必须固定在一个上游基线版本上。
+        throw "Failed to download pinned Codex++ source $CodexPlusPlusReleaseTag. Provide -CodexPlusPlusLocalSourcePath or -CodexPlusPlusReleasePackage instead. Original error: $($_.Exception.Message)"
     }
     $extractDir = Join-Path $downloadRoot 'source-zip'
     if (Test-Path $extractDir) { [System.IO.Directory]::Delete($extractDir, $true) }
@@ -1313,16 +1441,26 @@ function Install-AdaptedBinaries {
     $targetDir = Join-Path $SourceRoot "target/$profile"
     $launcher = Join-Path $targetDir 'codex-plus-plus'
     $manager = Join-Path $targetDir 'codex-plus-plus-manager'
-    if (-not (Test-Path $launcher)) { throw "Launcher binary not found: $launcher" }
-    if (-not (Test-Path $manager)) { throw "Manager binary not found: $manager" }
 
     $binDir = Join-Path $InstallRoot 'install'
     [void][System.IO.Directory]::CreateDirectory($binDir)
-    Install-ExecutableFile -Source $launcher -Destination (Join-Path $binDir 'codex-plus-plus')
-    Install-ExecutableFile -Source $manager -Destination (Join-Path $binDir 'codex-plus-plus-manager')
+    $installedLauncher = Join-Path $binDir 'codex-plus-plus'
+    $installedManager = Join-Path $binDir 'codex-plus-plus-manager'
+
+    if ((Test-Path $launcher) -and (Test-Path $manager)) {
+        Install-ExecutableFile -Source $launcher -Destination $installedLauncher
+        Install-ExecutableFile -Source $manager -Destination $installedManager
+    } elseif ($SkipBuild -and (Test-Path $installedLauncher) -and (Test-Path $installedManager)) {
+        # EN: A SkipBuild maintenance run may only need to repair wrapper, desktop entries, and state.
+        # ZH: SkipBuild 维护运行可能只需要修复 wrapper、desktop 入口和状态文件。
+        Add-AdapterLog "Build output is missing; reusing already installed binaries for SkipBuild maintenance run."
+    } else {
+        if (-not (Test-Path $launcher)) { throw "Launcher binary not found: $launcher" }
+        if (-not (Test-Path $manager)) { throw "Manager binary not found: $manager" }
+    }
 
     $wrapper = Join-Path $binDir 'launch-codex-plus-plus'
-    $launcherQuoted = Quote-ShSingle ([System.IO.Path]::GetFullPath((Join-Path $binDir 'codex-plus-plus')))
+    $launcherQuoted = Quote-ShSingle ([System.IO.Path]::GetFullPath($installedLauncher))
     $appQuoted = Quote-ShSingle ([System.IO.Path]::GetFullPath($CodexAppDir))
     $wrapperText = @"
 #!/bin/sh
@@ -1331,7 +1469,7 @@ exec $launcherQuoted --app-path $appQuoted "`$@"
 "@
     [System.IO.File]::WriteAllText($wrapper, $wrapperText)
     if (Test-CommandAvailable 'chmod') {
-        Invoke-External -FilePath 'chmod' -Arguments @('+x', (Join-Path $binDir 'codex-plus-plus'), (Join-Path $binDir 'codex-plus-plus-manager'), $wrapper) | Out-Null
+        Invoke-External -FilePath 'chmod' -Arguments @('+x', $installedLauncher, $installedManager, $wrapper) | Out-Null
     }
 
     $readme = Join-Path $binDir 'README-linux-adapter.txt'
@@ -1371,6 +1509,7 @@ function Uninstall-AdaptedCodexPlusPlus {
         'codex-plus-plus-linux.desktop',
         'codex-plus-plus-manager-linux.desktop'
     )
+    Remove-LegacyCodexPlusPlusUserCommands
     Clear-CodexPlusPlusStateForUninstall -InstallRoot $InstallRoot -CodexAppDirs $CodexAppDirs
 }
 
@@ -1481,6 +1620,12 @@ function Invoke-SelfTest {
             throw "VERSION ($projectVersion) does not match pinned upstream version ($CodexPlusPlusUpstreamVersion)"
         }
     }
+    $scriptText = [System.IO.File]::ReadAllText($PSCommandPath)
+    # EN: The installer must not silently chase upstream main/master when a fixed baseline download fails.
+    # ZH: 固定基线下载失败时，安装脚本不能静默追随上游 main/master。
+    if ($scriptText -match 'trying main\.zip|trying master\.zip') {
+        throw 'Installer still contains implicit upstream main/master fallback.'
+    }
     $layoutTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("codexpp-layout-selftest-{0}" -f ([Guid]::NewGuid().ToString('N')))
     try {
         $directRoot = Join-Path $layoutTestRoot 'CodexDesktop'
@@ -1523,6 +1668,51 @@ function Invoke-SelfTest {
             throw 'Existing nested Codex++ install path was not found.'
         }
 
+        $sourceLayoutRoot = Join-Path $layoutTestRoot 'codex-plusplus-source-layouts'
+        $nestedSourceOuter = Join-Path $sourceLayoutRoot 'CodexPlusPlus'
+        $nestedSourceRoot = Join-Path $nestedSourceOuter 'src'
+        [void][System.IO.Directory]::CreateDirectory((Join-Path $nestedSourceRoot 'crates/codex-plus-core/src'))
+        [System.IO.File]::WriteAllText((Join-Path $nestedSourceRoot 'Cargo.toml'), "[workspace]`n")
+        [System.IO.File]::WriteAllText((Join-Path $nestedSourceRoot 'crates/codex-plus-core/src/app_paths.rs'), "// selftest`n")
+        $resolvedNestedSource = Resolve-CodexPlusPlusSourceRoot $nestedSourceOuter
+        if ([System.IO.Path]::GetFullPath($resolvedNestedSource) -ne [System.IO.Path]::GetFullPath($nestedSourceRoot)) {
+            throw 'Nested CodexPlusPlus/src local source root was not resolved correctly.'
+        }
+
+        $wrongCargoRoot = Join-Path $sourceLayoutRoot 'wrong-cargo-root'
+        [void][System.IO.Directory]::CreateDirectory($wrongCargoRoot)
+        [System.IO.File]::WriteAllText((Join-Path $wrongCargoRoot 'Cargo.toml'), "[workspace]`n")
+        $wrongRootRejected = $false
+        try {
+            [void](Resolve-CodexPlusPlusSourceRoot $wrongCargoRoot)
+        } catch {
+            $wrongRootRejected = $true
+        }
+        if (-not $wrongRootRejected) {
+            throw 'Cargo.toml-only local source root was accepted without Codex++ core files.'
+        }
+
+        $preparedWorkRoot = Join-Path $sourceLayoutRoot 'prepared-work'
+        $preparedSourceRoot = Join-Path $preparedWorkRoot 'source'
+        [void][System.IO.Directory]::CreateDirectory((Join-Path $preparedSourceRoot 'crates/codex-plus-core/src'))
+        [System.IO.File]::WriteAllText((Join-Path $preparedSourceRoot 'Cargo.toml'), "[workspace]`n")
+        [System.IO.File]::WriteAllText((Join-Path $preparedSourceRoot 'crates/codex-plus-core/src/app_paths.rs'), "// prepared source`n")
+        $oldLocalSource = $script:CodexPlusPlusLocalSource
+        try {
+            $script:CodexPlusPlusLocalSource = $preparedSourceRoot
+            # EN: A configured local source may intentionally point at the existing prepared work/source tree.
+            # ZH: 配置中的本地源码路径可能有意指向现有已准备好的 work/source 源码树。
+            $resolvedPreparedSource = Prepare-Source $preparedWorkRoot
+            if ([System.IO.Path]::GetFullPath($resolvedPreparedSource) -ne [System.IO.Path]::GetFullPath($preparedSourceRoot)) {
+                throw 'Prepared work/source local source was not reused in place.'
+            }
+            if (-not (Test-Path (Join-Path $preparedSourceRoot 'crates/codex-plus-core/src/app_paths.rs'))) {
+                throw 'Prepared work/source local source was removed during source preparation.'
+            }
+        } finally {
+            $script:CodexPlusPlusLocalSource = $oldLocalSource
+        }
+
         # EN: Uninstall must not leave user-level state pointing at removed Linux adapter entrypoints.
         # ZH: 卸载后不能留下仍指向已删除 Linux 适配入口的用户级状态文件。
         $oldHome = $env:HOME
@@ -1533,10 +1723,18 @@ function Invoke-SelfTest {
             $testInstallRoot = $directInstall
             $testBinDir = Join-Path $testInstallRoot 'install'
             $testSourceRoot = Join-Path $testInstallRoot 'work/source'
+            $legacyBinDir = Join-Path (Get-AdapterXdgDataHome) 'codex-plusplus/bin'
             [void][System.IO.Directory]::CreateDirectory($testBinDir)
             [void][System.IO.Directory]::CreateDirectory($testSourceRoot)
+            [void][System.IO.Directory]::CreateDirectory($legacyBinDir)
             foreach ($name in @('codex-plus-plus', 'codex-plus-plus-manager', 'launch-codex-plus-plus', 'README-linux-adapter.txt')) {
                 [System.IO.File]::WriteAllText((Join-Path $testBinDir $name), "selftest`n")
+            }
+            foreach ($name in @('codex-plusplus', 'codexplusplus')) {
+                [System.IO.File]::WriteAllText(
+                    (Join-Path $legacyBinDir $name),
+                    "#!/bin/sh`nexec `"/stale/codex-plusplus/source/packages/installer/dist/cli.js`" `"`$@`"`n"
+                )
             }
             Sync-CodexPlusPlusUserState `
                 -CodexAppDir $directRoot `
@@ -1544,6 +1742,14 @@ function Invoke-SelfTest {
                 -SourceRoot $testSourceRoot `
                 -CodexPlusPlusVersion 'selftest' `
                 -CodexDesktopVersion 'direct'
+            $legacyLauncherText = [System.IO.File]::ReadAllText((Join-Path $legacyBinDir 'codex-plusplus'))
+            $legacyManagerText = [System.IO.File]::ReadAllText((Join-Path $legacyBinDir 'codexplusplus'))
+            if ($legacyLauncherText.Contains('/stale/') -or -not $legacyLauncherText.Contains('launch-codex-plus-plus')) {
+                throw 'Install/update did not repair the legacy codex-plusplus user command.'
+            }
+            if ($legacyManagerText.Contains('/stale/') -or -not $legacyManagerText.Contains('codex-plus-plus-manager')) {
+                throw 'Install/update did not repair the legacy codexplusplus user command.'
+            }
             Uninstall-AdaptedCodexPlusPlus $testInstallRoot
 
             $statePath = Join-Path (Get-AdapterXdgDataHome) 'codex-plusplus/state.json'
@@ -1558,6 +1764,11 @@ function Invoke-SelfTest {
                 $settingsText = [System.IO.File]::ReadAllText($settingsPath)
                 if ($settingsText.Contains([System.IO.Path]::GetFullPath($directRoot))) {
                     throw 'Uninstall left stale Codex++ manager codexAppPath.'
+                }
+            }
+            foreach ($name in @('codex-plusplus', 'codexplusplus')) {
+                if (Test-Path (Join-Path $legacyBinDir $name)) {
+                    throw "Uninstall left stale legacy user command: $name"
                 }
             }
         } finally {
@@ -1606,7 +1817,7 @@ try {
             # EN: Maintainers often replay snippets against an explicit clean upstream checkout before install.
             # ZH: 维护者常需要在安装前，先对明确指定的干净上游源码树重放片段。
             if (-not [string]::IsNullOrWhiteSpace($CodexPlusPlusLocalSource)) {
-                $sourceRoot = Expand-AdapterPath $CodexPlusPlusLocalSource
+                $sourceRoot = Resolve-CodexPlusPlusSourceRoot $CodexPlusPlusLocalSource
             } else {
                 # EN: Without an explicit source path, keep the historical behavior of using the prepared install work tree.
                 # ZH: 未明确指定源码路径时，保留原先使用安装工作目录 prepared source 的行为。

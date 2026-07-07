@@ -316,7 +316,13 @@ remove_tree_if_exists() {
 
     [ -e "$path" ] || return 0
     make_tree_owner_writable "$path"
-    rm -rf "$path"
+    if rm -rf "$path"; then
+        return 0
+    fi
+    # EN: Deleted-but-open NFS files can keep .nfs* entries busy; cache cleanup must not abort startup.
+    # ZH: NFS 会把已删除但仍被占用的文件保留为 .nfs*；缓存清理失败不能中断启动。
+    echo "Could not remove $path; continuing with existing cache." >&2
+    return 0
 }
 
 replace_symlink() {

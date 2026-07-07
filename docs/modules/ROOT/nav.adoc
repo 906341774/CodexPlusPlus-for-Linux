@@ -1,11 +1,14 @@
 * English
 ** xref:index.adoc[Overview]
 ** xref:snippets.adoc[Linux adaptation snippets]
+** xref:maintenance-workflow.adoc[Maintenance workflow]
 ** xref:adapter-workflow.adoc[Recurring adaptation workflow]
 ** xref:maintenance/2026-07-02-v1.2.28-completed.adoc[v1.2.28 completed]
+** xref:maintenance/2026-07-07-v1.2.28-host-regression-hotfix.adoc[v1.2.28 host regression hotfix]
 ** xref:maintenance/2026-07-01-v1.2.27-first-attempt.adoc[v1.2.27 first attempt]
 ** xref:maintenance/2026-07-01-v1.2.25-first-attempt.adoc[v1.2.25 first attempt]
 * 简体中文
 ** xref:index_zh-CN.adoc[概览]
 ** xref:snippets_zh-CN.adoc[Linux 适配片段]
+** xref:maintenance-workflow_zh-CN.adoc[维护流程]
 ** xref:adapter-workflow_zh-CN.adoc[定期适配工作流]

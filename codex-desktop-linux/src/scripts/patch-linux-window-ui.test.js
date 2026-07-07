@@ -121,6 +121,7 @@ const {
   applyPersistentRateLimitFooterPatch,
   applyLinuxAppServerFeatureEnablementPatch,
   applyLinuxChatSearchHydrationPatch,
+  applyLinuxLocalConversationRouteHydrationPatch,
   applyLinuxLocalThreadCatalogInitialSnapshotPatch,
   applyLinuxConfigWriteVersionConflictPatch,
   applyLinuxI18nGatePatch,
@@ -756,6 +757,7 @@ test("default core patch descriptors are grouped and unique", () => {
     "linux-app-server-feature-enablement",
     "linux-app-server-backfill-wait",
     "linux-local-thread-catalog-preserve-backfill",
+    "linux-local-conversation-route-hydration",
     "linux-local-thread-catalog-initial-snapshot",
     "linux-skills-list-dedupe",
     "linux-config-write-version-conflict",
@@ -4795,6 +4797,26 @@ test("normalizes local thread catalog seconds timestamps before rendering summar
   assert.equal(context.result.recencyAt, 1782237420117);
 });
 
+test("marks local thread catalog summaries as resumable snapshots", () => {
+  const source =
+    "function cFt(e){return{conversationId:J(e.threadId),hostId:e.hostId,createdAt:e.sourceCreatedAt,updatedAt:e.sourceUpdatedAt,recencyAt:e.sourceUpdatedAt,title:e.displayTitle,cwd:e.cwd,gitInfo:null,hasUnreadTurn:!1,modelProvider:e.modelProvider,parentThreadId:null,source:null,threadSource:null,threadRuntimeStatus:{type:`idle`},workspaceKind:e.cwd===`~`?`projectless`:`project`}}";
+
+  const patched = applyPatchTwice(
+    applyLinuxLocalThreadCatalogInitialSnapshotPatch,
+    source,
+  );
+  const context = {
+    result: null,
+  };
+  vm.runInNewContext(
+    `const J = (value) => value; ${patched}; result = cFt({threadId:'thread-1',hostId:'local',sourceCreatedAt:1782237000.5,sourceUpdatedAt:1782237420.117,displayTitle:'Title',cwd:'/tmp/project',modelProvider:'openai'});`,
+    context,
+  );
+
+  assert.equal(context.result.resumeState, "needs_resume");
+  assert.equal(context.result.streamRole, null);
+});
+
 test("preserves provider-sync backfilled rollout catalog rows during full scans", () => {
   const source = [
     "class F7{completeScan(e,t){this.assertActiveScan(e);let n=this.runInTransaction(()=>{let n=[],r=[];if(e.mode===`full`){let i=this.mutateThreadIds(`UPDATE local_thread_catalog AS catalog\\n           SET missing_candidate = 0,\\n               observation_sequence = ?\\n           WHERE host_id = ?\\n             AND missing_candidate != 0\\n             AND observation_sequence <= ?\\n             AND EXISTS (\\n               SELECT 1 FROM local_thread_catalog_seen AS seen\\n               WHERE seen.host_id = catalog.host_id\\n                 AND seen.thread_id = catalog.thread_id\\n             )\\n           RETURNING thread_id`,e.observationSequence,this.hostId,e.observationSequence),a=this.mutateThreadIds(`UPDATE local_thread_catalog AS catalog\\n           SET missing_candidate = 1,\\n               observation_sequence = ?\\n           WHERE host_id = ?\\n             AND missing_candidate = 0\\n             AND observation_sequence <= ?\\n             AND NOT EXISTS (\\n               SELECT 1 FROM local_thread_catalog_seen AS seen\\n               WHERE seen.host_id = catalog.host_id\\n                 AND seen.thread_id = catalog.thread_id\\n             )\\n           RETURNING thread_id`,e.observationSequence,this.hostId,e.observationSequence);this.db.prepare(`DELETE FROM local_thread_catalog AS catalog\\n             WHERE host_id = ?\\n               AND missing_candidate != 0\\n               AND observation_sequence < ?\\n               AND NOT EXISTS (\\n                 SELECT 1 FROM local_thread_catalog_seen AS seen\\n                 WHERE seen.host_id = catalog.host_id\\n                   AND seen.thread_id = catalog.thread_id\\n               )`).run(this.hostId,e.observationSequence)}})}}",
@@ -5982,6 +6004,40 @@ test("hydrates current local chat search route helper before navigating", () => 
     patched,
     /async function MI\(e,t,n,r\)\{switch\(e\.kind\)\{case`local`:await codexLinuxHydrateSearchConversation\(e,e\.threadKey\);Yh\(e\.threadKey,t,n\);return;case`remote`:Yh\(e\.threadKey,t,n\);return;case`chatgpt`:return\}\}/,
   );
+});
+
+test("hydrates local conversation route before attempting resume", () => {
+  const source =
+    "function yS(e){let t=ht(oe),n=xr(),{activeMode:i}=Ua(e),{data:a}=k(Bn),o=a?.roots,c=Y(In,e);Y(s,e);let[l,u]=(0,wS.useState)(c),d=(0,wS.useRef)(null),f=(0,wS.useRef)(null),p=(0,wS.useRef)(!1),m=(0,wS.useRef)(null),[h,g]=(0,wS.useState)(0),_=(0,wS.useEffectEvent)(async e=>{try{u(!0),d.current=e;let n=t.get(s,e);await Mt(`maybe-resume-conversation`,{hostId:n,conversationId:e,model:null,serviceTier:await Js(t,n,i?.settings.model??null),reasoningEffort:null,workspaceRoots:o??[],collaborationMode:i,showThreadGoalResumeConfirmation:!1})}catch(i){}});return(0,wS.useEffect)(()=>{e&&c&&e!==d.current&&e!==m.current&&_(e)},[c,e,h]),{isResuming:c&&l}}";
+
+  const patched = applyPatchTwice(
+    applyLinuxLocalConversationRouteHydrationPatch,
+    source,
+  );
+
+  assert.match(patched, /function codexLinuxHydrateRouteConversation/);
+  assert.match(
+    patched,
+    /Mt\(`load-recent-conversation-ids-for-host`,\{hostId:n,conversationIds:\[t\]\}\)/,
+  );
+  assert.match(
+    patched,
+    /let n=t\.get\(s,e\);await codexLinuxHydrateRouteConversation\(n,e\);await Mt\(`maybe-resume-conversation`/,
+  );
+  assert.match(patched, /,c=Y\(In,e\)\?\?!0;Y\(s,e\);let\[l,u\]=\(0,wS\.useState\)\(c\)/);
+});
+
+test("upgrades local conversation route hydration to resume missing snapshots", () => {
+  const source =
+    "function yS(e){let t=ht(oe),n=xr(),{activeMode:i}=Ua(e),{data:a}=k(Bn),o=a?.roots,c=Y(In,e);Y(s,e);let[l,u]=(0,wS.useState)(c),d=(0,wS.useRef)(null),_=(0,wS.useEffectEvent)(async e=>{try{function codexLinuxHydrateRouteConversation(e,t){try{let n=e??`local`,r=Mt(`load-recent-conversation-ids-for-host`,{hostId:n,conversationIds:[t]}),i=new Promise(e=>globalThis.setTimeout(e,1500));return Promise.race([r,i]).catch(()=>{})}catch{return Promise.resolve()}}let n=t.get(s,e);await codexLinuxHydrateRouteConversation(n,e);await Mt(`maybe-resume-conversation`,{hostId:n,conversationId:e,model:null})}catch(i){}});return(0,wS.useEffect)(()=>{e&&c&&e!==d.current&&_(e)},[c,e]),{isResuming:c&&l}}";
+
+  const patched = applyPatchTwice(
+    applyLinuxLocalConversationRouteHydrationPatch,
+    source,
+  );
+
+  assert.match(patched, /,c=Y\(In,e\)\?\?!0;Y\(s,e\);let\[l,u\]=\(0,wS\.useState\)\(c\)/);
+  assert.equal((patched.match(/function codexLinuxHydrateRouteConversation/g) || []).length, 1);
 });
 
 test("resolves the requested live Linux Browser Use route window by id", () => {

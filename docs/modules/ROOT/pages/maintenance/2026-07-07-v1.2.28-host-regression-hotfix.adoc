@@ -1,0 +1,130 @@
+= Codex++ v1.2.28 host regression hotfix
+:toc:
+:toclevels: 2
+
+Date: 2026-07-07
+
+== Scope
+
+This note records the host regressions found after the `v1.2.28` Linux adaptation and the fixes that must remain attached to the `v1.2.28` baseline.
+
+The affected host install was rooted at:
+
+[source,text]
+----
+$HOME/opt/CodexDesktop
+----
+
+== Findings
+
+=== Codex++ version regressed to 1.2.25
+
+The manager UI showed `Codex++ 1.2.25` even though the adaptation round and installer script were pinned to `v1.2.28`.
+
+Evidence:
+
+* `$HOME/.local/share/codex-plusplus/state.json` still recorded `"version": "1.2.25"`.
+* The installed binaries under `$HOME/opt/CodexDesktop/.codex-plusplus/install/` contained `CodexPlusPlus/1.2.25`.
+* The vendored workspace `CodexPlusPlus/src/Cargo.toml` still declared `version = "1.2.25"`.
+
+Root cause:
+
+* Later host-side repair attempts rebuilt from the vendored source tree whose workspace version had not been updated to the pinned `v1.2.28` baseline.
+* The installer script's pinned version variable was correct, but the repository did not have a workflow assertion that the vendored Cargo workspace version matched it.
+
+Fix:
+
+* Update `CodexPlusPlus/src/Cargo.toml` to `version = "1.2.28"`.
+* Add a workflow contract assertion so future adaptation runs fail if the vendored workspace version drifts from the pinned baseline.
+
+=== Linux features showed None
+
+The Codex Desktop LinuxDesktop settings tab showed `Enabled features: none`.
+
+Evidence:
+
+* `$HOME/opt/CodexDesktop/.codex-linux/build-info.json` and `resources/codex-linux-build-info.json` both contained `"linuxFeatures": { "enabled": [] }`.
+* `$HOME/opt/CodexDesktop/.codex-linux/linux-features-staged.json` contained empty `resources` and `runtimeHooks`.
+* The committed `codex-desktop-linux/src/linux-features/features.example.json` intentionally has an empty `enabled` list, and no local `features.json` was active for that build.
+
+Root cause:
+
+* The Podman build used the default feature config. No optional linux-features were enabled through `CODEX_LINUX_FEATURES`, `CODEX_LINUX_FEATURES_CONFIG`, or an active `linux-features/features.json`.
+* The settings UI was reporting build metadata correctly; this was not a settings-page rendering bug.
+
+Fix:
+
+* Keep optional linux-features disabled by default, as required by `codex-desktop-linux/src/AGENTS.md`.
+* For future builds that should include optional features, pass an explicit feature config or `CODEX_LINUX_FEATURES` during the Codex Desktop Linux build and archive that build-info metadata with the artifact.
+
+=== Visible local conversations could fail to open
+
+Some conversations appeared in the Codex Desktop project history list but clicking them left the right pane on the Codex loading icon. The concrete local example was:
+
+[source,text]
+----
+cwd: /home/deck/opt/LLMAccountPoolAPIProxy
+thread_id: 019ee62e-98ba-7c42-8a70-aa5a6f39e45f
+----
+
+Evidence:
+
+* The rollout file existed at `$HOME/.codex/sessions/2026/06/21/rollout-2026-06-21T01-57-54-019ee62e-98ba-7c42-8a70-aa5a6f39e45f.jsonl`.
+* The file contained 10223 JSONL records and was about 16.9 MB.
+* `codex-dev.db` had a valid `local_thread_catalog` row with `source_kind = 'rollout'`, `missing_candidate = 0`, and `source_detail` pointing to the rollout file.
+
+Root cause:
+
+* The remaining failure was no longer catalog visibility. The row and source file were present.
+* The Linux webview route could call `maybe-resume-conversation` for a route-opened local conversation before the target conversation id had been loaded into the local conversation snapshot state.
+* On larger restored rollout files this could leave the page waiting on the loading state.
+
+Fix:
+
+* Add the `linux-local-conversation-route-hydration` webview patch so the local conversation route calls `load-recent-conversation-ids-for-host` for the target id before `maybe-resume-conversation`.
+* Upgrade initial local thread catalog snapshot rows with `resumeState: 'needs_resume'` so restored rollout rows are treated as resumable local conversations.
+* Keep provider sync strict about openable local rows: rows without a rollout `source_detail` are marked missing, while valid rollout rows are restored.
+
+== Validation
+
+Automated validation run during this hotfix and recovery pass:
+
+[source,sh]
+----
+node --test codex-desktop-linux/src/scripts/patch-linux-window-ui.test.js
+cargo test -p codex-plus-data --test provider_sync -- --nocapture
+cargo test -p codex-plus-core --test launcher --test watcher --test cdp_bridge --test relay_config -- --nocapture
+pwsh -NoLogo -NoProfile -File ./scripts/Test-AdapterWorkflow.ps1
+----
+
+Results:
+
+* `patch-linux-window-ui.test.js`: 329 passed.
+* `provider_sync`: 26 passed.
+* `codex-plus-core` focused integration tests: 243 passed.
+* `Test-AdapterWorkflow.ps1`: `Adapter workflow contract OK`.
+
+Host validation:
+
+* Installed `codex-plus-plus` and `codex-plus-plus-manager` binaries contain `CodexPlusPlus/1.2.28`.
+* `$HOME/.local/share/codex-plusplus/state.json` records `"version": "1.2.28"` and `appRoot = "$HOME/opt/CodexDesktop"`.
+* The local database rows for `019e9dff-c5e1-7ad3-81fc-6c2a3a57232a`, `019ee62e-98ba-7c42-8a70-aa5a6f39e45f`, and `019f3184-30c4-7a00-8f45-d28f4732a0a6` all use `source_kind = 'rollout'`, have non-empty `source_detail`, and are not marked missing.
+* Local visible catalog rows with an empty opening source were reduced to `0`. Remaining empty-source visible rows belong to remote SSH hosts and are outside the local provider sync repair scope.
+
+Archived host artifact:
+
+[source,text]
+----
+docs/modules/ROOT/attachments/build-artifacts/v1.2.28/codexplusplus-linux-v1.2.28-codexdesktop-alma9-20260707-hotfix.7z
+sha256: e3d35c2b4b252031ec964763919cbd6de4e6f83b8054e5815d598af3f53bdf67
+----
+
+The artifact directory is intentionally ignored by Git so large local build archives remain local unless the maintainer explicitly promotes one into release assets.
+
+== Classification
+
+The local conversation catalog/opening fixes are `v1.2.28` compatibility fixes because they compensate for the Codex Desktop storage and webview route behavior observed with the `v1.2.28` adaptation baseline.
+
+The version regression is an adaptation repository packaging/source hygiene bug for the same baseline. It should be included in the hotfix because it directly caused host repairs to rebuild and reinstall `1.2.25` binaries during a `v1.2.28` maintenance round.
+
+The Linux features `None` observation is not a compatibility bug by itself. It is a build configuration/provenance issue: no optional features were enabled in the archived Codex Desktop Linux artifact.

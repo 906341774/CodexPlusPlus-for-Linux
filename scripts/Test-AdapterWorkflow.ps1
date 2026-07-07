@@ -161,6 +161,7 @@ Assert-TextContains 'README.adoc' '[source,powershell' 'English README keeps Cod
 Assert-TextContains 'README_zh-CN.adoc' '[source,powershell' 'Chinese README keeps Codex Desktop build example in PowerShell'
 Assert-TextContains 'README.adoc' 'Project version: `1.2.28`, synchronized with upstream Codex++ `v1.2.28`.' 'English README documents current pinned upstream version'
 Assert-TextContains 'README_zh-CN.adoc' '项目版本：`1.2.28`，与上游 Codex++ `v1.2.28` 同步。' 'Chinese README documents current pinned upstream version'
+Assert-TextContains 'CodexPlusPlus/src/Cargo.toml' 'version = "1.2.28"' 'vendored Codex++ workspace version matches current pinned upstream version'
 Assert-TextNotContains '.gitignore' "`nCodexPlusPlus/`n" 'blanket upstream Codex++ source ignore'
 Assert-TextNotContains '.gitignore' "`ncodex-desktop-linux/`n" 'blanket upstream Codex Desktop source ignore'
 Assert-TextContains 'docs/modules/ROOT/pages/snippets.adoc' 'patches/compatibility/' 'English snippets compatibility patch directory'
@@ -169,6 +170,8 @@ Assert-TextContains 'docs/modules/ROOT/pages/snippets_zh-CN.adoc' 'patches/compa
 Assert-TextContains 'docs/modules/ROOT/pages/snippets_zh-CN.adoc' 'patches/enhancements/' 'Chinese snippets enhancement patch directory'
 Assert-TextContains 'docs/modules/ROOT/pages/snippets.adoc' '080-linux-local-thread-catalog-sync' 'English snippets local thread catalog patch'
 Assert-TextContains 'docs/modules/ROOT/pages/snippets_zh-CN.adoc' '080-linux-local-thread-catalog-sync' 'Chinese snippets local thread catalog patch'
+Assert-TextContains 'docs/modules/ROOT/pages/snippets.adoc' 'route-opened local conversations' 'English snippets document local conversation route hydration'
+Assert-TextContains 'docs/modules/ROOT/pages/snippets_zh-CN.adoc' '点击后始终无法加载' 'Chinese snippets document local conversation route hydration'
 Assert-TextContains 'docs/modules/ROOT/pages/snippets.adoc' 'helper HTTP bridge routes' 'English snippets document helper bridge route fallback'
 Assert-TextContains 'docs/modules/ROOT/pages/snippets_zh-CN.adoc' 'helper HTTP bridge routes' 'Chinese snippets document helper bridge route fallback'
 Assert-TextContains 'docs/modules/ROOT/pages/snippets.adoc' 'renamed or merged Codex asset chunk fallback' 'English snippets document merged Codex asset chunk fallback'
@@ -190,6 +193,7 @@ Assert-TextContains 'docs/modules/ROOT/attachments/patches/compatibility/060-ren
 Assert-TextContains 'docs/modules/ROOT/attachments/patches/compatibility/060-renderer-linux-compatibility.patch' 'codexAppAssetImportableUrl' 'Renderer patch skips unimportable Linux app-scheme asset records'
 Assert-TextContains 'docs/modules/ROOT/attachments/patches/compatibility/060-renderer-linux-compatibility.patch' 'findCodexDispatcherClass' 'Renderer patch finds dispatcher without a fixed minified export name'
 Assert-TextContains 'docs/modules/ROOT/attachments/patches/compatibility/060-renderer-linux-compatibility.patch' 'isCodexHotkeyWindowRoute' 'Renderer patch skips main-window dispatcher patches on hotkey route'
+Assert-TextContains 'codex-desktop-linux/src/scripts/patches/core/all-linux/webview/local-conversation-route-hydration/patch.js' 'linux-local-conversation-route-hydration' 'Codex Desktop patch hydrates route-opened local conversations'
 Assert-TextContains 'docs/modules/ROOT/attachments/patches/compatibility/900-regression-tests.patch' 'default_helper_serves_settings_bridge_routes_over_http' 'Regression patch covers helper settings bridge route'
 Assert-TextContains 'docs/modules/ROOT/attachments/patches/compatibility/900-regression-tests.patch' 'injection_script_falls_back_to_helper_for_bridge_routes_when_binding_is_missing' 'Regression patch covers renderer helper fallback'
 Assert-TextContains 'docs/modules/ROOT/attachments/patches/compatibility/900-regression-tests.patch' 'linux_renderer_asset_loader_can_find_renamed_dynamic_chunks' 'Regression patch covers renamed Codex dynamic chunks'
@@ -199,6 +203,8 @@ Assert-TextContains 'docs/modules/ROOT/attachments/patches/compatibility/900-reg
 Assert-TextContains 'docs/modules/ROOT/attachments/patches/compatibility/900-regression-tests.patch' 'linux_renderer_dispatcher_patches_skip_hotkey_window_route' 'Regression patch covers hotkey-window dispatcher guard'
 Assert-TextContains 'docs/modules/ROOT/nav.adoc' 'adapter-workflow.adoc' 'English nav entry'
 Assert-TextContains 'docs/modules/ROOT/nav.adoc' 'adapter-workflow_zh-CN.adoc' 'Chinese nav entry'
+Assert-TextContains 'docs/modules/ROOT/nav.adoc' '2026-07-07-v1.2.28-host-regression-hotfix.adoc' 'Host regression hotfix maintenance note nav entry'
+Assert-TextContains 'docs/modules/ROOT/pages/maintenance/2026-07-07-v1.2.28-host-regression-hotfix.adoc' '019ee62e-98ba-7c42-8a70-aa5a6f39e45f' 'Host regression note records the concrete unopenable conversation'
 
 # EN: The AlmaLinux 9 Podman fixture is intentionally local-only. If it exists on this workstation, validate it strictly.
 # ZH: AlmaLinux 9 Podman 测试夹具按约定只保存在本机；若当前工作站存在该目录，就严格校验其内容。

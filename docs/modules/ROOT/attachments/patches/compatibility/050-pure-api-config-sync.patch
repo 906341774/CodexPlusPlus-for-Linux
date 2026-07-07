@@ -1,5 +1,5 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 6e0a240..82c3f98 100644
+index ae36878..9dd0ca2 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -426,6 +426,7 @@ dependencies = [
@@ -11,10 +11,10 @@ index 6e0a240..82c3f98 100644
   "windows 0.58.0",
   "zip",
 diff --git a/apps/codex-plus-manager/src/App.tsx b/apps/codex-plus-manager/src/App.tsx
-index 23e3b14..95f52ec 100644
+index a7aca29..991f00b 100644
 --- a/apps/codex-plus-manager/src/App.tsx
 +++ b/apps/codex-plus-manager/src/App.tsx
-@@ -6038,7 +6038,7 @@ function buildRelayConfigToml(
+@@ -6213,7 +6213,7 @@ function buildRelayConfigToml(
    profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol">,
    options: { includeBearerToken: boolean },
  ): string {
@@ -23,7 +23,7 @@ index 23e3b14..95f52ec 100644
    const apiKey = profile.apiKey.trim();
    const rootLines = [
      profile.model.trim() ? `model = "${tomlString(profile.model.trim())}"` : null,
-@@ -6050,13 +6050,32 @@ function buildRelayConfigToml(
+@@ -6225,13 +6225,32 @@ function buildRelayConfigToml(
      "[model_providers.custom]",
      'name = "custom"',
      'wire_api = "responses"',
@@ -57,7 +57,7 @@ index 23e3b14..95f52ec 100644
  function buildRelayAuthJson(profile: Pick<RelayProfile, "apiKey">): string {
    return `${JSON.stringify({ OPENAI_API_KEY: profile.apiKey.trim() }, null, 2)}\n`;
  }
-@@ -6141,7 +6160,7 @@ function applyRelayProfilePatchToFiles(
+@@ -6316,7 +6335,7 @@ function applyRelayProfilePatchToFiles(
      next.baseUrl = patch.upstreamBaseUrl || "";
    }
    if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch) {
@@ -79,7 +79,7 @@ index 2e5609e..370d132 100644
  zip.workspace = true
 
 diff --git a/crates/codex-plus-core/src/relay_config.rs b/crates/codex-plus-core/src/relay_config.rs
-index ec94ac6..f2821a7 100644
+index fc9e76a..3a3f7d1 100644
 --- a/crates/codex-plus-core/src/relay_config.rs
 +++ b/crates/codex-plus-core/src/relay_config.rs
 @@ -5,6 +5,7 @@ use std::collections::HashSet;

@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
+use std::process::Command;
 #[cfg(windows)]
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -126,6 +128,36 @@ pub fn filter_killable_launcher_processes<'a>(
         .collect()
 }
 
+pub fn filter_killable_unix_launcher_processes<S: AsRef<str>>(
+    processes: impl IntoIterator<Item = (u32, u32, S)>,
+    current_process_id: u32,
+) -> Vec<u32> {
+    let processes = processes.into_iter().collect::<Vec<_>>();
+    let parents = processes
+        .iter()
+        .map(|(process_id, parent_process_id, _)| (*process_id, *parent_process_id))
+        .collect::<HashMap<_, _>>();
+    let mut protected = HashSet::new();
+    let mut cursor = current_process_id;
+    while cursor != 0 && protected.insert(cursor) {
+        cursor = parents.get(&cursor).copied().unwrap_or(0);
+    }
+    processes
+        .into_iter()
+        .filter(|(process_id, _, executable)| {
+            !protected.contains(process_id) && is_unix_launcher_executable(executable.as_ref())
+        })
+        .map(|(process_id, _, _)| process_id)
+        .collect()
+}
+
+fn is_unix_launcher_executable(executable: &str) -> bool {
+    Path::new(executable)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| matches!(name, "codex-plus-plus" | "launch-codex-plus-plus"))
+}
+
 pub fn should_recover_stale_launcher(has_codex_process: bool, cdp_listening: bool) -> bool {
     !has_codex_process && !cdp_listening
 }
@@ -241,7 +273,11 @@ pub fn stop_launcher_processes() {
 }
 
 #[cfg(not(windows))]
-pub fn stop_launcher_processes() {}
+pub fn stop_launcher_processes() {
+    let killable =
+        filter_killable_unix_launcher_processes(enumerate_unix_processes(), std::process::id());
+    terminate_unix_processes(&killable, false);
+}
 
 #[cfg(windows)]
 pub fn stop_launcher_processes_and_wait() {
@@ -264,7 +300,15 @@ pub fn stop_launcher_processes_and_wait() {
 }
 
 #[cfg(not(windows))]
-pub fn stop_launcher_processes_and_wait() {}
+pub fn stop_launcher_processes_and_wait() {
+    let killable =
+        filter_killable_unix_launcher_processes(enumerate_unix_processes(), std::process::id());
+    terminate_unix_processes_and_wait(
+        killable,
+        RESTART_STOP_WAIT_TIMEOUT_MS,
+        RESTART_STOP_WAIT_INTERVAL_MS,
+    );
+}
 
 #[cfg(windows)]
 pub fn stop_codex_processes() {
@@ -287,6 +331,82 @@ pub fn stop_codex_processes_and_wait() {
 
 #[cfg(not(windows))]
 pub fn stop_codex_processes_and_wait() {}
+
+#[cfg(not(windows))]
+fn enumerate_unix_processes() -> Vec<(u32, u32, String)> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let process_id = entry.file_name().to_string_lossy().parse::<u32>().ok()?;
+            let process_dir = entry.path();
+            let executable = std::fs::read_link(process_dir.join("exe"))
+                .ok()
+                .map(|path| path.to_string_lossy().to_string())
+                .or_else(|| read_unix_process_command_name(&process_dir))?;
+            let parent_process_id = read_unix_parent_process_id(&process_dir).unwrap_or(0);
+            Some((process_id, parent_process_id, executable))
+        })
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn read_unix_process_command_name(process_dir: &Path) -> Option<String> {
+    let command = std::fs::read_to_string(process_dir.join("comm")).ok()?;
+    Some(command.trim().to_string())
+}
+
+#[cfg(not(windows))]
+fn read_unix_parent_process_id(process_dir: &Path) -> Option<u32> {
+    let status = std::fs::read_to_string(process_dir.join("status")).ok()?;
+    status.lines().find_map(|line| {
+        line.strip_prefix("PPid:")
+            .and_then(|value| value.trim().parse::<u32>().ok())
+    })
+}
+
+#[cfg(not(windows))]
+fn terminate_unix_processes(process_ids: &[u32], force: bool) {
+    let signal = if force { "-KILL" } else { "-TERM" };
+    for process_id in process_ids {
+        let _ = Command::new("kill")
+            .arg(signal)
+            .arg(process_id.to_string())
+            .status();
+    }
+}
+
+#[cfg(not(windows))]
+fn terminate_unix_processes_and_wait(process_ids: Vec<u32>, timeout_ms: u64, interval_ms: u64) {
+    if process_ids.is_empty() {
+        return;
+    }
+    terminate_unix_processes(&process_ids, false);
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let running_process_ids = enumerate_unix_processes()
+            .into_iter()
+            .map(|(process_id, _, _)| process_id);
+        let remaining = process_ids_still_running(&process_ids, running_process_ids);
+        if remaining.is_empty() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            terminate_unix_processes(&remaining, true);
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "watcher.stop_wait_timeout",
+                serde_json::json!({
+                    "remaining_process_ids": remaining,
+                    "timeout_ms": timeout_ms
+                }),
+            );
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(interval_ms));
+    }
+}
 
 #[cfg(windows)]
 fn terminate_and_wait_for_exit(process_ids: Vec<u32>, timeout_ms: u64, interval_ms: u64) {

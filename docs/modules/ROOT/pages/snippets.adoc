@@ -20,7 +20,7 @@ Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility
 |`010-linux-app-paths`
 |Required
 |`Cargo.lock`, `crates/codex-plus-core/Cargo.toml`, `crates/codex-plus-core/src/app_paths.rs`
-|Recognize Linux `codex-app/start.sh` as the Codex executable and read the Linux wrapper `version` file.
+|Recognize Linux `start.sh` as the Codex executable, read the Linux wrapper `version` file, and recover the real app root from adapter desktop entries when stale `codex-app` state is present.
 |Needed when upstream does not natively identify the `ilysenko/codex-desktop-linux` app layout.
 |xref:attachment$patches/compatibility/010-linux-app-paths.patch[patch]
 
@@ -33,9 +33,9 @@ Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility
 
 |`030-linux-launcher-environment`
 |Required
-|`crates/codex-plus-core/src/launcher.rs`
-|Launch Linux Codex Desktop through `start.sh`, preserve resolver/proxy environment, remove Electron poison variables, set safe webview ports, allow Chromium private-network helper preflights, expose helper HTTP bridge routes for settings/user scripts, and keep the Linux wrapper alive after injection failure.
-|Needed for the hacked Linux Codex Desktop wrapper, reliable DNS/proxy behavior in desktop sessions, and Codex webview access to Codex++ helper state when CDP binding is missing or reconnecting.
+|`crates/codex-plus-core/src/launcher.rs`, `crates/codex-plus-core/src/watcher.rs`
+|Launch Linux Codex Desktop through `start.sh`, preserve resolver/proxy environment, remove Electron poison variables, set safe webview ports, allow Chromium private-network helper preflights, expose helper HTTP bridge routes for settings/user scripts, keep the Linux wrapper alive after injection failure, and clear stale Linux launcher/helper processes before restart.
+|Needed for the hacked Linux Codex Desktop wrapper, reliable DNS/proxy behavior in desktop sessions, Codex webview access to Codex++ helper state when CDP binding is missing or reconnecting, and recovery from stale helper ports left by crashed launcher processes.
 |xref:attachment$patches/compatibility/030-linux-launcher-environment.patch[patch]
 
 |`040-linux-entrypoints-health`
@@ -68,9 +68,9 @@ Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility
 
 |`080-linux-local-thread-catalog-sync`
 |Required
-|`crates/codex-plus-core/src/codex_sqlite.rs`, `crates/codex-plus-data/src/provider_sync.rs`
-|Backfill and restore Codex Desktop `local_thread_catalog` rows from legacy `threads` rows during provider sync so project sidebars can see existing local conversations.
-|Needed when Codex++ can list local sessions but Linux Codex Desktop project sidebars show no conversations after a Codex storage schema update.
+|`crates/codex-plus-core/src/codex_sqlite.rs`, `crates/codex-plus-data/src/provider_sync.rs`, `codex-desktop-linux` local conversation webview patches
+|Backfill and restore Codex Desktop `local_thread_catalog` rows from legacy `threads` rows during provider sync so project sidebars can see existing local conversations, and hydrate route-opened local conversations before resume so visible history rows open instead of staying on the Codex loading icon.
+|Needed when Codex++ can list local sessions but Linux Codex Desktop project sidebars show no conversations, or show conversations that never load after click, after a Codex storage schema update.
 |xref:attachment$patches/compatibility/080-linux-local-thread-catalog-sync.patch[patch]
 
 |`900-regression-tests`
@@ -100,7 +100,7 @@ The manager script extracts the JSON block between the markers below.
       "crates/codex-plus-core/Cargo.toml",
       "crates/codex-plus-core/src/app_paths.rs"
     ],
-    "purpose": "Recognize the Linux codex-app/start.sh wrapper and Linux version file."
+    "purpose": "Recognize the Linux start.sh wrapper and version file, and recover from stale codex-app state through adapter desktop entries."
   },
   {
     "id": "020-cdp-multi-target-injection",
@@ -121,9 +121,10 @@ The manager script extracts the JSON block between the markers below.
     "kind": "production",
     "patch": "docs/modules/ROOT/attachments/patches/compatibility/030-linux-launcher-environment.patch",
     "targets": [
-      "crates/codex-plus-core/src/launcher.rs"
+      "crates/codex-plus-core/src/launcher.rs",
+      "crates/codex-plus-core/src/watcher.rs"
     ],
-    "purpose": "Launch Linux Codex Desktop through start.sh, preserve desktop resolver/proxy environment, and expose helper HTTP bridge routes for Codex webview settings/user-script fallback."
+    "purpose": "Launch Linux Codex Desktop through start.sh, preserve desktop resolver/proxy environment, expose helper HTTP bridge routes for Codex webview settings/user-script fallback, and clear stale Linux launcher/helper processes before restart."
   },
   {
     "id": "040-linux-entrypoints-health",
@@ -180,9 +181,10 @@ The manager script extracts the JSON block between the markers below.
     "patch": "docs/modules/ROOT/attachments/patches/compatibility/080-linux-local-thread-catalog-sync.patch",
     "targets": [
       "crates/codex-plus-core/src/codex_sqlite.rs",
-      "crates/codex-plus-data/src/provider_sync.rs"
+      "crates/codex-plus-data/src/provider_sync.rs",
+      "codex-desktop-linux local conversation webview patches"
     ],
-    "purpose": "Backfill and restore Codex Desktop local_thread_catalog rows from legacy local session threads so project sidebars keep showing existing conversations after storage schema updates."
+    "purpose": "Backfill and restore Codex Desktop local_thread_catalog rows from legacy local session threads, and hydrate route-opened local conversations before resume, so project sidebars keep showing and opening existing conversations after storage schema updates."
   },
   {
     "id": "900-regression-tests",
@@ -196,7 +198,7 @@ The manager script extracts the JSON block between the markers below.
       "crates/codex-plus-core/tests/watcher.rs",
       "crates/codex-plus-data/tests/provider_sync.rs"
     ],
-    "purpose": "Add regression tests for the Linux adaptation snippets, including helper bridge route fallback, Fast badge placement, renamed or merged Codex asset chunk fallback, unimportable app:// asset records, minified dispatcher export drift, hotkey-window dispatcher guard, launcher/watcher cleanup, local thread catalog backfill/restoration, and transient backend-check clickability in the current Linux composer footer."
+    "purpose": "Add regression tests for the Linux adaptation snippets, including helper bridge route fallback, Fast badge placement, renamed or merged Codex asset chunk fallback, unimportable app:// asset records, minified dispatcher export drift, hotkey-window dispatcher guard, launcher/watcher cleanup, local thread catalog backfill/restoration, route-opened local conversation hydration, and transient backend-check clickability in the current Linux composer footer."
   }
 ]
 ----

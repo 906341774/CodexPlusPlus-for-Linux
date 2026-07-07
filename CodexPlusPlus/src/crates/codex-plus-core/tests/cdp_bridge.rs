@@ -483,6 +483,18 @@ fn injection_script_exposes_sidebar_thread_id_badge_control() {
 }
 
 #[test]
+fn injection_script_groups_derived_workspace_projects_in_sidebar_projection() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("function workspaceLooksLikeDerivedProject"));
+    assert!(script.contains("function sameWorkspaceProjectFamily"));
+    assert!(script.contains("candidateName.startsWith(`${baseName}-`)"));
+    assert!(script.contains("sameWorkspaceProjectFamily(projectPath, targetPath(target))"));
+    assert!(script.contains("sameWorkspaceProjectFamily(project.path, targetPath(target))"));
+    assert!(script.contains("dev|worktree|branch|feature|fix|ga|exp|experiment|deepfeatures"));
+}
+
+#[test]
 fn injection_script_keeps_session_action_buttons_in_pr_style() {
     let script = assets::injection_script(57321);
 
@@ -670,7 +682,9 @@ fn linux_renderer_service_tier_patch_finds_dispatcher_without_minified_export_na
     assert!(script.contains("function findCodexDispatcherClass(module)"));
     assert!(script.contains("Object.values(module || {})"));
     assert!(script.contains("String(value).includes(\"dispatchMessage\")"));
-    assert!(!script.contains("typeof module.v === \"function\" && String(module.v).includes(\"dispatchMessage\")"));
+    assert!(!script.contains(
+        "typeof module.v === \"function\" && String(module.v).includes(\"dispatchMessage\")"
+    ));
 }
 
 #[test]
@@ -678,7 +692,12 @@ fn linux_renderer_dispatcher_patches_skip_hotkey_window_route() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("function isCodexHotkeyWindowRoute()"));
-    assert!(script.matches("if (isCodexHotkeyWindowRoute()) return;").count() >= 2);
+    assert!(
+        script
+            .matches("if (isCodexHotkeyWindowRoute()) return;")
+            .count()
+            >= 2
+    );
 }
 
 #[test]
@@ -694,7 +713,11 @@ fn linux_renderer_patch_places_fast_badge_in_current_linux_composer_footer() {
     assert!(script.contains("[data-codex-intelligence-trigger=\"true\"]"));
     assert!(script.contains("[data-codex-composer=\"true\"]"));
     assert!(script.contains("_footer_"));
-    assert!(script.contains("const linuxTriggerFooter = codexServiceTierComposerFromIntelligenceTrigger();"));
+    assert!(
+        script.contains(
+            "const linuxTriggerFooter = codexServiceTierComposerFromIntelligenceTrigger();"
+        )
+    );
 }
 
 #[test]
@@ -1158,6 +1181,31 @@ fn pick_injectable_codex_page_target_rejects_non_codex_pages() {
             .to_string()
             .contains("No injectable Codex page target found")
     );
+}
+
+#[test]
+fn pick_injectable_codex_page_target_accepts_linux_local_app_route() {
+    let targets = vec![
+        target(
+            "other-local-page",
+            "page",
+            "Local Preview",
+            "http://127.0.0.1:5173/dashboard",
+            Some("ws://other"),
+        ),
+        target(
+            "linux-app-page",
+            "page",
+            "",
+            "http://127.0.0.1:5176/conversation?thread_id=019ee62e-98ba-7c42-8a70-aa5a6f39e45f",
+            Some("ws://codex"),
+        ),
+    ];
+
+    let picked = pick_injectable_codex_page_target(&targets)
+        .expect("Linux local Codex app route should be selected for injection");
+
+    assert_eq!(picked.id, "linux-app-page");
 }
 
 #[test]

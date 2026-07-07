@@ -3500,6 +3500,9 @@ if "clear_bundled_marketplace_tmp_cache\nmonitor_bundled_marketplace_tmp_permiss
     raise SystemExit("warm-start path must not clear bundled marketplace temp cache")
 if not re.search(r'if needs_cold_start; then\s+log_phase "cold_start_cache_sync_start"\s+clear_bundled_marketplace_tmp_cache.*?monitor_bundled_marketplace_tmp_permissions.*?sync_browser_use_bundled_plugin_cache.*?sync_chrome_bundled_plugin_cache.*?sync_computer_use_bundled_plugin_cache.*?sync_read_aloud_bundled_plugin_cache.*?run_cold_start_hooks.*?log_phase "cold_start_hooks_dispatched"\s+fi', runtime_body, re.S):
     raise SystemExit("bundled marketplace cleanup, plugin sync, and cold-start hooks must run only on cold start")
+remove_tree_body = source.split("remove_tree_if_exists() {", 1)[1].split("replace_symlink() {", 1)[0]
+if "return 0" not in remove_tree_body or "continuing with existing cache" not in remove_tree_body:
+    raise SystemExit("remove_tree_if_exists must treat busy NFS cache cleanup as non-fatal under set -e")
 for marker in (
     "initial_launch_state_refresh_start",
     "initial_launch_state_refreshed",

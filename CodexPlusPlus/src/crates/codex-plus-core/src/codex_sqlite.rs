@@ -93,8 +93,8 @@ fn has_session_table(path: &Path) -> bool {
         "inbox_items",
         "local_thread_catalog",
     ]
-        .iter()
-        .any(|table| sqlite_has_table(path, table))
+    .iter()
+    .any(|table| sqlite_has_table(path, table))
 }
 
 fn sqlite_has_table(path: &Path, table: &str) -> bool {

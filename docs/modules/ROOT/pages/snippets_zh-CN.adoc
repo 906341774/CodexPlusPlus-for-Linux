@@ -20,7 +20,7 @@ xref:snippets.adoc[English] | 简体中文
 |`010-linux-app-paths`
 |必需
 |`Cargo.lock`, `crates/codex-plus-core/Cargo.toml`, `crates/codex-plus-core/src/app_paths.rs`
-|识别 Linux `codex-app/start.sh` 作为 Codex 可执行入口，并读取 Linux wrapper 的 `version` 文件。
+|识别 Linux `start.sh` 作为 Codex 可执行入口，读取 Linux wrapper 的 `version` 文件，并在残留旧 `codex-app` 状态时通过适配器 desktop entry 恢复真实 app 根目录。
 |当上游尚不能原生识别 `ilysenko/codex-desktop-linux` 应用布局时需要。
 |xref:attachment$patches/compatibility/010-linux-app-paths.patch[patch]
 
@@ -33,9 +33,9 @@ xref:snippets.adoc[English] | 简体中文
 
 |`030-linux-launcher-environment`
 |必需
-|`crates/codex-plus-core/src/launcher.rs`
-|通过 `start.sh` 启动 Linux Codex Desktop，保留 resolver/proxy 环境，移除会污染 Electron 的变量，设置安全 webview 端口，允许 Chromium private-network helper 预检，为 settings/user scripts 暴露 helper HTTP bridge routes，并在注入失败后保持 Linux wrapper 存活。
-|适配 hacked Linux Codex Desktop wrapper、保证桌面会话中的 DNS/proxy 行为稳定，以及当 CDP binding 缺失或重连时让 Codex webview 仍能读取 Codex++ helper 状态时需要。
+|`crates/codex-plus-core/src/launcher.rs`, `crates/codex-plus-core/src/watcher.rs`
+|通过 `start.sh` 启动 Linux Codex Desktop，保留 resolver/proxy 环境，移除会污染 Electron 的变量，设置安全 webview 端口，允许 Chromium private-network helper 预检，为 settings/user scripts 暴露 helper HTTP bridge routes，在注入失败后保持 Linux wrapper 存活，并在重启前清理残留的 Linux launcher/helper 进程。
+|适配 hacked Linux Codex Desktop wrapper、保证桌面会话中的 DNS/proxy 行为稳定、当 CDP binding 缺失或重连时让 Codex webview 仍能读取 Codex++ helper 状态，以及从崩溃 launcher 留下的 helper 端口占用中恢复时需要。
 |xref:attachment$patches/compatibility/030-linux-launcher-environment.patch[patch]
 
 |`040-linux-entrypoints-health`
@@ -68,9 +68,9 @@ xref:snippets.adoc[English] | 简体中文
 
 |`080-linux-local-thread-catalog-sync`
 |必需
-|`crates/codex-plus-core/src/codex_sqlite.rs`, `crates/codex-plus-data/src/provider_sync.rs`
-|在 provider sync 阶段把旧 `threads` 行回填并恢复到新版 Codex Desktop 的 `local_thread_catalog` 表中，让项目侧边栏继续显示已有本地对话。
-|当 Codex++ 能列出本机会话，但 Codex Desktop Linux 项目侧边栏在 Codex 存储结构升级后显示“暂无对话”时需要。
+|`crates/codex-plus-core/src/codex_sqlite.rs`, `crates/codex-plus-data/src/provider_sync.rs`, `codex-desktop-linux` 本地对话 webview 补丁
+|在 provider sync 阶段把旧 `threads` 行回填并恢复到新版 Codex Desktop 的 `local_thread_catalog` 表中，让项目侧边栏继续显示已有本地对话；同时在按路由打开本地对话时先完成 hydration，避免已经显示出来的历史记录点击后一直停留在 Codex 加载图标。
+|当 Codex++ 能列出本机会话，但 Codex Desktop Linux 项目侧边栏在 Codex 存储结构升级后显示“暂无对话”，或显示了对话但点击后始终无法加载时需要。
 |xref:attachment$patches/compatibility/080-linux-local-thread-catalog-sync.patch[patch]
 
 |`900-regression-tests`
@@ -100,7 +100,7 @@ xref:snippets.adoc[English] | 简体中文
       "crates/codex-plus-core/Cargo.toml",
       "crates/codex-plus-core/src/app_paths.rs"
     ],
-    "purpose": "Recognize the Linux codex-app/start.sh wrapper and Linux version file."
+    "purpose": "Recognize the Linux start.sh wrapper and version file, and recover from stale codex-app state through adapter desktop entries."
   },
   {
     "id": "020-cdp-multi-target-injection",
@@ -121,9 +121,10 @@ xref:snippets.adoc[English] | 简体中文
     "kind": "production",
     "patch": "docs/modules/ROOT/attachments/patches/compatibility/030-linux-launcher-environment.patch",
     "targets": [
-      "crates/codex-plus-core/src/launcher.rs"
+      "crates/codex-plus-core/src/launcher.rs",
+      "crates/codex-plus-core/src/watcher.rs"
     ],
-    "purpose": "Launch Linux Codex Desktop through start.sh, preserve desktop resolver/proxy environment, and expose helper HTTP bridge routes for Codex webview settings/user-script fallback."
+    "purpose": "Launch Linux Codex Desktop through start.sh, preserve desktop resolver/proxy environment, expose helper HTTP bridge routes for Codex webview settings/user-script fallback, and clear stale Linux launcher/helper processes before restart."
   },
   {
     "id": "040-linux-entrypoints-health",
@@ -180,9 +181,10 @@ xref:snippets.adoc[English] | 简体中文
     "patch": "docs/modules/ROOT/attachments/patches/compatibility/080-linux-local-thread-catalog-sync.patch",
     "targets": [
       "crates/codex-plus-core/src/codex_sqlite.rs",
-      "crates/codex-plus-data/src/provider_sync.rs"
+      "crates/codex-plus-data/src/provider_sync.rs",
+      "codex-desktop-linux local conversation webview patches"
     ],
-    "purpose": "Backfill and restore Codex Desktop local_thread_catalog rows from legacy local session threads so project sidebars keep showing existing conversations after storage schema updates."
+    "purpose": "Backfill and restore Codex Desktop local_thread_catalog rows from legacy local session threads, and hydrate route-opened local conversations before resume, so project sidebars keep showing and opening existing conversations after storage schema updates."
   },
   {
     "id": "900-regression-tests",
@@ -196,7 +198,7 @@ xref:snippets.adoc[English] | 简体中文
       "crates/codex-plus-core/tests/watcher.rs",
       "crates/codex-plus-data/tests/provider_sync.rs"
     ],
-    "purpose": "Add regression tests for the Linux adaptation snippets, including helper bridge route fallback, Fast badge placement, renamed or merged Codex asset chunk fallback, unimportable app:// asset records, minified dispatcher export drift, hotkey-window dispatcher guard, launcher/watcher cleanup, local thread catalog backfill/restoration, and transient backend-check clickability in the current Linux composer footer."
+    "purpose": "Add regression tests for the Linux adaptation snippets, including helper bridge route fallback, Fast badge placement, renamed or merged Codex asset chunk fallback, unimportable app:// asset records, minified dispatcher export drift, hotkey-window dispatcher guard, launcher/watcher cleanup, local thread catalog backfill/restoration, route-opened local conversation hydration, and transient backend-check clickability in the current Linux composer footer."
   }
 ]
 ----

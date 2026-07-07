@@ -1,8 +1,8 @@
 diff --git a/apps/codex-plus-manager/src-tauri/src/commands.rs b/apps/codex-plus-manager/src-tauri/src/commands.rs
-index 7ac18aa..8eb4ec3 100644
+index c24ca20..b629116 100644
 --- a/apps/codex-plus-manager/src-tauri/src/commands.rs
 +++ b/apps/codex-plus-manager/src-tauri/src/commands.rs
-@@ -2842,12 +2842,13 @@ fn load_overview_payload() -> (
+@@ -3071,12 +3071,13 @@ fn load_overview_payload() -> (
      Option<LaunchStatus>,
  ) {
      let settings = SettingsStore::default().load().unwrap_or_default();
@@ -28,8 +28,8 @@ index e524db7..13b1803 100644
 @@ -1,5 +1,6 @@
  pub use codex_plus_core::install::{
 -    EntryPointState, InstallActionResult, InstallOptions, ShortcutState, inspect_entrypoints,
-+    EntryPointState, InstallActionResult, InstallOptions, ShortcutState,
-+    inspect_entrypoints, inspect_entrypoints_for_app,
++    EntryPointState, InstallActionResult, InstallOptions, ShortcutState, inspect_entrypoints,
++    inspect_entrypoints_for_app,
  };
 
  pub fn install_entrypoints() -> InstallActionResult {
@@ -67,7 +67,7 @@ index 2f105ed..5db140d 100644
      }
  }
 
-@@ -227,7 +239,104 @@ fn entrypoint_candidates(root: &Option<PathBuf>, manager: bool) -> Vec<PathBuf>
+@@ -227,7 +239,105 @@ fn entrypoint_candidates(root: &Option<PathBuf>, manager: bool) -> Vec<PathBuf>
      } else if cfg!(target_os = "macos") {
          vec![root.join(format!("{name}.app"))]
      } else {
@@ -141,13 +141,14 @@ index 2f105ed..5db140d 100644
 +#[cfg(target_os = "linux")]
 +fn linux_adapter_state_file() -> Option<PathBuf> {
 +    if let Some(value) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
-+        return Some(PathBuf::from(value).join("codex-plusplus").join("state.json"));
++        return Some(
++            PathBuf::from(value)
++                .join("codex-plusplus")
++                .join("state.json"),
++        );
 +    }
-+    directories::BaseDirs::new().map(|dirs| {
-+        dirs.data_dir()
-+            .join("codex-plusplus")
-+            .join("state.json")
-+    })
++    directories::BaseDirs::new()
++        .map(|dirs| dirs.data_dir().join("codex-plusplus").join("state.json"))
 +}
 +
 +#[cfg(target_os = "linux")]

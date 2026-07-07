@@ -1,8 +1,11 @@
 use anyhow::{Context, bail};
 use serde::Deserialize;
 use std::time::Duration;
+use url::{Host, Url};
 
 const CDP_HTTP_TIMEOUT: Duration = Duration::from_secs(3);
+const LINUX_CODEX_WEBVIEW_PORT_START: u16 = 5176;
+const LINUX_CODEX_WEBVIEW_PORT_END: u16 = 5185;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct CdpTarget {
@@ -117,5 +120,48 @@ pub fn is_codex_page_target(target: &CdpTarget) -> bool {
         return false;
     }
     let haystack = format!("{} {}", target.title, target.url).to_lowercase();
-    haystack.contains("codex")
+    haystack.contains("codex") || is_linux_local_codex_app_url(&target.url)
+}
+
+fn is_linux_local_codex_app_url(raw_url: &str) -> bool {
+    let Ok(url) = Url::parse(raw_url) else {
+        return false;
+    };
+
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
+    }
+
+    let Some(port) = url.port_or_known_default() else {
+        return false;
+    };
+    if !(LINUX_CODEX_WEBVIEW_PORT_START..=LINUX_CODEX_WEBVIEW_PORT_END).contains(&port) {
+        return false;
+    }
+
+    if !matches!(
+        url.host(),
+        Some(Host::Ipv4(address)) if address.is_loopback()
+    ) && !matches!(
+        url.host(),
+        Some(Host::Ipv6(address)) if address.is_loopback()
+    ) && !matches!(
+        url.host_str(),
+        Some(host) if host.eq_ignore_ascii_case("localhost")
+    ) {
+        return false;
+    }
+
+    let path = url.path().trim_matches('/').to_ascii_lowercase();
+    path.is_empty()
+        || matches!(
+            path.as_str(),
+            "conversation" | "chat" | "settings" | "history" | "login" | "auth" | "hotkey-window"
+        )
+        || url.query_pairs().any(|(key, _)| {
+            matches!(
+                key.as_ref(),
+                "thread_id" | "conversation_id" | "initialRoute" | "initialroute"
+            )
+        })
 }

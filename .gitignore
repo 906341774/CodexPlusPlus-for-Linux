@@ -4,6 +4,7 @@ cache/
 work/
 dist/
 *.log
+docs/modules/ROOT/attachments/build-artifacts/
 node_modules/
 target/
 *.xfs

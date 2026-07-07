@@ -13,6 +13,8 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+const PROVIDER_SYNC_LAUNCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[derive(Clone)]
 struct LauncherHooks {
     core: Arc<DefaultLaunchHooks>,
@@ -49,9 +51,11 @@ async fn main() -> Result<()> {
         activate_existing_codex_app(&options).await?;
         return Ok(());
     };
-    tokio::spawn(async {
-        let _ = notify_manager_when_update_available().await;
-    });
+    if !startup_update_prompt_disabled() {
+        tokio::spawn(async {
+            let _ = notify_manager_when_update_available().await;
+        });
+    }
     let hooks = LauncherHooks::default();
     let handle = launch_and_inject_with_hooks(options, &hooks).await?;
     handle.wait_for_codex_exit().await?;
@@ -136,26 +140,12 @@ fn should_recover_stale_launcher(debug_port: u16) -> bool {
 async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<()> {
     let hooks = LauncherHooks::default();
     let settings = hooks.load_settings().await?;
-    let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
-    let launch_result = hooks
-        .launch_codex(
-            &app_dir,
-            options.debug_port,
-            &settings,
-            &settings.codex_extra_args,
-        )
-        .await;
-    let bridge_context = if settings.enhancements_enabled {
-        hooks.bridge_context(options.debug_port, &app_dir).await?
-    } else {
-        None
-    };
-    if settings.enhancements_enabled {
-        hooks
-            .start_helper(options.helper_port, bridge_context.clone())
-            .await?;
+    if settings.provider_sync_enabled {
+        hooks.run_provider_sync().await?;
     }
+    let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
     let process_ids = codex_plus_core::watcher::find_codex_processes();
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut activated = false;
     #[cfg(windows)]
     {
@@ -166,22 +156,10 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             }
         }
     }
-    let injection_ready = if settings.enhancements_enabled {
-        hooks
-            .ensure_injection(
-                options.debug_port,
-                options.helper_port,
-                &app_dir,
-                bridge_context,
-            )
-            .await
-    } else {
-        false
-    };
-    if injection_ready {
-        hooks
-            .start_bridge_watchdog(options.debug_port, options.helper_port)
-            .await?;
+
+    let cdp_listening = codex_plus_core::watcher::cdp_listening(options.debug_port);
+    let injection_ready = settings.enhancements_enabled && cdp_listening;
+    if cdp_listening {
         hooks.write_status("running").await;
     } else if settings.enhancements_enabled {
         hooks.write_status("running_degraded").await;
@@ -194,12 +172,12 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             "helper_port": options.helper_port,
             "process_ids": process_ids,
             "activated": activated,
+            "cdp_listening": cdp_listening,
             "injection_ready": injection_ready,
-            "launch_ok": launch_result.is_ok(),
-            "launch_error": launch_result.as_ref().err().map(|error| error.to_string())
+            "reused_existing": true
         }),
     );
-    launch_result.map(|_| ())
+    Ok(())
 }
 
 fn log_launcher_already_running(debug_port: u16) {
@@ -220,6 +198,21 @@ async fn notify_manager_when_update_available() -> anyhow::Result<bool> {
     }
     open_manager_with_update_prompt()?;
     Ok(true)
+}
+
+fn startup_update_prompt_disabled() -> bool {
+    update_prompt_disabled_by_environment(
+        std::env::var("CODEX_PLUS_DISABLE_UPDATE_CHECK")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn update_prompt_disabled_by_environment(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|value| value.trim().to_ascii_lowercase()),
+        Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on")
+    )
 }
 
 fn open_manager_with_update_prompt() -> anyhow::Result<()> {
@@ -296,10 +289,23 @@ impl LaunchHooks for LauncherHooks {
     }
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
-        let _ = tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
-            .await
-            .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"))?;
-        Ok(())
+        let task = tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None));
+        match tokio::time::timeout(PROVIDER_SYNC_LAUNCH_TIMEOUT, task).await {
+            Ok(result) => {
+                let _ = result
+                    .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"))?;
+                Ok(())
+            }
+            Err(_) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "launcher.provider_sync_launch_timeout",
+                    json!({
+                        "timeout_ms": PROVIDER_SYNC_LAUNCH_TIMEOUT.as_millis()
+                    }),
+                );
+                Ok(())
+            }
+        }
     }
 
     async fn apply_active_relay_profile(
@@ -886,6 +892,57 @@ mod tests {
     }
 
     #[test]
+    fn already_running_launcher_path_does_not_start_second_codex_or_helper() {
+        let source = include_str!("main.rs");
+        let already_running_start = source
+            .find("async fn activate_existing_codex_app")
+            .expect("already-running activation function should exist");
+        let already_running_end = source[already_running_start..]
+            .find("fn log_launcher_already_running")
+            .map(|offset| already_running_start + offset)
+            .expect("already-running activation function should end before logging helper");
+        let body = &source[already_running_start..already_running_end];
+
+        assert!(!body.contains(".launch_codex("));
+        assert!(!body.contains(".start_helper("));
+        assert!(body.contains("watcher::find_codex_processes"));
+        assert!(body.contains("launcher.activate_existing_codex"));
+    }
+
+    #[test]
+    fn already_running_launcher_path_runs_provider_sync_before_activation() {
+        let source = include_str!("main.rs");
+        let already_running_start = source
+            .find("async fn activate_existing_codex_app")
+            .expect("already-running activation function should exist");
+        let already_running_end = source[already_running_start..]
+            .find("fn log_launcher_already_running")
+            .map(|offset| already_running_start + offset)
+            .expect("already-running activation function should end before logging helper");
+        let body = &source[already_running_start..already_running_end];
+
+        assert!(body.contains("run_provider_sync"));
+        assert!(body.find("run_provider_sync") < body.find("launcher.activate_existing_codex"));
+    }
+
+    #[test]
+    fn launcher_provider_sync_is_time_bounded_before_launch() {
+        let source = include_str!("main.rs");
+        let run_provider_sync_start = source
+            .find("async fn run_provider_sync")
+            .expect("launcher hook should implement provider sync");
+        let run_provider_sync_end = source[run_provider_sync_start..]
+            .find("async fn apply_active_relay_profile")
+            .map(|offset| run_provider_sync_start + offset)
+            .expect("provider sync hook should end before next hook");
+        let body = &source[run_provider_sync_start..run_provider_sync_end];
+
+        assert!(source.contains("PROVIDER_SYNC_LAUNCH_TIMEOUT"));
+        assert!(body.contains("tokio::time::timeout(PROVIDER_SYNC_LAUNCH_TIMEOUT"));
+        assert!(body.contains("launcher.provider_sync_launch_timeout"));
+    }
+
+    #[test]
     fn launcher_hooks_forward_computer_use_guard_methods() {
         let source = include_str!("main.rs");
 
@@ -907,6 +964,17 @@ mod tests {
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.contains(codex_plus_core::install::MANAGER_BINARY))
         );
+    }
+
+    #[test]
+    fn update_prompt_can_be_disabled_for_fixed_baseline_validation() {
+        assert!(update_prompt_disabled_by_environment(Some("1")));
+        assert!(update_prompt_disabled_by_environment(Some("true")));
+        assert!(update_prompt_disabled_by_environment(Some(" yes ")));
+        assert!(update_prompt_disabled_by_environment(Some("on")));
+        assert!(!update_prompt_disabled_by_environment(None));
+        assert!(!update_prompt_disabled_by_environment(Some("0")));
+        assert!(!update_prompt_disabled_by_environment(Some("false")));
     }
 }
 

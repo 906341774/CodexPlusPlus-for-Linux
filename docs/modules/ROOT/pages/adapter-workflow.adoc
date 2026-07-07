@@ -8,6 +8,9 @@ This project is a Linux adaptation layer for upstream `BigPizzaV3/CodexPlusPlus`
 It should behave like a platform port, not like a separate product.
 Every recurring update must therefore answer two questions:
 
+IMPORTANT: The current official workflow is xref:maintenance-workflow.adoc[Codex++ Linux Adaptation Maintenance Workflow].
+This page is retained as historical and experimental automation reference; do not use it as the default execution plan unless the maintainer explicitly asks for it.
+
 * Does the current adapter still apply cleanly to the pinned upstream version?
 * Do the original Codex++ features still produce their expected Linux UI and runtime effects?
 

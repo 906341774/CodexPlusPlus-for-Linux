@@ -178,6 +178,12 @@ pub fn resolve_codex_app_dir_with_saved(
             return Some(path);
         }
     }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(path) = linux_adapter_state_codex_app_dir() {
+            return Some(path);
+        }
+    }
     resolve_codex_app_dir(None)
 }
 
@@ -357,4 +363,179 @@ fn codex_package_parts(package_name: &str) -> Option<(&str, &str, &str)> {
         return Some((*identity, version, publisher_id));
     }
     None
+}
+
+#[cfg(target_os = "linux")]
+fn linux_adapter_state_codex_app_dir() -> Option<PathBuf> {
+    let state = std::fs::read_to_string(linux_adapter_state_path()).ok()?;
+    let state: serde_json::Value = serde_json::from_str(&state).ok()?;
+
+    string_json_field(&state, "linuxCodexStartScript")
+        .and_then(|path| {
+            let start_script = PathBuf::from(path);
+            if start_script.file_name() == Some(OsStr::new("start.sh")) && start_script.is_file() {
+                return start_script.parent().map(Path::to_path_buf);
+            }
+            None
+        })
+        .or_else(|| {
+            string_json_field(&state, "appRoot")
+                .map(PathBuf::from)
+                .and_then(|path| normalize_linux_codex_app_root(&path))
+        })
+        .or_else(|| {
+            string_json_field(&state, "linuxAdapterDesktopEntryPath")
+                .map(PathBuf::from)
+                .and_then(|path| linux_adapter_desktop_entry_codex_app_dir(&path))
+        })
+        .or_else(|| {
+            string_json_field(&state, "linuxAdapterManagerDesktopEntryPath")
+                .map(PathBuf::from)
+                .and_then(|path| linux_adapter_desktop_entry_codex_app_dir(&path))
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_adapter_state_path() -> PathBuf {
+    if let Some(value) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(value)
+            .join("codex-plusplus")
+            .join("state.json");
+    }
+    directories::BaseDirs::new()
+        .map(|dirs| {
+            dirs.home_dir()
+                .join(".local")
+                .join("share")
+                .join("codex-plusplus")
+                .join("state.json")
+        })
+        .unwrap_or_else(|| {
+            PathBuf::from(".local")
+                .join("share")
+                .join("codex-plusplus")
+                .join("state.json")
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn string_json_field(value: &serde_json::Value, name: &str) -> Option<String> {
+    value
+        .get(name)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+#[cfg(target_os = "linux")]
+fn normalize_linux_codex_app_root(path: &Path) -> Option<PathBuf> {
+    let path = normalize_codex_app_path(path)?;
+    if path.join("start.sh").is_file() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_adapter_desktop_entry_codex_app_dir(path: &Path) -> Option<PathBuf> {
+    let entry = std::fs::read_to_string(path).ok()?;
+    let exec_path = entry
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("Exec=").map(str::trim))
+        .and_then(shell_like_first_token)
+        .map(PathBuf::from)?;
+    linux_adapter_wrapper_codex_app_dir(&exec_path)
+        .or_else(|| linux_app_local_codex_app_dir_from_executable(&exec_path))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_adapter_wrapper_codex_app_dir(path: &Path) -> Option<PathBuf> {
+    let wrapper = std::fs::read_to_string(path).ok()?;
+    shell_like_arg_after_flag(&wrapper, "--app-path")
+        .map(PathBuf::from)
+        .and_then(|path| normalize_linux_codex_app_root(&path))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_app_local_codex_app_dir_from_executable(path: &Path) -> Option<PathBuf> {
+    let file_name = path.file_name().and_then(OsStr::to_str)?;
+    if !matches!(
+        file_name,
+        "codex-plus-plus" | "codex-plus-plus-manager" | "launch-codex-plus-plus"
+    ) {
+        return None;
+    }
+    let adapter_root = path.parent()?.parent()?;
+    if adapter_root.file_name() != Some(OsStr::new(".codex-plusplus")) {
+        return None;
+    }
+    normalize_linux_codex_app_root(adapter_root.parent()?)
+}
+
+#[cfg(target_os = "linux")]
+fn shell_like_first_token(value: &str) -> Option<String> {
+    shell_like_token(value.trim_start()).map(|(token, _)| token)
+}
+
+#[cfg(target_os = "linux")]
+fn shell_like_arg_after_flag(value: &str, flag: &str) -> Option<String> {
+    let mut rest = value;
+    while let Some((token, next)) = shell_like_token(rest.trim_start()) {
+        if token == flag {
+            return shell_like_token(next.trim_start()).map(|(arg, _)| arg);
+        }
+        rest = next;
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn shell_like_token(value: &str) -> Option<(String, &str)> {
+    if value.is_empty() {
+        return None;
+    }
+
+    let mut token = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut consumed = value.len();
+
+    for (index, ch) in value.char_indices() {
+        if escaped {
+            token.push(ch);
+            escaped = false;
+            continue;
+        }
+
+        if let Some(quote_char) = quote {
+            if ch == quote_char {
+                quote = None;
+            } else if quote_char == '"' && ch == '\\' {
+                escaped = true;
+            } else {
+                token.push(ch);
+            }
+            continue;
+        }
+
+        if ch.is_whitespace() {
+            consumed = index;
+            break;
+        }
+
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '\\' => escaped = true,
+            _ => token.push(ch),
+        }
+    }
+
+    if escaped {
+        token.push('\\');
+    }
+
+    Some((token, &value[consumed..]))
 }

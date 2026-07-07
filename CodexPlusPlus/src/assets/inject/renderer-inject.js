@@ -5588,6 +5588,35 @@
     return !!leftPath && !!rightPath && leftPath === rightPath;
   }
 
+  function workspaceParentPath(path) {
+    const normalized = normalizeWorkspacePath(path);
+    const index = normalized.lastIndexOf("/");
+    return index > 0 ? normalized.slice(0, index) : "";
+  }
+
+  function workspaceBaseName(path) {
+    const normalized = normalizeWorkspacePath(path);
+    return normalized.split("/").filter(Boolean).pop() || normalized;
+  }
+
+  function workspaceLooksLikeDerivedProject(basePath, candidatePath) {
+    const base = normalizeWorkspacePath(basePath);
+    const candidate = normalizeWorkspacePath(candidatePath);
+    if (!base || !candidate || base === candidate) return false;
+    if (workspaceParentPath(base) !== workspaceParentPath(candidate)) return false;
+    const baseName = workspaceBaseName(base);
+    const candidateName = workspaceBaseName(candidate);
+    if (!baseName || !candidateName.startsWith(`${baseName}-`)) return false;
+    const suffix = candidateName.slice(baseName.length + 1);
+    return /^(?:[A-Za-z0-9]+-)*(?:dev|worktree|branch|feature|fix|ga|exp|experiment|deepfeatures)(?:-[A-Za-z0-9]+)*$/iu.test(suffix);
+  }
+
+  function sameWorkspaceProjectFamily(left, right) {
+    return sameWorkspacePath(left, right)
+      || workspaceLooksLikeDerivedProject(left, right)
+      || workspaceLooksLikeDerivedProject(right, left);
+  }
+
   function displayProjectName(path) {
     const trimmed = String(path || "").replace(/\/+$/, "");
     return trimmed.split(/[\\/]+/).filter(Boolean).pop() || trimmed || "未命名项目";
@@ -5757,14 +5786,14 @@
   function projectItemMatchesTarget(projectItem, target) {
     const projectRow = projectRowFromListItem(projectItem);
     const projectPath = projectRow?.getAttribute?.("data-app-action-sidebar-project-id") || "";
-    if (projectPath && sameWorkspacePath(projectPath, targetPath(target))) return true;
+    if (projectPath && sameWorkspaceProjectFamily(projectPath, targetPath(target))) return true;
     const actual = normalizeProjectLabel(projectRow?.getAttribute?.("data-app-action-sidebar-project-label") || projectItem?.getAttribute?.("aria-label"));
     const labels = uniqueValues([targetLabel(target), displayProjectName(targetPath(target))]).map(normalizeProjectLabel).filter(Boolean);
     return !!actual && labels.includes(actual);
   }
 
   function findProjectListItem(target) {
-    const nativeTarget = nativeProjectTargets().find((project) => sameWorkspacePath(project.path, targetPath(target)));
+    const nativeTarget = nativeProjectTargets().find((project) => sameWorkspaceProjectFamily(project.path, targetPath(target)));
     if (nativeTarget?.listItem) return nativeTarget.listItem;
     const section = projectsSection();
     if (!section) return null;

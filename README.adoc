@@ -21,7 +21,8 @@ See link:LICENSE[LICENSE].
 
 * An Antora documentation component under `docs/`.
 * A structured snippet manifest in `docs/modules/ROOT/pages/snippets.adoc`.
-* A recurring adaptation workflow in `docs/modules/ROOT/pages/adapter-workflow.adoc`.
+* The official maintenance workflow in `docs/modules/ROOT/pages/maintenance-workflow.adoc`.
+* A historical/experimental recurring adaptation workflow in `docs/modules/ROOT/pages/adapter-workflow.adoc`.
 * Patch attachments in `docs/modules/ROOT/attachments/patches/`.
 * A bilingual PowerShell installer and manager script: `scripts/Installer-and-Manager.ps1`.
 * Upstream source snapshots under `CodexPlusPlus/src` and `codex-desktop-linux/src` for research and reproducible comparison; nested `.git` metadata and local build caches are intentionally not tracked.
@@ -150,4 +151,5 @@ Change `$PreserveUserScriptsOnUninstall` in the script configuration block if a 
 
 Open `docs/modules/ROOT/pages/snippets.adoc` to inspect every adaptation snippet.
 Long patch bodies are kept in `docs/modules/ROOT/attachments/patches/` and included from the Antora page.
-Use `docs/modules/ROOT/pages/adapter-workflow.adoc` and `docs/modules/ROOT/attachments/feature-matrix.json` for the recurring upstream update, validation, and fork-push workflow.
+For recurring upstream updates, validation, and fork pushes, follow `docs/modules/ROOT/pages/maintenance-workflow.adoc` first.
+`docs/modules/ROOT/pages/adapter-workflow.adoc` and `docs/modules/ROOT/attachments/feature-matrix.json` remain historical automation reference and feature-matrix material.

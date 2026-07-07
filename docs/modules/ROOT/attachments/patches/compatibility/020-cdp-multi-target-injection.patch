@@ -53,7 +53,7 @@ index cc12fae..4b7c194 100644
      let settings = codex_plus_core::settings::SettingsStore::default()
          .load()
          .unwrap_or_default();
-@@ -701,18 +714,60 @@ async fn try_inject_with_context(
+@@ -701,18 +714,63 @@ async fn try_inject_with_context(
      } else {
          vec![script, user_bundle]
      };
@@ -84,7 +84,10 @@ index cc12fae..4b7c194 100644
 +                move |path, payload| {
 +                    let ctx = ctx.clone();
 +                    Box::pin(async move {
-+                        Ok(codex_plus_core::routes::handle_bridge_request(ctx, &path, payload).await)
++                        Ok(
++                            codex_plus_core::routes::handle_bridge_request(ctx, &path, payload)
++                                .await,
++                        )
 +                    })
 +                }
 +            }),

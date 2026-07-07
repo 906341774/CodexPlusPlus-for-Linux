@@ -1078,8 +1078,10 @@ fn write_codex_live_atomic(
     std::fs::create_dir_all(home)?;
     let config_path = home.join("config.toml");
     let auth_path = home.join("auth.json");
+    let normalized_config_text =
+        config_text.map(|config_text| normalize_config_text_for_write(config_text));
     #[cfg(windows)]
-    let guarded_config_text = match config_text {
+    let guarded_config_text = match normalized_config_text.as_deref() {
         Some(config_text) if preserve_computer_use_guard => {
             let notify_exe = crate::computer_use_guard::find_computer_use_notify_exe(home);
             let marketplace_path =
@@ -1100,6 +1102,8 @@ fn write_codex_live_atomic(
     };
     #[cfg(windows)]
     let config_text = guarded_config_text.as_deref();
+    #[cfg(not(windows))]
+    let config_text = normalized_config_text.as_deref();
 
     if let Some(config_text) = config_text {
         validate_toml_config(config_text, &config_path)?;
@@ -1234,6 +1238,10 @@ fn normalize_text_toml(contents: String) -> String {
 
 pub fn normalize_config_text(contents: &str) -> String {
     normalize_duplicate_toml_text(contents)
+}
+
+fn normalize_config_text_for_write(contents: &str) -> String {
+    normalize_config_text(contents)
 }
 
 fn normalize_duplicate_toml_text(contents: &str) -> String {

@@ -1,5 +1,5 @@
 diff --git a/apps/codex-plus-launcher/src/main.rs b/apps/codex-plus-launcher/src/main.rs
-index cc12fae..a975e7c 100644
+index 6a5df1f..899bf24 100644
 --- a/apps/codex-plus-launcher/src/main.rs
 +++ b/apps/codex-plus-launcher/src/main.rs
 @@ -40,7 +40,7 @@ async fn main() -> Result<()> {
@@ -26,38 +26,65 @@ index cc12fae..a975e7c 100644
      let hooks = LauncherHooks::default();
      let handle = launch_and_inject_with_hooks(options, &hooks).await?;
      handle.wait_for_codex_exit().await?;
-@@ -145,8 +145,15 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
-             &settings.codex_extra_args,
-         )
-         .await;
-+    let bridge_context = if settings.enhancements_enabled {
-+        hooks.bridge_context(options.debug_port, &app_dir).await?
-+    } else {
-+        None
-+    };
-     if settings.enhancements_enabled {
+@@ -137,18 +139,8 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
+     let hooks = LauncherHooks::default();
+     let settings = hooks.load_settings().await?;
+     let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
+-    let launch_result = hooks
+-        .launch_codex(
+-            &app_dir,
+-            options.debug_port,
+-            &settings,
+-            &settings.codex_extra_args,
+-        )
+-        .await;
+-    if settings.enhancements_enabled {
 -        hooks.start_helper(options.helper_port).await?;
-+        hooks
-+            .start_helper(options.helper_port, bridge_context.clone())
-+            .await?;
-     }
+-    }
      let process_ids = codex_plus_core::watcher::find_codex_processes();
++    #[cfg_attr(not(windows), allow(unused_mut))]
      let mut activated = false;
-@@ -161,7 +168,12 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
+     #[cfg(windows)]
+     {
+@@ -159,17 +151,10 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
+             }
+         }
      }
-     let injection_ready = if settings.enhancements_enabled {
-         hooks
+-    let injection_ready = if settings.enhancements_enabled {
+-        hooks
 -            .ensure_injection(options.debug_port, options.helper_port, &app_dir)
-+            .ensure_injection(
-+                options.debug_port,
-+                options.helper_port,
-+                &app_dir,
-+                bridge_context,
-+            )
-             .await
-     } else {
-         false
-@@ -210,6 +224,21 @@ async fn notify_manager_when_update_available() -> anyhow::Result<bool> {
+-            .await
+-    } else {
+-        false
+-    };
+-    if injection_ready {
+-        hooks
+-            .start_bridge_watchdog(options.debug_port, options.helper_port)
+-            .await?;
++
++    let cdp_listening = codex_plus_core::watcher::cdp_listening(options.debug_port);
++    let injection_ready = settings.enhancements_enabled && cdp_listening;
++    if cdp_listening {
+         hooks.write_status("running").await;
+     } else if settings.enhancements_enabled {
+         hooks.write_status("running_degraded").await;
+@@ -182,12 +167,12 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
+             "helper_port": options.helper_port,
+             "process_ids": process_ids,
+             "activated": activated,
++            "cdp_listening": cdp_listening,
+             "injection_ready": injection_ready,
+-            "launch_ok": launch_result.is_ok(),
+-            "launch_error": launch_result.as_ref().err().map(|error| error.to_string())
++            "reused_existing": true
+         }),
+     );
+-    launch_result.map(|_| ())
++    Ok(())
+ }
+
+ fn log_launcher_already_running(debug_port: u16) {
+@@ -210,6 +195,21 @@ async fn notify_manager_when_update_available() -> anyhow::Result<bool> {
      Ok(true)
  }
 
@@ -79,7 +106,7 @@ index cc12fae..a975e7c 100644
  fn open_manager_with_update_prompt() -> anyhow::Result<()> {
      let manager_path = manager_exe_path();
      let mut command = std::process::Command::new(&manager_path);
-@@ -311,8 +323,12 @@ impl LaunchHooks for LauncherHooks {
+@@ -311,8 +311,12 @@ impl LaunchHooks for LauncherHooks {
          self.core.ensure_plugin_marketplace_config(settings).await
      }
 
@@ -94,16 +121,23 @@ index cc12fae..a975e7c 100644
      }
 
      async fn launch_codex(
+@@ -723,7 +727,10 @@ async fn try_inject_with_context(
+                 move |path, payload| {
+                     let ctx = ctx.clone();
+                     Box::pin(async move {
+-                        Ok(codex_plus_core::routes::handle_bridge_request(ctx, &path, payload).await)
++                        Ok(
++                            codex_plus_core::routes::handle_bridge_request(ctx, &path, payload)
++                                .await,
++                        )
+                     })
+                 }
+             }),
 diff --git a/crates/codex-plus-core/src/launcher.rs b/crates/codex-plus-core/src/launcher.rs
-index fcdeb04..792fb4d 100644
+index a065229..eb12735 100644
 --- a/crates/codex-plus-core/src/launcher.rs
 +++ b/crates/codex-plus-core/src/launcher.rs
-@@ -1,3 +1,4 @@
-+use std::collections::HashMap;
- use std::net::SocketAddr;
- use std::path::{Path, PathBuf};
- use std::process::Stdio;
-@@ -141,7 +142,11 @@ pub trait LaunchHooks: Send + Sync {
+@@ -142,7 +142,11 @@ pub trait LaunchHooks: Send + Sync {
      ) -> anyhow::Result<()> {
          Ok(())
      }
@@ -116,7 +150,7 @@ index fcdeb04..792fb4d 100644
      async fn launch_codex(
          &self,
          app_dir: &Path,
-@@ -165,12 +170,21 @@ pub trait LaunchHooks: Send + Sync {
+@@ -166,12 +170,21 @@ pub trait LaunchHooks: Send + Sync {
      ) -> anyhow::Result<()> {
          self.inject(debug_port, helper_port).await
      }
@@ -143,7 +177,7 @@ index fcdeb04..792fb4d 100644
              };
              match result {
                  Ok(()) => return true,
-@@ -294,8 +308,15 @@ where
+@@ -295,8 +308,15 @@ where
          if protocol_proxy_enabled {
              helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
          }
@@ -160,7 +194,7 @@ index fcdeb04..792fb4d 100644
              helper_started = true;
          }
 
-@@ -311,7 +332,7 @@ where
+@@ -312,7 +332,7 @@ where
          let mut injection_degraded = false;
          if settings.enhancements_enabled {
              let injection_ready = hooks
@@ -169,7 +203,7 @@ index fcdeb04..792fb4d 100644
                  .await;
              if injection_ready {
                  keep_launched_on_error = false;
-@@ -586,13 +607,23 @@ impl LaunchHooks for DefaultLaunchHooks {
+@@ -587,13 +607,23 @@ impl LaunchHooks for DefaultLaunchHooks {
          Ok(())
      }
 
@@ -194,7 +228,7 @@ index fcdeb04..792fb4d 100644
          let _ = crate::diagnostic_log::append_diagnostic_log(
              "helper.listening",
              serde_json::json!({
-@@ -608,8 +639,9 @@ impl LaunchHooks for DefaultLaunchHooks {
+@@ -609,8 +639,9 @@ impl LaunchHooks for DefaultLaunchHooks {
                      _ = &mut shutdown_rx => break,
                      accepted = listener.accept() => {
                          if let Ok((stream, addr)) = accepted {
@@ -205,19 +239,7 @@ index fcdeb04..792fb4d 100644
                              });
                          }
                      }
-@@ -728,6 +760,11 @@ impl LaunchHooks for DefaultLaunchHooks {
-             .args(&command[1..])
-             .stdout(Stdio::null())
-             .stderr(Stdio::null());
-+        if cfg!(target_os = "linux") {
-+            child_command
-+                .env_clear()
-+                .envs(codex_process_environment_for_app(app_dir));
-+        }
-         #[cfg(windows)]
-         child_command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
-         let child = child_command
-@@ -907,6 +944,7 @@ impl LaunchHooks for DefaultLaunchHooks {
+@@ -913,6 +944,7 @@ impl LaunchHooks for DefaultLaunchHooks {
  async fn handle_helper_connection(
      mut stream: tokio::net::TcpStream,
      remote_addr: Option<SocketAddr>,
@@ -225,7 +247,7 @@ index fcdeb04..792fb4d 100644
  ) -> anyhow::Result<()> {
      let request_bytes = read_http_request(&mut stream).await?;
      let request = String::from_utf8_lossy(&request_bytes);
-@@ -962,6 +1000,17 @@ async fn handle_helper_connection(
+@@ -968,6 +1000,17 @@ async fn handle_helper_connection(
          )
          .await;
      }
@@ -243,21 +265,7 @@ index fcdeb04..792fb4d 100644
 
      let (status, body, content_type, log_event) =
          if matches!(path, "/backend/status" | "/backend/repair")
-@@ -1043,11 +1092,11 @@ async fn handle_helper_connection(
-     );
-     let response = if method == "OPTIONS" {
-         format!(
--            "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-+            "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Allow-Private-Network: true\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-         )
-     } else {
-         format!(
--            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Allow-Private-Network: true\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-             body.len()
-         )
-     };
-@@ -1059,6 +1108,89 @@ async fn handle_helper_connection(
+@@ -1065,6 +1108,89 @@ async fn handle_helper_connection(
      Ok(())
  }
 
@@ -347,36 +355,7 @@ index fcdeb04..792fb4d 100644
  fn overlay_image_response() -> (String, Vec<u8>, String, &'static str) {
      let not_found = || {
          (
-@@ -1424,7 +1556,7 @@ async fn write_http_response(
-     body: &[u8],
- ) -> anyhow::Result<()> {
-     let response = format!(
--        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Allow-Private-Network: true\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-         body.len()
-     );
-     stream.write_all(response.as_bytes()).await?;
-@@ -1438,7 +1570,7 @@ async fn write_http_stream_headers(
-     content_type: &str,
- ) -> anyhow::Result<()> {
-     let response = format!(
--        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n\r\n"
-+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Allow-Private-Network: true\r\nConnection: close\r\n\r\n"
-     );
-     stream.write_all(response.as_bytes()).await?;
-     Ok(())
-@@ -1647,6 +1779,10 @@ pub fn build_codex_command(app_dir: &Path, debug_port: u16, extra_args: &[String
-             .to_string_lossy()
-             .to_string(),
-     ];
-+    if cfg!(target_os = "linux") && app_dir.join("start.sh").exists() {
-+        command.push("--new-instance".to_string());
-+        command.push("--".to_string());
-+    }
-     command.extend(build_codex_arguments(debug_port, extra_args));
-     command
- }
-@@ -1662,6 +1798,10 @@ pub fn build_codex_command_with_native_menu_inspector(
+@@ -1672,6 +1798,10 @@ pub fn build_codex_command_with_native_menu_inspector(
              .to_string_lossy()
              .to_string(),
      ];
@@ -387,42 +366,10 @@ index fcdeb04..792fb4d 100644
      command.extend(build_codex_arguments_with_native_menu_inspector(
          debug_port,
          inspector_port,
-@@ -1699,12 +1835,225 @@ pub fn build_packaged_activation_with_native_menu_inspector(
-     })
- }
+@@ -1741,6 +1871,22 @@ const NETWORK_ENV_VARS: &[&str] = &[
+     "NODE_OPTIONS",
+ ];
 
-+pub fn codex_process_environment_for_app(app_dir: &Path) -> HashMap<String, String> {
-+    let env = std::env::vars().collect::<HashMap<_, _>>();
-+    codex_process_environment_for_app_from(app_dir, &env, crate::proxy::detect_system_proxy)
-+}
-+
-+pub fn codex_process_environment_for_app_from(
-+    app_dir: &Path,
-+    env: &HashMap<String, String>,
-+    detect_system_proxy: impl FnOnce() -> Option<String>,
-+) -> HashMap<String, String> {
-+    let mut env = codex_process_environment_from(env, detect_system_proxy);
-+    apply_linux_codex_plusplus_webview_environment(app_dir, &mut env);
-+    env
-+}
-+
-+const NETWORK_ENV_VARS: &[&str] = &[
-+    "HTTP_PROXY",
-+    "HTTPS_PROXY",
-+    "ALL_PROXY",
-+    "NO_PROXY",
-+    "http_proxy",
-+    "https_proxy",
-+    "all_proxy",
-+    "no_proxy",
-+    "RES_OPTIONS",
-+    "LOCALDOMAIN",
-+    "HOSTALIASES",
-+    "SSL_CERT_FILE",
-+    "SSL_CERT_DIR",
-+    "NODE_OPTIONS",
-+];
-+
 +const LINUX_RUNTIME_ENV_VARS: &[&str] = &[
 +    "CONDA_DEFAULT_ENV",
 +    "CONDA_PREFIX",
@@ -439,178 +386,179 @@ index fcdeb04..792fb4d 100644
 +    "PKG_CONFIG_PATH",
 +];
 +
-+const LINUX_CODEX_PLUSPLUS_WEBVIEW_PORT: &str = "5176";
-+const LINUX_CODEX_PLUSPLUS_MULTI_LAUNCH_PORT_RANGE: &str = "5176-5185";
-+
-+pub fn codex_process_environment_from(
-+    env: &HashMap<String, String>,
-+    detect_system_proxy: impl FnOnce() -> Option<String>,
-+) -> HashMap<String, String> {
-+    let mut env = env.clone();
-+    if cfg!(target_os = "linux") {
-+        env.remove("ELECTRON_RUN_AS_NODE");
-+        env.remove("ELECTRON_NO_ATTACH_CONSOLE");
+ const LINUX_CODEX_PLUSPLUS_WEBVIEW_PORT: &str = "5176";
+ const LINUX_CODEX_PLUSPLUS_MULTI_LAUNCH_PORT_RANGE: &str = "5176-5185";
+
+@@ -1752,6 +1898,9 @@ pub fn codex_process_environment_from(
+     if cfg!(target_os = "linux") {
+         env.remove("ELECTRON_RUN_AS_NODE");
+         env.remove("ELECTRON_NO_ATTACH_CONSOLE");
 +        for name in LINUX_RUNTIME_ENV_VARS {
 +            env.remove(*name);
 +        }
-+        if should_hydrate_linux_network_environment(&env) {
-+            hydrate_linux_network_environment(&mut env);
-+        }
+         if should_hydrate_linux_network_environment(&env) {
+             hydrate_linux_network_environment(&mut env);
+         }
+diff --git a/crates/codex-plus-core/src/watcher.rs b/crates/codex-plus-core/src/watcher.rs
+index ffe84f9..c6e6231 100644
+--- a/crates/codex-plus-core/src/watcher.rs
++++ b/crates/codex-plus-core/src/watcher.rs
+@@ -1,6 +1,8 @@
+ use std::collections::{HashMap, HashSet};
+ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
+ use std::path::{Path, PathBuf};
++#[cfg(not(windows))]
++use std::process::Command;
+ #[cfg(windows)]
+ use std::process::{Command, Stdio};
+ use std::time::Duration;
+@@ -126,6 +128,36 @@ pub fn filter_killable_launcher_processes<'a>(
+         .collect()
+ }
+
++pub fn filter_killable_unix_launcher_processes<S: AsRef<str>>(
++    processes: impl IntoIterator<Item = (u32, u32, S)>,
++    current_process_id: u32,
++) -> Vec<u32> {
++    let processes = processes.into_iter().collect::<Vec<_>>();
++    let parents = processes
++        .iter()
++        .map(|(process_id, parent_process_id, _)| (*process_id, *parent_process_id))
++        .collect::<HashMap<_, _>>();
++    let mut protected = HashSet::new();
++    let mut cursor = current_process_id;
++    while cursor != 0 && protected.insert(cursor) {
++        cursor = parents.get(&cursor).copied().unwrap_or(0);
 +    }
-+    if crate::proxy::has_proxy_environment(&env) {
-+        return env;
-+    }
-+    if let Some(proxy) = detect_system_proxy() {
-+        env.insert("HTTPS_PROXY".to_string(), proxy.clone());
-+        env.insert("HTTP_PROXY".to_string(), proxy);
-+    }
-+    env
++    processes
++        .into_iter()
++        .filter(|(process_id, _, executable)| {
++            !protected.contains(process_id) && is_unix_launcher_executable(executable.as_ref())
++        })
++        .map(|(process_id, _, _)| process_id)
++        .collect()
 +}
 +
-+#[cfg(target_os = "linux")]
-+fn apply_linux_codex_plusplus_webview_environment(
-+    app_dir: &Path,
-+    env: &mut HashMap<String, String>,
-+) {
-+    if !app_dir.join("start.sh").exists() {
-+        return;
-+    }
-+    env.entry("CODEX_WEBVIEW_PORT".to_string())
-+        .or_insert_with(|| LINUX_CODEX_PLUSPLUS_WEBVIEW_PORT.to_string());
-+    env.entry("CODEX_MULTI_LAUNCH_PORT_RANGE".to_string())
-+        .or_insert_with(|| LINUX_CODEX_PLUSPLUS_MULTI_LAUNCH_PORT_RANGE.to_string());
++fn is_unix_launcher_executable(executable: &str) -> bool {
++    Path::new(executable)
++        .file_name()
++        .and_then(|name| name.to_str())
++        .is_some_and(|name| matches!(name, "codex-plus-plus" | "launch-codex-plus-plus"))
 +}
 +
-+#[cfg(not(target_os = "linux"))]
-+fn apply_linux_codex_plusplus_webview_environment(
-+    _app_dir: &Path,
-+    _env: &mut HashMap<String, String>,
-+) {
+ pub fn should_recover_stale_launcher(has_codex_process: bool, cdp_listening: bool) -> bool {
+     !has_codex_process && !cdp_listening
+ }
+@@ -241,7 +273,11 @@ pub fn stop_launcher_processes() {
+ }
+
+ #[cfg(not(windows))]
+-pub fn stop_launcher_processes() {}
++pub fn stop_launcher_processes() {
++    let killable =
++        filter_killable_unix_launcher_processes(enumerate_unix_processes(), std::process::id());
++    terminate_unix_processes(&killable, false);
 +}
-+
-+#[cfg(target_os = "linux")]
-+fn hydrate_linux_network_environment(env: &mut HashMap<String, String>) {
-+    hydrate_linux_network_environment_from_systemd(env);
-+    hydrate_linux_network_environment_from_processes(env);
+
+ #[cfg(windows)]
+ pub fn stop_launcher_processes_and_wait() {
+@@ -264,7 +300,15 @@ pub fn stop_launcher_processes_and_wait() {
+ }
+
+ #[cfg(not(windows))]
+-pub fn stop_launcher_processes_and_wait() {}
++pub fn stop_launcher_processes_and_wait() {
++    let killable =
++        filter_killable_unix_launcher_processes(enumerate_unix_processes(), std::process::id());
++    terminate_unix_processes_and_wait(
++        killable,
++        RESTART_STOP_WAIT_TIMEOUT_MS,
++        RESTART_STOP_WAIT_INTERVAL_MS,
++    );
 +}
-+
-+#[cfg(not(target_os = "linux"))]
-+fn hydrate_linux_network_environment(_env: &mut HashMap<String, String>) {}
-+
-+#[cfg(target_os = "linux")]
-+fn should_hydrate_linux_network_environment(env: &HashMap<String, String>) -> bool {
-+    [
-+        "DISPLAY",
-+        "WAYLAND_DISPLAY",
-+        "XDG_RUNTIME_DIR",
-+        "DBUS_SESSION_BUS_ADDRESS",
-+    ]
-+    .into_iter()
-+    .any(|name| env.get(name).is_some_and(|value| !value.is_empty()))
-+}
-+
-+#[cfg(not(target_os = "linux"))]
-+fn should_hydrate_linux_network_environment(_env: &HashMap<String, String>) -> bool {
-+    false
-+}
-+
-+#[cfg(target_os = "linux")]
-+fn hydrate_linux_network_environment_from_systemd(env: &mut HashMap<String, String>) {
-+    let Ok(output) = std::process::Command::new("systemctl")
-+        .args(["--user", "show-environment"])
-+        .output()
-+    else {
-+        return;
-+    };
-+    if !output.status.success() {
-+        return;
-+    }
-+    let contents = String::from_utf8_lossy(&output.stdout);
-+    for line in contents.lines() {
-+        import_linux_network_env_entry(env, line);
-+    }
-+}
-+
-+#[cfg(target_os = "linux")]
-+fn hydrate_linux_network_environment_from_processes(env: &mut HashMap<String, String>) {
+
+ #[cfg(windows)]
+ pub fn stop_codex_processes() {
+@@ -288,6 +332,82 @@ pub fn stop_codex_processes_and_wait() {
+ #[cfg(not(windows))]
+ pub fn stop_codex_processes_and_wait() {}
+
++#[cfg(not(windows))]
++fn enumerate_unix_processes() -> Vec<(u32, u32, String)> {
 +    let Ok(entries) = std::fs::read_dir("/proc") else {
-+        return;
++        return Vec::new();
 +    };
-+    let uid = effective_uid();
-+    for entry in entries.flatten() {
-+        let file_name = entry.file_name();
-+        let Some(pid) = file_name
-+            .to_str()
-+            .filter(|value| value.bytes().all(|byte| byte.is_ascii_digit()))
-+        else {
-+            continue;
-+        };
-+        if process_uid(pid).is_some_and(|process_uid| process_uid != uid) {
-+            continue;
-+        }
-+        let environ_path = entry.path().join("environ");
-+        let Ok(contents) = std::fs::read(environ_path) else {
-+            continue;
-+        };
-+        let found_graphical_process = contents
-+            .split(|byte| *byte == 0)
-+            .any(|entry| entry.starts_with(b"DISPLAY=") || entry.starts_with(b"WAYLAND_DISPLAY="));
-+        if !found_graphical_process {
-+            continue;
-+        }
-+        for entry in contents.split(|byte| *byte == 0) {
-+            if let Ok(entry) = std::str::from_utf8(entry) {
-+                import_linux_network_env_entry(env, entry);
-+            }
-+        }
-+        return;
-+    }
++    entries
++        .filter_map(Result::ok)
++        .filter_map(|entry| {
++            let process_id = entry.file_name().to_string_lossy().parse::<u32>().ok()?;
++            let process_dir = entry.path();
++            let executable = std::fs::read_link(process_dir.join("exe"))
++                .ok()
++                .map(|path| path.to_string_lossy().to_string())
++                .or_else(|| read_unix_process_command_name(&process_dir))?;
++            let parent_process_id = read_unix_parent_process_id(&process_dir).unwrap_or(0);
++            Some((process_id, parent_process_id, executable))
++        })
++        .collect()
 +}
 +
-+#[cfg(target_os = "linux")]
-+fn process_uid(pid: &str) -> Option<u32> {
-+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
++#[cfg(not(windows))]
++fn read_unix_process_command_name(process_dir: &Path) -> Option<String> {
++    let command = std::fs::read_to_string(process_dir.join("comm")).ok()?;
++    Some(command.trim().to_string())
++}
++
++#[cfg(not(windows))]
++fn read_unix_parent_process_id(process_dir: &Path) -> Option<u32> {
++    let status = std::fs::read_to_string(process_dir.join("status")).ok()?;
 +    status.lines().find_map(|line| {
-+        let rest = line.strip_prefix("Uid:")?;
-+        rest.split_whitespace().next()?.parse().ok()
++        line.strip_prefix("PPid:")
++            .and_then(|value| value.trim().parse::<u32>().ok())
 +    })
 +}
 +
-+#[cfg(target_os = "linux")]
-+fn effective_uid() -> u32 {
-+    process_uid("self").unwrap_or(u32::MAX)
++#[cfg(not(windows))]
++fn terminate_unix_processes(process_ids: &[u32], force: bool) {
++    let signal = if force { "-KILL" } else { "-TERM" };
++    for process_id in process_ids {
++        let _ = Command::new("kill")
++            .arg(signal)
++            .arg(process_id.to_string())
++            .status();
++    }
 +}
 +
-+#[cfg(target_os = "linux")]
-+fn import_linux_network_env_entry(env: &mut HashMap<String, String>, entry: &str) {
-+    let Some((name, value)) = entry.split_once('=') else {
-+        return;
-+    };
-+    if !NETWORK_ENV_VARS.contains(&name) || value.is_empty() {
++#[cfg(not(windows))]
++fn terminate_unix_processes_and_wait(process_ids: Vec<u32>, timeout_ms: u64, interval_ms: u64) {
++    if process_ids.is_empty() {
 +        return;
 +    }
-+    env.entry(name.to_string())
-+        .or_insert_with(|| value.to_string());
++    terminate_unix_processes(&process_ids, false);
++    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
++    loop {
++        let running_process_ids = enumerate_unix_processes()
++            .into_iter()
++            .map(|(process_id, _, _)| process_id);
++        let remaining = process_ids_still_running(&process_ids, running_process_ids);
++        if remaining.is_empty() {
++            break;
++        }
++        if std::time::Instant::now() >= deadline {
++            terminate_unix_processes(&remaining, true);
++            let _ = crate::diagnostic_log::append_diagnostic_log(
++                "watcher.stop_wait_timeout",
++                serde_json::json!({
++                    "remaining_process_ids": remaining,
++                    "timeout_ms": timeout_ms
++                }),
++            );
++            break;
++        }
++        std::thread::sleep(Duration::from_millis(interval_ms));
++    }
 +}
 +
- async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
-     let mut last_error = None;
--    for _ in 0..20 {
-+    let attempts = if cfg!(target_os = "linux") { 90 } else { 20 };
-+    for attempt in 0..attempts {
-         match try_inject(debug_port, helper_port).await {
-             Ok(()) => return Ok(()),
-             Err(error) => {
-+                let _ = crate::diagnostic_log::append_diagnostic_log(
-+                    "bridge.inject_retry",
-+                    serde_json::json!({
-+                        "attempt": attempt + 1,
-+                        "attempts": attempts,
-+                        "debug_port": debug_port,
-+                        "helper_port": helper_port,
-+                        "message": error.to_string()
-+                    }),
-+                );
-                 last_error = Some(error);
-                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-             }
+ #[cfg(windows)]
+ fn terminate_and_wait_for_exit(process_ids: Vec<u32>, timeout_ms: u64, interval_ms: u64) {
+     if process_ids.is_empty() {

@@ -98,6 +98,20 @@ The host state files were synchronized so both Codex++ and the manager point to 
 
 The host installation uses the upstream-style desktop entries and does not keep the earlier incorrect `*-linux.desktop` entries.
 
+== Post-install hotfix notes
+
+Date: 2026-07-03
+
+Host verification after manually applying the v1.2.28 build exposed a stale-path case:
+
+* The real Linux Codex Desktop root was `$HOME/opt/CodexDesktop` with `start.sh` and `version` directly under that directory.
+* Existing user state still contained the older nested `$HOME/opt/CodexDesktop/codex-app` path in both Codex++ state and manager settings.
+* The generated `codex-plus-plus.desktop` entry and `launch-codex-plus-plus` wrapper still carried the correct app root.
+
+The `010-linux-app-paths` patch was extended so the runtime resolver first honors explicit and valid saved paths, then recovers from adapter state, and finally can recover the real app root from the adapter desktop entry and wrapper when stale `codex-app` state is present.
+
+The `900-regression-tests` patch now includes `app_paths_linux_recovers_from_stale_state_using_adapter_desktop_entry` to keep this recovery path covered.
+
 == Post-install local thread catalog hotfix
 
 Date: 2026-07-05

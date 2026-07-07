@@ -1,7 +1,8 @@
 use codex_plus_core::watcher::{
     build_spawn_launcher_command, build_watcher_install_plan, cdp_listening, codex_process_ids,
     disable_watcher_at, enable_watcher_at, filter_killable_launcher_processes,
-    process_ids_still_running, should_recover_stale_launcher, watcher_disabled_flag,
+    filter_killable_unix_launcher_processes, process_ids_still_running,
+    should_recover_stale_launcher, watcher_disabled_flag,
 };
 
 #[cfg(windows)]
@@ -97,6 +98,43 @@ fn launcher_process_filter_protects_current_process_ancestry() {
     ];
 
     assert_eq!(filter_killable_launcher_processes(processes, 30), vec![40]);
+}
+
+#[test]
+fn unix_launcher_process_filter_kills_stale_silent_launcher_only() {
+    let processes = [
+        (
+            10,
+            0,
+            "/home/deck/opt/CodexDesktop/.codex-plusplus/install/codex-plus-plus",
+        ),
+        (
+            20,
+            10,
+            "/home/deck/opt/CodexDesktop/.codex-plusplus/install/codex-plus-plus",
+        ),
+        (30, 20, "/usr/bin/cargo"),
+        (
+            40,
+            10,
+            "/home/deck/opt/CodexDesktop/.codex-plusplus/install/codex-plus-plus",
+        ),
+        (
+            50,
+            10,
+            "/home/deck/opt/CodexDesktop/.codex-plusplus/install/codex-plus-plus-manager",
+        ),
+        (
+            60,
+            10,
+            "/home/deck/opt/CodexDesktop/.codex-plusplus/install/launch-codex-plus-plus",
+        ),
+    ];
+
+    assert_eq!(
+        filter_killable_unix_launcher_processes(processes, 30),
+        vec![40, 60]
+    );
 }
 
 #[test]

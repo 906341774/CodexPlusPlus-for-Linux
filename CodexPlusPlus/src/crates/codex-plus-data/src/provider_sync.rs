@@ -214,6 +214,16 @@ pub fn run_provider_sync_with_target(
             .filter_map(|change| Some((change.thread_id.clone()?, change.cwd.clone()?)))
             .filter(|(thread_id, _)| !projectless_thread_ids.contains(thread_id))
             .collect::<HashMap<_, _>>();
+        let rollout_path_by_thread_id = collected
+            .changes
+            .iter()
+            .filter_map(|change| {
+                Some((
+                    change.thread_id.clone()?,
+                    change.path.to_string_lossy().to_string(),
+                ))
+            })
+            .collect::<HashMap<_, _>>();
         let sqlite_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
         let local_catalog_threads = collect_local_catalog_threads(
             &sqlite_paths,
@@ -221,6 +231,7 @@ pub fn run_provider_sync_with_target(
             &thread_ids_with_user_events,
             &cwd_by_thread_id,
             &projectless_thread_ids,
+            &rollout_path_by_thread_id,
         )?;
         let sqlite_update_count = count_sqlite_updates_for_paths(
             &sqlite_paths,
@@ -941,6 +952,7 @@ fn collect_local_catalog_threads(
     user_event_thread_ids: &HashSet<String>,
     cwd_by_thread_id: &HashMap<String, String>,
     projectless_thread_ids: &HashSet<String>,
+    rollout_path_by_thread_id: &HashMap<String, String>,
 ) -> anyhow::Result<Vec<LocalCatalogThread>> {
     let mut by_id = HashMap::new();
     for path in paths {
@@ -993,6 +1005,7 @@ fn collect_local_catalog_threads(
                 target_provider,
                 user_event_thread_ids,
                 cwd_by_thread_id,
+                rollout_path_by_thread_id,
             )?
             else {
                 continue;
@@ -1022,6 +1035,7 @@ fn local_catalog_thread_from_row(
     target_provider: &str,
     user_event_thread_ids: &HashSet<String>,
     cwd_by_thread_id: &HashMap<String, String>,
+    rollout_path_by_thread_id: &HashMap<String, String>,
 ) -> anyhow::Result<Option<LocalCatalogThread>> {
     let Some(thread_id) = optional_string(row, index_by_column, "id")? else {
         return Ok(None);
@@ -1061,7 +1075,12 @@ fn local_catalog_thread_from_row(
             )?)
             .unwrap_or(source_created_at);
     let source_detail = optional_string(row, index_by_column, "rollout_path")?
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| rollout_path_by_thread_id.get(&thread_id).cloned())
         .filter(|value| !value.trim().is_empty());
+    if source_detail.is_none() {
+        return Ok(None);
+    }
     let model_provider = optional_string(row, index_by_column, "model_provider")?
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| target_provider.to_string());
@@ -1264,9 +1283,6 @@ fn count_local_thread_catalog_updates(
     db: &Connection,
     threads: &[LocalCatalogThread],
 ) -> anyhow::Result<usize> {
-    if threads.is_empty() {
-        return Ok(0);
-    }
     let mut total = 0;
     for thread in threads {
         let existing = local_thread_catalog_row(db, &thread.thread_id)?;
@@ -1274,6 +1290,7 @@ fn count_local_thread_catalog_updates(
             total += 1;
         }
     }
+    total += count_unopenable_local_thread_catalog_rows(db, threads)?;
     let sync_state_needs_update = db
         .query_row(
             "SELECT COALESCE(initial_build_complete, 0), COALESCE(observation_sequence, 0), watermark_updated_at FROM local_thread_catalog_sync_state WHERE host_id = 'local'",
@@ -1302,9 +1319,6 @@ fn apply_local_thread_catalog_update(
     tx: &rusqlite::Transaction<'_>,
     threads: &[LocalCatalogThread],
 ) -> anyhow::Result<usize> {
-    if threads.is_empty() {
-        return Ok(0);
-    }
     tx.execute(
         "INSERT OR IGNORE INTO local_thread_catalog_hosts (host_id, host_kind) VALUES ('local', 'local')",
         [],
@@ -1374,6 +1388,7 @@ fn apply_local_thread_catalog_update(
             ),
         )?;
     }
+    changed += mark_unopenable_local_thread_catalog_rows_missing(tx, threads, next_sequence)?;
     let latest_updated_at = latest_local_catalog_updated_at(threads);
     let sync_state_changed = tx
         .query_row(
@@ -1419,6 +1434,36 @@ fn apply_local_thread_catalog_update(
         )?;
     }
     Ok(changed)
+}
+
+fn count_unopenable_local_thread_catalog_rows(
+    db: &Connection,
+    _threads: &[LocalCatalogThread],
+) -> anyhow::Result<usize> {
+    Ok(db.query_row(
+        "SELECT COUNT(*) FROM local_thread_catalog
+         WHERE missing_candidate = 0
+           AND host_id = 'local'
+           AND COALESCE(source_detail, '') = ''",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? as usize)
+}
+
+fn mark_unopenable_local_thread_catalog_rows_missing(
+    tx: &rusqlite::Transaction<'_>,
+    _threads: &[LocalCatalogThread],
+    observation_sequence: i64,
+) -> anyhow::Result<usize> {
+    Ok(tx.execute(
+        "UPDATE local_thread_catalog
+         SET missing_candidate = 1,
+             observation_sequence = ?1
+         WHERE missing_candidate = 0
+           AND host_id = 'local'
+           AND COALESCE(source_detail, '') = ''",
+        [observation_sequence],
+    )?)
 }
 
 fn local_thread_catalog_row(

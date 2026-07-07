@@ -1,0 +1,202 @@
+= Codex++ Linux Adaptation Maintenance Workflow
+:toc:
+:toclevels: 2
+
+English | xref:maintenance-workflow_zh-CN.adoc[简体中文]
+
+This page defines the official maintenance workflow for `906341774/CodexPlusPlus-for-Linux`.
+It prioritizes reviewability, interruption, and recovery over long unattended full automation.
+
+This workflow supersedes the earlier experimental workflow that treated end-to-end automatic adaptation as the default.
+The older automation page may remain as historical reference, but it must not be used as the default execution plan unless the maintainer explicitly asks for it.
+
+== Background
+
+The `v1.2.28` baseline adaptation exposed several workflow failures:
+
+* after context compaction, agents could lose precise stage state and restart from environment checks;
+* GUI, Computer Use, MCP, or container display failures could be misclassified as Codex++ compatibility bugs;
+* one long run attempted to cover build, install, GUI operation, diagnosis, patching, documentation, release validation, and pushing;
+* missing hard stop rules allowed infrastructure failures to expand into patches without evidence.
+
+The current strategy therefore returns to a maintainer-led, script-assisted workflow with Podman isolation.
+
+== Principles
+
+* Pin exactly one upstream Codex++ baseline per adaptation round.
+  Do not switch baselines mid-round when upstream publishes another release.
+* Keep Podman as the default test environment.
+  Validate fixes inside the container before applying finished artifacts to the host installation.
+* Do not let agents autonomously traverse every GUI feature.
+  GUI work should start from maintainer feedback, screenshots, logs, and focused reproduction.
+* Every patch needs an evidence chain: symptom, root-cause judgment, modified scope, and validation result.
+* A patch without evidence must not enter the Antora snippet manifest.
+* Automation may run only a bounded single-stage task.
+  The full adaptation and publication process must not run as an open-ended long transaction.
+
+== Prompt Draft Directory Rule
+
+`.ai_prompts_draft/` is the maintainer's private scratch area for conversation prompt drafts.
+It may contain obsolete drafts, invalid assumptions, or temporary experiments.
+
+Hard rules:
+
+* Agents must not read `.ai_prompts_draft/` unless the maintainer explicitly asks for it.
+* If the maintainer names one prompt file, read only that file.
+* Content from `.ai_prompts_draft/` must not be promoted automatically into project facts, workflow requirements, or release gates.
+* If a prompt draft conflicts with formal documentation, follow this page, the README files, Antora pages, and current maintainer instructions.
+
+== Maintenance Modes
+
+=== manual-stable
+
+`manual-stable` is the default mode.
+
+Use it for:
+
+* following a new upstream Codex++ baseline;
+* fixing Linux adaptation issues found during real use;
+* validating one concrete feature, such as the Fast button, script marketplace, or Pure API config sync.
+
+Procedure:
+
+. Pin the baseline version, for example `v1.2.29`.
+. Update or restore source snapshots under `CodexPlusPlus/src` and `codex-desktop-linux/src`.
+. Run static checks, patch apply checks, and white-box tests with the existing scripts.
+. Build, install, and smoke-launch CodexDesktop and Codex++ inside Podman.
+. Reproduce and fix one concrete maintainer-reported issue.
+. Convert verified changes into Antora snippets or script changes.
+. Summarize fixed issues, verified features, and known gaps before committing.
+. Push to the maintainer fork and create the matching tag or hotfix tag.
+
+=== bounded-auto
+
+`bounded-auto` is allowed for continued automation experiments, but one run may complete only one stage.
+
+Examples:
+
+* build only the AlmaLinux 9 Podman test image;
+* run only the installer selftest;
+* replay patches against a clean upstream source tree only;
+* verify one GUI feature only;
+* draft release notes for one version only.
+
+Hard limits:
+
+* each run must declare its stage name, inputs, outputs, and stop conditions;
+* the same stage may run at most twice when inputs are unchanged;
+* failures must produce a failure classification instead of continuing into code changes;
+* GUI or Computer Use failures must not directly imply a Codex++ compatibility bug;
+* crossing into another stage requires a stage report and maintainer confirmation.
+
+=== full-auto
+
+`full-auto` is paused.
+
+It should not be restored until `bounded-auto` has stayed stable across multiple versions, avoids repeated environment checks, does not misclassify GUI infrastructure failures, and reliably preserves stage state.
+
+== Stage State File
+
+Future automation must persist stage state.
+Suggested path:
+
+[source,text]
+----
+.adaptation-runs/<run-id>/state.json
+----
+
+Minimum fields:
+
+[source,json]
+----
+{
+  "run_id": "2026-07-03-v1.2.29",
+  "baseline": "v1.2.29",
+  "mode": "bounded-auto",
+  "stage": "patch-replay",
+  "completed_stages": ["source-sync", "installer-selftest"],
+  "last_success_evidence": "logs/patch-replay.ok.txt",
+  "blocked_reason": null,
+  "repeat_count_for_current_stage": 0
+}
+----
+
+After context compaction or task recovery, the agent must read this state first.
+If the state file is missing or inconsistent with the worktree, stop and explain instead of rerunning the full workflow from the beginning.
+
+== GUI Failure Classification
+
+Before treating a symptom as a Codex++ adaptation bug, rule out GUI infrastructure failure.
+
+Infrastructure failures include:
+
+* Computer Use calls do not reach MCP;
+* screenshot timestamps do not update;
+* the target window is missing or its PID has exited;
+* `ydotool` or `/dev/uinput` is unavailable;
+* X11, DBus, portal, or container display bridging is broken;
+* the CDP port connects to the host instance or an old instance;
+* CodexDesktop is frozen and cannot respond to basic clicks.
+
+These cases may only be classified as test infrastructure failures.
+Fix the test environment or ask the maintainer for manual intervention before writing compatibility patches.
+
+== Release and Tag Policy
+
+After a new baseline becomes initially usable, push a Git synchronization point.
+
+Baseline tag:
+
+[source,text]
+----
+v1.2.29
+----
+
+Hotfix tags:
+
+[source,text]
+----
+v1.2.29-fix-0001
+v1.2.29-fix-0002
+----
+
+Release notes must include:
+
+* upstream Codex++ version;
+* `codex-desktop-linux` source snapshot or commit;
+* issues fixed in this round;
+* features actually verified in this round;
+* unverified features;
+* known issues;
+* whether build artifacts or a Podman test environment were exported.
+
+Do not move a published baseline tag.
+If a problem is found after the tag, add a hotfix tag.
+
+== Pre-Push Checks
+
+Before pushing, verify:
+
+* no real token, private key, authorization header, or account-private information is staged;
+* `.tmp/`, `.cache/`, Podman runtime caches, and transient test workdirs are not staged;
+* `.ai_prompts_draft/` is not staged and has not been treated as formal workflow authority;
+* build artifacts, if added, have documented purpose, source, and checksum;
+* source snapshots, if added, document their upstream version or commit.
+
+== Stop Conditions
+
+Stop and report when:
+
+* the Podman test container cannot start;
+* container GUI infrastructure is unavailable;
+* Computer Use repeatedly fails and there is no evidence that requests reached MCP;
+* the current stage cannot be confirmed after context compaction;
+* the same stage exceeds the repeat limit;
+* progress would require changing paths, versions, or test semantics explicitly set by the maintainer;
+* potential privacy or credential leakage is found.
+
+== Current Recommendation
+
+Until the automation failure source is understood, use `manual-stable` for the next upstream baseline adaptation.
+Agents may help run scripts, analyze logs, write patches, and prepare release notes, but should not launch a long unattended end-to-end adaptation run.
+

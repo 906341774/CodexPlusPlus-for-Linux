@@ -284,10 +284,10 @@ where
             hooks.ensure_computer_use_config(&settings).await?;
         }
         let home = crate::relay_config::default_codex_home_dir();
-        match crate::codex_sqlite::sanitize_historical_model_suffixes(&home) {
+        match crate::codex_sqlite::sanitize_thread_model_suffixes(&home) {
             Ok(result) if result.updated > 0 => {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "launcher.sanitize_historical_model_suffixes",
+                    "launcher.sanitize_thread_model_suffixes",
                     serde_json::json!({
                         "scanned": result.scanned,
                         "updated": result.updated
@@ -297,7 +297,7 @@ where
             Ok(_) => {}
             Err(error) => {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "launcher.sanitize_historical_model_suffixes_failed",
+                    "launcher.sanitize_thread_model_suffixes_failed",
                     serde_json::json!({
                         "error": error.to_string()
                     }),
@@ -1798,6 +1798,10 @@ pub fn build_codex_command_with_native_menu_inspector(
             .to_string_lossy()
             .to_string(),
     ];
+    if cfg!(target_os = "linux") && app_dir.join("start.sh").exists() {
+        command.push("--new-instance".to_string());
+        command.push("--".to_string());
+    }
     command.extend(build_codex_arguments_with_native_menu_inspector(
         debug_port,
         inspector_port,
@@ -1867,6 +1871,22 @@ const NETWORK_ENV_VARS: &[&str] = &[
     "NODE_OPTIONS",
 ];
 
+const LINUX_RUNTIME_ENV_VARS: &[&str] = &[
+    "CONDA_DEFAULT_ENV",
+    "CONDA_PREFIX",
+    "CPATH",
+    "CPLUS_INCLUDE_PATH",
+    "C_INCLUDE_PATH",
+    "GI_TYPELIB_PATH",
+    "GIO_MODULE_DIR",
+    "LD_LIBRARY_PATH",
+    "LIBRARY_PATH",
+    "PIXI_HOME",
+    "PIXI_PROJECT_ENVIRONMENT",
+    "PIXI_PROJECT_ROOT",
+    "PKG_CONFIG_PATH",
+];
+
 const LINUX_CODEX_PLUSPLUS_WEBVIEW_PORT: &str = "5176";
 const LINUX_CODEX_PLUSPLUS_MULTI_LAUNCH_PORT_RANGE: &str = "5176-5185";
 
@@ -1878,6 +1898,9 @@ pub fn codex_process_environment_from(
     if cfg!(target_os = "linux") {
         env.remove("ELECTRON_RUN_AS_NODE");
         env.remove("ELECTRON_NO_ATTACH_CONSOLE");
+        for name in LINUX_RUNTIME_ENV_VARS {
+            env.remove(*name);
+        }
         if should_hydrate_linux_network_environment(&env) {
             hydrate_linux_network_environment(&mut env);
         }

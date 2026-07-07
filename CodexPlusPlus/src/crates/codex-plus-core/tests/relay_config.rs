@@ -2338,6 +2338,32 @@ fn pure_api_config_upgrades_plain_http_public_hostname_to_https() {
     assert!(config.contains(r#"base_url = "https://wemx.cc""#));
 }
 
+#[test]
+fn apply_relay_files_normalizes_duplicate_config_before_validation() {
+    let temp = tempfile::tempdir().unwrap();
+    let duplicate_config = r#"
+model_provider = "custom"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = false
+base_url = "https://example.test"
+
+[model_providers.custom]
+base_url = "https://duplicate.example.test"
+"#;
+
+    apply_relay_config_file_to_home(temp.path(), duplicate_config).unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert_eq!(config.matches("model_provider =").count(), 1);
+    assert_eq!(config.matches("[model_providers.custom]").count(), 1);
+    assert!(config.contains(r#"base_url = "https://example.test""#));
+    assert!(config.ends_with('\n'));
+}
+
 #[cfg(windows)]
 #[test]
 fn apply_relay_profile_to_home_with_switch_rules_does_not_preserve_computer_use_guard_config_by_default()

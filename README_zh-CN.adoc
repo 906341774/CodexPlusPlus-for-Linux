@@ -21,7 +21,8 @@ link:README.adoc[English] | 简体中文
 
 * `docs/` 下的 Antora 文档组件。
 * `docs/modules/ROOT/pages/snippets.adoc` 中的结构化片段清单。
-* `docs/modules/ROOT/pages/adapter-workflow_zh-CN.adoc` 中的定期适配工作流。
+* `docs/modules/ROOT/pages/maintenance-workflow_zh-CN.adoc` 中的正式维护流程。
+* `docs/modules/ROOT/pages/adapter-workflow_zh-CN.adoc` 中的历史/实验性定期适配工作流。
 * `docs/modules/ROOT/attachments/patches/` 中的补丁附件。
 * 双语 PowerShell 安装与管理脚本：`scripts/Installer-and-Manager.ps1`。
 * `CodexPlusPlus/src` 和 `codex-desktop-linux/src` 下的上游源码快照，供研究和可复现对照使用；嵌套 `.git` 元数据和本地构建缓存有意不纳入跟踪。
@@ -150,4 +151,5 @@ pwsh ./scripts/Installer-and-Manager.ps1 -Action uninstall -CodexDesktopRootPath
 
 打开 `docs/modules/ROOT/pages/snippets.adoc` 可以查看每个适配片段。
 较长的补丁正文保存在 `docs/modules/ROOT/attachments/patches/` 中，并由 Antora 页面引用。
-定期同步上游、验证功能并推送维护者 fork 时，请使用 `docs/modules/ROOT/pages/adapter-workflow_zh-CN.adoc` 和 `docs/modules/ROOT/attachments/feature-matrix.json`。
+定期同步上游、验证功能并推送维护者 fork 时，请先遵循 `docs/modules/ROOT/pages/maintenance-workflow_zh-CN.adoc`。
+`docs/modules/ROOT/pages/adapter-workflow_zh-CN.adoc` 和 `docs/modules/ROOT/attachments/feature-matrix.json` 仅作为历史自动化参考和功能矩阵资料。

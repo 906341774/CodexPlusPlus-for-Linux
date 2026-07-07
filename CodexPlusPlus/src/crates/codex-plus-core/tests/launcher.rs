@@ -25,6 +25,39 @@ use codex_plus_core::ports::{
 use codex_plus_core::settings::{BackendSettings, RelayProfile, RelayProtocol};
 use codex_plus_core::status::StatusStore;
 
+#[cfg(target_os = "linux")]
+fn linux_app_paths_env_lock() -> &'static Mutex<()> {
+    static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(target_os = "linux")]
+struct EnvVarRestore {
+    key: &'static str,
+    old_value: Option<std::ffi::OsString>,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for EnvVarRestore {
+    fn drop(&mut self) {
+        if let Some(value) = self.old_value.take() {
+            unsafe { std::env::set_var(self.key, value) };
+        } else {
+            unsafe { std::env::remove_var(self.key) };
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn set_xdg_data_home_for_test(path: &Path) -> EnvVarRestore {
+    let old_value = std::env::var_os("XDG_DATA_HOME");
+    unsafe { std::env::set_var("XDG_DATA_HOME", path) };
+    EnvVarRestore {
+        key: "XDG_DATA_HOME",
+        old_value,
+    }
+}
+
 #[test]
 fn app_paths_find_latest_windows_package_prefers_highest_version_app_dir() {
     let temp = tempfile::tempdir().unwrap();
@@ -195,6 +228,104 @@ fn app_paths_saved_path_is_used_when_no_explicit_path_is_provided() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn app_paths_linux_falls_back_to_adapter_state_when_saved_path_is_stale() {
+    let _guard = linux_app_paths_env_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let data_home = temp.path().join("xdg-data");
+    let app_root = temp.path().join("CodexDesktop");
+    let stale_saved_path = app_root.join("codex-app");
+    std::fs::create_dir_all(data_home.join("codex-plusplus")).unwrap();
+    std::fs::create_dir_all(&app_root).unwrap();
+    std::fs::write(app_root.join("start.sh"), "#!/bin/sh\n").unwrap();
+    std::fs::write(app_root.join("version"), "42.1.0\n").unwrap();
+    std::fs::write(
+        data_home.join("codex-plusplus").join("state.json"),
+        format!(
+            r#"{{
+  "appRoot": "{}",
+  "linuxCodexStartScript": "{}"
+}}"#,
+            app_root.display(),
+            app_root.join("start.sh").display()
+        ),
+    )
+    .unwrap();
+
+    let _restore = set_xdg_data_home_for_test(&data_home);
+
+    assert_eq!(
+        resolve_codex_app_dir_with_saved(None, Some(&stale_saved_path.to_string_lossy()))
+            .as_deref(),
+        Some(app_root.as_path())
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn app_paths_linux_recovers_from_stale_state_using_adapter_desktop_entry() {
+    let _guard = linux_app_paths_env_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let data_home = temp.path().join("xdg-data");
+    let applications = data_home.join("applications");
+    let app_root = temp.path().join("CodexDesktop");
+    let stale_app_root = app_root.join("codex-app");
+    let install_root = app_root.join(".codex-plusplus");
+    let wrapper = install_root.join("install").join("launch-codex-plus-plus");
+    let desktop_entry = applications.join("codex-plus-plus.desktop");
+
+    std::fs::create_dir_all(data_home.join("codex-plusplus")).unwrap();
+    std::fs::create_dir_all(&applications).unwrap();
+    std::fs::create_dir_all(&app_root).unwrap();
+    std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+    std::fs::write(app_root.join("start.sh"), "#!/bin/sh\n").unwrap();
+    std::fs::write(app_root.join("version"), "42.1.0\n").unwrap();
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nexec '{}' --app-path '{}' \"$@\"\n",
+            install_root
+                .join("install")
+                .join("codex-plus-plus")
+                .display(),
+            app_root.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &desktop_entry,
+        format!(
+            "[Desktop Entry]\nType=Application\nName=Codex++\nExec=\"{}\"\n",
+            wrapper.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        data_home.join("codex-plusplus").join("state.json"),
+        format!(
+            r#"{{
+  "appRoot": "{}",
+  "linuxCodexStartScript": "{}",
+  "linuxAdapterInstallRoot": "{}",
+  "linuxAdapterDesktopEntryPath": "{}"
+}}"#,
+            stale_app_root.display(),
+            stale_app_root.join("start.sh").display(),
+            stale_app_root.join(".codex-plusplus").display(),
+            desktop_entry.display()
+        ),
+    )
+    .unwrap();
+
+    let _restore = set_xdg_data_home_for_test(&data_home);
+
+    assert_eq!(
+        resolve_codex_app_dir_with_saved(None, Some(&stale_app_root.to_string_lossy())).as_deref(),
+        Some(app_root.as_path())
+    );
+}
+
 #[test]
 fn launcher_builds_debug_arguments_and_commands() {
     let app_dir = PathBuf::from(r"C:\Codex\app");
@@ -316,6 +447,24 @@ fn launcher_native_menu_inspector_arguments_are_added_before_extra_args() {
     assert_eq!(command[2], "--remote-allow-origins=http://127.0.0.1:9229");
     assert_eq!(command[3], "--inspect=127.0.0.1:9329");
     assert_eq!(command[4], "--force_high_performance_gpu");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn launcher_linux_native_menu_inspector_preserves_start_sh_passthrough_separator() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("CodexDesktop");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::write(app_dir.join("start.sh"), "#!/bin/sh\n").unwrap();
+
+    let command = build_codex_command_with_native_menu_inspector(&app_dir, 9229, 9329, &[]);
+
+    assert_eq!(command[0], app_dir.join("start.sh").to_string_lossy());
+    assert_eq!(command[1], "--new-instance");
+    assert_eq!(command[2], "--");
+    assert_eq!(command[3], "--remote-debugging-port=9229");
+    assert_eq!(command[4], "--remote-allow-origins=http://127.0.0.1:9229");
+    assert_eq!(command[5], "--inspect=127.0.0.1:9329");
 }
 
 #[test]
@@ -717,6 +866,23 @@ async fn launch_lifecycle_runs_enabled_maintenance_without_applying_relay_profil
             .as_deref(),
         Some(app_dir.to_string_lossy().as_ref())
     );
+}
+
+#[test]
+fn launch_lifecycle_does_not_scan_large_logs_database_on_startup() {
+    let source = include_str!("../src/launcher.rs");
+    let start = source
+        .find("pub async fn launch_and_inject_with_hooks")
+        .expect("launch flow should exist");
+    let end = source[start..]
+        .find("fn relay_protocol_proxy_enabled")
+        .map(|offset| start + offset)
+        .expect("launch flow should end before relay helper");
+    let body = &source[start..end];
+
+    assert!(body.contains("sanitize_thread_model_suffixes"));
+    assert!(!body.contains("sanitize_historical_model_suffixes"));
+    assert!(!body.contains("sanitize_logs_model_suffixes"));
 }
 
 #[tokio::test]
@@ -1395,6 +1561,13 @@ fn linux_process_environment_strips_electron_node_pollution_and_preserves_proxy(
             "HTTPS_PROXY".to_string(),
             "http://env-proxy.example.test:8080".to_string(),
         ),
+        ("CONDA_PREFIX".to_string(), "/tmp/conda".to_string()),
+        (
+            "GI_TYPELIB_PATH".to_string(),
+            "/tmp/girepository".to_string(),
+        ),
+        ("LD_LIBRARY_PATH".to_string(), "/tmp/lib".to_string()),
+        ("PIXI_PROJECT_ROOT".to_string(), "/tmp/pixi".to_string()),
         ("ELECTRON_RUN_AS_NODE".to_string(), "1".to_string()),
         ("ELECTRON_NO_ATTACH_CONSOLE".to_string(), "1".to_string()),
     ]);
@@ -1410,6 +1583,10 @@ fn linux_process_environment_strips_electron_node_pollution_and_preserves_proxy(
     if cfg!(target_os = "linux") {
         assert!(!process_env.contains_key("ELECTRON_RUN_AS_NODE"));
         assert!(!process_env.contains_key("ELECTRON_NO_ATTACH_CONSOLE"));
+        assert!(!process_env.contains_key("CONDA_PREFIX"));
+        assert!(!process_env.contains_key("GI_TYPELIB_PATH"));
+        assert!(!process_env.contains_key("LD_LIBRARY_PATH"));
+        assert!(!process_env.contains_key("PIXI_PROJECT_ROOT"));
     }
 }
 

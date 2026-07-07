@@ -534,6 +534,49 @@ function applyLinuxChatSearchHydrationPatch(currentSource) {
   return patchedSource;
 }
 
+function applyLinuxLocalConversationRouteHydrationPatch(currentSource) {
+  let patchedSource = currentSource;
+
+  const missingSnapshotResumePattern =
+    /,([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\);(\2\([A-Za-z_$][\w$]*,\4\);let\[[A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\]=\(0,[A-Za-z_$][\w$]*\.useState\)\(\1\))/u;
+  patchedSource = patchedSource.replace(
+    missingSnapshotResumePattern,
+    (match, resumeStateVar, lookupFn, resumeStateMapVar, conversationVar, suffix) => {
+      if (match.includes("??!0")) {
+        return match;
+      }
+      return `,${resumeStateVar}=${lookupFn}(${resumeStateMapVar},${conversationVar})??!0;${suffix}`;
+    },
+  );
+
+  if (patchedSource.includes("function codexLinuxHydrateRouteConversation(")) {
+    return patchedSource;
+  }
+
+  if (!patchedSource.includes("maybe-resume-conversation")) {
+    return patchedSource;
+  }
+
+  const resumePattern =
+    /let ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\.get\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\);await ([A-Za-z_$][\w$]*)\(`maybe-resume-conversation`,\{hostId:\1,conversationId:\4,/u;
+  const resumeMatch = patchedSource.match(resumePattern);
+  if (resumeMatch == null) {
+    console.warn(
+      "WARN: Could not find local conversation resume route — skipping Linux route hydration patch",
+    );
+    return patchedSource;
+  }
+
+  const [resumeNeedle, hostVar, hostMapVar, hostKeyVar, conversationVar, requestAlias] =
+    resumeMatch;
+  const helper =
+    `function codexLinuxHydrateRouteConversation(e,t){try{let n=e??\`local\`,r=${requestAlias}(\`load-recent-conversation-ids-for-host\`,{hostId:n,conversationIds:[t]}),i=new Promise(e=>globalThis.setTimeout(e,1500));return Promise.race([r,i]).catch(()=>{})}catch{return Promise.resolve()}}`;
+  const resumePatch =
+    `let ${hostVar}=${hostMapVar}.get(${hostKeyVar},${conversationVar});await codexLinuxHydrateRouteConversation(${hostVar},${conversationVar});await ${requestAlias}(\`maybe-resume-conversation\`,{hostId:${hostVar},conversationId:${conversationVar},`;
+
+  return patchedSource.replace(resumeNeedle, `${helper}${resumePatch}`);
+}
+
 function applyLinuxBrowserUseExternalAvailabilityPatch(currentSource) {
   const externalFeatureNeedle = "featureName:`browser_use_external`";
   const statsigNeedle = "410065390";
@@ -893,6 +936,16 @@ function applyLinuxLocalThreadCatalogInitialSnapshotPatch(currentSource) {
       summaryTimestampRegex,
       (_match, entryVar) =>
         `function codexLinuxLocalCatalogTimestampMs(e){return typeof e===\`number\`&&Number.isFinite(e)&&e>0&&e<1e12?e*1e3:e}function cFt(${entryVar}){let codexLinuxCreatedAt=codexLinuxLocalCatalogTimestampMs(${entryVar}.sourceCreatedAt),codexLinuxUpdatedAt=codexLinuxLocalCatalogTimestampMs(${entryVar}.sourceUpdatedAt);return{conversationId:J(${entryVar}.threadId),hostId:${entryVar}.hostId,createdAt:codexLinuxCreatedAt,updatedAt:codexLinuxUpdatedAt,recencyAt:codexLinuxUpdatedAt,`,
+    );
+  }
+  if (
+    patchedSource.includes("function cFt(") &&
+    patchedSource.includes("source:null,threadSource:null,threadRuntimeStatus:{type:`idle`}") &&
+    !patchedSource.includes("resumeState:`needs_resume`,streamRole:null")
+  ) {
+    patchedSource = patchedSource.replace(
+      /source:null,threadSource:null,threadRuntimeStatus:\{type:`idle`\}/g,
+      "source:null,threadSource:null,resumeState:`needs_resume`,streamRole:null,threadRuntimeStatus:{type:`idle`}",
     );
   }
 
@@ -1939,6 +1992,7 @@ module.exports = {
   applyLinuxAppServerBackfillWaitPatch,
   applyLinuxAppServerFeatureEnablementPatch,
   applyLinuxChatSearchHydrationPatch,
+  applyLinuxLocalConversationRouteHydrationPatch,
   applyLinuxLocalThreadCatalogInitialSnapshotPatch,
   applyLinuxBrowserUseAvailabilityPatch,
   applyLinuxBrowserUseExternalAvailabilityPatch,
