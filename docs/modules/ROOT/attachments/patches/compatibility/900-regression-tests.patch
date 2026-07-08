@@ -1,11 +1,77 @@
+diff --git a/crates/codex-plus-core/tests/bridge_routes.rs b/crates/codex-plus-core/tests/bridge_routes.rs
+index cf63669..fa1e487 100644
+--- a/crates/codex-plus-core/tests/bridge_routes.rs
++++ b/crates/codex-plus-core/tests/bridge_routes.rs
+@@ -120,7 +120,7 @@ async fn settings_get_includes_runtime_codex_app_version() {
+ 
+     assert_eq!(result["codexAppVersion"], json!("26.601.21317"));
+     assert_eq!(result["codexAppPluginMarketplaceUnlock"], json!(true));
+-    assert_eq!(result.get("codexAppForcePluginInstall"), None);
++    assert_eq!(result["codexAppForcePluginInstall"], json!(true));
+     assert_eq!(result["codexAppThreadIdBadge"], json!(false));
+ }
+ 
+@@ -731,6 +731,31 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
+     assert!(evaluated[0].contains("window.demo = true;"));
+ }
+ 
++#[test]
++fn user_script_bundle_wraps_scripts_with_linux_codex_location_alias() {
++    let temp = tempfile::tempdir().unwrap();
++    let user_dir = temp.path().join("user");
++    std::fs::create_dir_all(&user_dir).unwrap();
++    std::fs::write(
++        user_dir.join("market-codex-context-used-meter.js"),
++        r#"window.__seenCodexLocation = new URL(location.href).href;"#,
++    )
++    .unwrap();
++    let manager = UserScriptManager::new(
++        temp.path().join("builtin"),
++        user_dir,
++        temp.path().join("user_scripts.json"),
++    );
++
++    let bundle = manager.build_enabled_bundle().unwrap();
++
++    assert!(bundle.contains("codexPlusLinuxUserScriptLocation"));
++    assert!(bundle.contains("mcpAppSandboxDevtools"));
++    assert!(bundle.contains("app://-/index.html"));
++    assert!(bundle.contains("((location) => {"));
++    assert!(bundle.contains("window.__seenCodexLocation = new URL(location.href).href;"));
++}
++
+ #[tokio::test]
+ async fn core_runtime_open_devtools_uses_inspector_url_opener() {
+     let opened = Arc::new(Mutex::new(Vec::<String>::new()));
+@@ -1036,6 +1061,7 @@ impl BridgeSettingsService for FakeSettings {
+         }
+         for key in [
+             "codexAppPluginMarketplaceUnlock",
++            "codexAppForcePluginInstall",
+             "codexAppModelWhitelistUnlock",
+             "codexAppSessionDelete",
+             "codexAppMarkdownExport",
+@@ -1411,7 +1437,11 @@ impl LaunchHooks for ContextHooks {
+         Ok(())
+     }
+ 
+-    async fn start_helper(&self, _helper_port: u16) -> anyhow::Result<()> {
++    async fn start_helper(
++        &self,
++        _helper_port: u16,
++        _bridge_context: Option<BridgeContext>,
++    ) -> anyhow::Result<()> {
+         Ok(())
+     }
+ 
 diff --git a/crates/codex-plus-core/tests/cdp_bridge.rs b/crates/codex-plus-core/tests/cdp_bridge.rs
-index c0d06e3..dcd4113 100644
+index c0d06e3..fb97418 100644
 --- a/crates/codex-plus-core/tests/cdp_bridge.rs
 +++ b/crates/codex-plus-core/tests/cdp_bridge.rs
 @@ -122,6 +122,18 @@ fn injection_script_times_out_backend_bridge_calls_and_falls_back_to_helper() {
      assert!(script.contains("backend_status_bridge_and_http_failed"));
  }
-
+ 
 +#[test]
 +fn injection_script_falls_back_to_helper_for_bridge_routes_when_binding_is_missing() {
 +    let script = assets::injection_script(57321);
@@ -23,12 +89,12 @@ index c0d06e3..dcd4113 100644
      let script = assets::injection_script(57321);
 @@ -130,14 +142,13 @@ fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
  }
-
+ 
  #[test]
 -fn injection_script_menu_exposes_marketplace_plugin_switch_only() {
 +fn injection_script_menu_exposes_marketplace_switch_without_force_install_plugin_switch() {
      let script = assets::injection_script(57321);
-
+ 
      assert!(script.contains("插件市场解锁"));
      assert!(script.contains("data-codex-plus-setting=\"pluginMarketplaceUnlock\""));
      assert!(!script.contains("特殊插件强制安装"));
@@ -39,7 +105,7 @@ index c0d06e3..dcd4113 100644
  }
 @@ -218,7 +229,7 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
      let script = assets::injection_script(57321);
-
+ 
      assert!(script.contains("function pluginPatchDisabledInRelayMode()"));
 -    assert!(script.contains("!codexPlusBackendSettingsLoaded"));
 +    assert!(script.contains("codexPlusBackendSettings.launchMode === \"relay\""));
@@ -48,7 +114,7 @@ index c0d06e3..dcd4113 100644
  }
 @@ -240,23 +251,31 @@ fn injection_script_gates_legacy_and_modern_plugin_unlock_by_codex_version() {
      let script = assets::injection_script(57321);
-
+ 
      assert!(script.contains("const pluginUnlockStrategy = codexPluginUnlockStrategy()"));
 +    assert!(script.contains("if ((pluginUnlockStrategy === \"legacy\" || pluginUnlockStrategy === \"unknown\") && settings.pluginMarketplaceUnlock)"));
 +    assert!(script.contains("enablePluginEntry();"));
@@ -57,12 +123,12 @@ index c0d06e3..dcd4113 100644
      assert!(script.contains("plugin_unlock_strategy_selected"));
      assert!(script.contains("window.__codexPluginUnlockStrategyLogged"));
  }
-
+ 
  #[test]
 -fn injection_script_removes_legacy_plugin_sidebar_entry_unlock() {
 +fn injection_script_keeps_linux_plugin_sidebar_entry_unlock_without_debug_suffix() {
      let script = assets::injection_script(57321);
-
+ 
 -    assert!(!script.contains("pluginEntryUnlock"));
      assert!(!script.contains("codexAppPluginEntryUnlock"));
 -    assert!(!script.contains("function spoofChatGPTAuthMethod(element)"));
@@ -84,7 +150,7 @@ index c0d06e3..dcd4113 100644
 +    ));
 +    assert!(!script.contains("\"Plugins - Unlocked\" : \"插件 - 已解锁\""));
  }
-
+ 
  #[test]
 @@ -295,9 +314,8 @@ fn injection_script_does_not_unlock_disabled_plugin_install_buttons() {
      assert!(script.contains("button[aria-disabled=\"true\"]"));
@@ -96,26 +162,26 @@ index c0d06e3..dcd4113 100644
 +    assert!(!script.contains("installPluginButtonGuard"));
      assert!(!script.contains("button.dataset.codexForceInstallUnlocked"));
  }
-
+ 
 @@ -408,13 +426,12 @@ fn injection_script_logs_marketplace_grouping_diagnostics() {
  }
-
+ 
  #[test]
 -fn injection_script_omits_force_install_unlock_loop() {
 +fn injection_script_does_not_keep_force_install_unlock_visual_state_sticky() {
      let script = assets::injection_script(57321);
-
+ 
      assert!(!script.contains("codex-force-install-unlocked"));
      assert!(!script.contains("codexForcePluginInstallRefreshIntervalMs"));
      assert!(!script.contains("refreshForcePluginInstallUnlockLoop"));
 -    assert!(!script.contains("__codexForcePluginInstallRefreshTimer"));
  }
-
+ 
  #[test]
 @@ -465,6 +482,18 @@ fn injection_script_exposes_sidebar_thread_id_badge_control() {
      assert!(script.contains("refreshThreadIdBadges();"));
  }
-
+ 
 +#[test]
 +fn injection_script_groups_derived_workspace_projects_in_sidebar_projection() {
 +    let script = assets::injection_script(57321);
@@ -143,12 +209,12 @@ index c0d06e3..dcd4113 100644
      assert!(script.contains("data-codex-service-tier-badge"));
 @@ -613,41 +644,105 @@ fn injection_script_exposes_fast_service_tier_control() {
  }
-
+ 
  #[test]
 -fn injection_script_prompts_for_markdown_export_path_when_supported() {
 +fn linux_renderer_asset_loader_can_find_renamed_dynamic_chunks() {
      let script = assets::injection_script(57321);
-
+ 
 -    assert!(script.contains("showSaveFilePicker"));
 -    assert!(script.contains("suggestedName: filename"));
 -    assert!(script.contains("createWritable()"));
@@ -181,24 +247,40 @@ index c0d06e3..dcd4113 100644
 +    assert!(script.contains("\"list-plugins\""));
 +    assert!(script.contains("\"install-plugin\""));
 +    assert!(script.contains("codexAppAssetUrlFromLoadedResourceText"));
-+}
-+
-+#[test]
+ }
+ 
+ #[test]
+-fn injection_script_discovers_vscode_api_asset_without_hardcoded_hash() {
 +fn linux_renderer_service_tier_patch_finds_dispatcher_without_minified_export_name() {
-+    let script = assets::injection_script(57321);
-+
+     let script = assets::injection_script(57321);
+ 
+-    assert!(script.contains("loadCodexAppModule(\"vscode-api-\""));
+-    assert!(script.contains("codexAppAssetUrlFromScriptText"));
+-    assert!(script.contains("fetch(src"));
+-    assert!(!script.contains("vscode-api-Dc9pX2Bc.js"));
+-    assert!(!script.contains("import(\"./assets/vscode-api-"));
 +    assert!(script.contains("function findCodexDispatcherClass(module)"));
 +    assert!(script.contains("Object.values(module || {})"));
 +    assert!(script.contains("String(value).includes(\"dispatchMessage\")"));
 +    assert!(!script.contains(
 +        "typeof module.v === \"function\" && String(module.v).includes(\"dispatchMessage\")"
 +    ));
-+}
-+
-+#[test]
+ }
+ 
+ #[test]
+-fn injection_script_clears_project_state_when_moving_to_projectless() {
 +fn linux_renderer_dispatcher_patches_skip_hotkey_window_route() {
-+    let script = assets::injection_script(57321);
-+
+     let script = assets::injection_script(57321);
+ 
+-    assert!(script.contains("async function clearThreadWorkspaceHints"));
+-    assert!(script.contains("async function clearThreadWritableRoots"));
+-    assert!(script.contains("async function clearThreadProjectlessOutputDirectories"));
+-    assert!(script.contains("thread-workspace-root-hints"));
+-    assert!(script.contains("thread-writable-roots"));
+-    assert!(script.contains("thread-projectless-output-directories"));
+-    assert!(script.contains("await clearThreadWorkspaceHints(ref)"));
+-    assert!(script.contains("await clearThreadWritableRoots(ref)"));
+-    assert!(script.contains("await clearThreadProjectlessOutputDirectories(ref)"));
 +    assert!(script.contains("function isCodexHotkeyWindowRoute()"));
 +    assert!(
 +        script
@@ -226,18 +308,12 @@ index c0d06e3..dcd4113 100644
 +            "const linuxTriggerFooter = codexServiceTierComposerFromIntelligenceTrigger();"
 +        )
 +    );
- }
-
- #[test]
--fn injection_script_discovers_vscode_api_asset_without_hardcoded_hash() {
++}
++
++#[test]
 +fn linux_renderer_patch_keeps_fast_badge_clickable_during_backend_checking() {
-     let script = assets::injection_script(57321);
-
--    assert!(script.contains("loadCodexAppModule(\"vscode-api-\""));
--    assert!(script.contains("codexAppAssetUrlFromScriptText"));
--    assert!(script.contains("fetch(src"));
--    assert!(!script.contains("vscode-api-Dc9pX2Bc.js"));
--    assert!(!script.contains("import(\"./assets/vscode-api-"));
++    let script = assets::injection_script(57321);
++
 +    assert!(script.contains("function codexServiceTierBackendBlocksLocalOverride()"));
 +    assert!(script.contains("status !== \"ok\" && status !== \"checking\""));
 +    assert!(script.contains("if (codexServiceTierBackendBlocksLocalOverride())"));
@@ -245,22 +321,12 @@ index c0d06e3..dcd4113 100644
 +    assert!(script.contains(
 +        "codexServiceTierState.status === \"loading\" && badge.dataset.tier === \"loading\""
 +    ));
- }
-
- #[test]
--fn injection_script_clears_project_state_when_moving_to_projectless() {
++}
++
++#[test]
 +fn injection_script_prompts_for_markdown_export_path_when_supported() {
-     let script = assets::injection_script(57321);
-
--    assert!(script.contains("async function clearThreadWorkspaceHints"));
--    assert!(script.contains("async function clearThreadWritableRoots"));
--    assert!(script.contains("async function clearThreadProjectlessOutputDirectories"));
--    assert!(script.contains("thread-workspace-root-hints"));
--    assert!(script.contains("thread-writable-roots"));
--    assert!(script.contains("thread-projectless-output-directories"));
--    assert!(script.contains("await clearThreadWorkspaceHints(ref)"));
--    assert!(script.contains("await clearThreadWritableRoots(ref)"));
--    assert!(script.contains("await clearThreadProjectlessOutputDirectories(ref)"));
++    let script = assets::injection_script(57321);
++
 +    assert!(script.contains("showSaveFilePicker"));
 +    assert!(script.contains("suggestedName: filename"));
 +    assert!(script.contains("createWritable()"));
@@ -268,12 +334,74 @@ index c0d06e3..dcd4113 100644
 +    assert!(script.contains("status: \"cancelled\""));
 +    assert!(script.contains("导出已取消"));
  }
-
+ 
  #[test]
-@@ -1088,6 +1183,31 @@ fn pick_injectable_codex_page_target_rejects_non_codex_pages() {
+@@ -679,6 +774,9 @@ fn injection_script_applies_fast_service_tier_contract() {
+     );
+ 
+     assert_eq!(cases["startConversation"]["serviceTier"], "priority");
++
++    assert_eq!(cases["composerFallbackFast"]["serviceTier"], "priority");
++    assert_eq!(cases["composerFallbackFastDiagnosticModel"], "gpt-5.5");
+ }
+ 
+ fn run_service_tier_contract_harness() -> serde_json::Value {
+@@ -714,8 +812,18 @@ function node() {{
+     innerHTML: "",
+   }};
+ }}
++function footerNode(text) {{
++  const el = node();
++  el.textContent = text;
++  el.className = "_footer_test_1";
++  el.getBoundingClientRect = () => ({{ width: 320, height: 40, top: 600, bottom: 640, left: 0, right: 320 }});
++  return el;
++}}
++const composerFooter = footerNode("5.5 超高");
+ globalThis.window = globalThis;
+ window.__CODEX_PLUS_TEST_SERVICE_TIER__ = true;
++globalThis.HTMLElement = Object;
++globalThis.getComputedStyle = () => ({{ display: "block", visibility: "visible" }});
+ globalThis.document = {{
+   scripts: [],
+   documentElement: node(),
+@@ -723,7 +831,7 @@ globalThis.document = {{
+   createElement: () => node(),
+   getElementById: () => null,
+   querySelector: () => null,
+-  querySelectorAll: () => [],
++  querySelectorAll: (selector) => selector === "div" ? [composerFooter] : [],
+   addEventListener() {{}},
+   removeEventListener() {{}},
+ }};
+@@ -776,6 +884,14 @@ const startConversation = api.requestOverride({{
+   model: "gpt-5.5",
+ }});
+ 
++api.setModelCatalog({{ status: "ok", model: "", default_model: "", models: [] }});
++api.setThreadState({{ mode: "global-fast", defaultMode: "fast", entries: {{}} }});
++const composerFallbackFast = api.applyServiceTierOverride("turn/start", {{
++  threadId: "thread-12345678",
++  service_tier: null,
++}});
++const composerFallbackFastDiagnosticModel = api.diagnostics().at(-1)?.detail?.model;
++
+ process.stdout.write(JSON.stringify({{
+   supportedFast,
+   unsupportedModel,
+@@ -783,6 +899,8 @@ process.stdout.write(JSON.stringify({{
+   turnWithoutModelDiagnosticModel,
+   customInheritUnsupported,
+   startConversation,
++  composerFallbackFast,
++  composerFallbackFastDiagnosticModel,
+ }}));
+ "#,
+         script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
+@@ -1088,6 +1206,31 @@ fn pick_injectable_codex_page_target_rejects_non_codex_pages() {
      );
  }
-
+ 
 +#[test]
 +fn pick_injectable_codex_page_target_accepts_linux_local_app_route() {
 +    let targets = vec![
@@ -302,7 +430,7 @@ index c0d06e3..dcd4113 100644
  #[test]
  fn pick_injectable_codex_page_target_requires_websocket() {
      let targets = vec![target("codex", "page", "Codex", "https://codex.test", None)];
-@@ -1681,3 +1801,59 @@ fn noop_handler() -> bridge::BridgeHandler {
+@@ -1681,3 +1824,59 @@ fn noop_handler() -> bridge::BridgeHandler {
              as Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send>>
      })
  }
@@ -362,6 +490,133 @@ index c0d06e3..dcd4113 100644
 +    assert!(!script.contains("window.location.reload()"));
 +    assert!(script.contains("attributeFilter: [\"class\", \"disabled\", \"aria-disabled\", \"data-disabled\", \"aria-current\"]"));
 +}
+diff --git a/crates/codex-plus-core/tests/installers.rs b/crates/codex-plus-core/tests/installers.rs
+index 7cd4e79..0626153 100644
+--- a/crates/codex-plus-core/tests/installers.rs
++++ b/crates/codex-plus-core/tests/installers.rs
+@@ -191,3 +191,122 @@ fn windows_default_install_root_uses_known_folder_before_userprofile_desktop() {
+         assert_eq!(strategy, "user-dirs-desktop");
+     }
+ }
++
++#[cfg(target_os = "linux")]
++fn linux_install_env_lock() -> &'static std::sync::Mutex<()> {
++    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
++    LOCK.get_or_init(|| std::sync::Mutex::new(()))
++}
++
++#[cfg(target_os = "linux")]
++struct EnvVarRestore {
++    key: &'static str,
++    old_value: Option<std::ffi::OsString>,
++}
++
++#[cfg(target_os = "linux")]
++impl Drop for EnvVarRestore {
++    fn drop(&mut self) {
++        if let Some(value) = self.old_value.take() {
++            unsafe { std::env::set_var(self.key, value) };
++        } else {
++            unsafe { std::env::remove_var(self.key) };
++        }
++    }
++}
++
++#[cfg(target_os = "linux")]
++fn set_xdg_data_home_for_test(path: &std::path::Path) -> EnvVarRestore {
++    let old_value = std::env::var_os("XDG_DATA_HOME");
++    unsafe { std::env::set_var("XDG_DATA_HOME", path) };
++    EnvVarRestore {
++        key: "XDG_DATA_HOME",
++        old_value,
++    }
++}
++
++#[cfg(target_os = "linux")]
++#[test]
++fn linux_adapter_entrypoint_detection_uses_codex_app_install_dir() {
++    let _guard = linux_install_env_lock().lock().unwrap();
++    let temp = tempfile::tempdir().unwrap();
++    let xdg_data_home = temp.path().join("empty-xdg-data");
++    let _restore = set_xdg_data_home_for_test(&xdg_data_home);
++    let app_dir = temp.path().join("codex-app");
++    let install_dir = app_dir.join(".codex-plusplus").join("install");
++    std::fs::create_dir_all(&install_dir).unwrap();
++    std::fs::write(
++        install_dir.join("launch-codex-plus-plus"),
++        "#!/bin/sh
++",
++    )
++    .unwrap();
++    std::fs::write(install_dir.join("codex-plus-plus-manager"), "").unwrap();
++
++    let state = codex_plus_core::install::inspect_entrypoints_for_app(Some(&app_dir));
++
++    assert!(state.silent_shortcut.installed);
++    assert!(state.management_shortcut.installed);
++    assert!(
++        state
++            .silent_shortcut
++            .path
++            .as_deref()
++            .unwrap()
++            .ends_with(".codex-plusplus/install/launch-codex-plus-plus")
++    );
++    assert!(
++        state
++            .management_shortcut
++            .path
++            .as_deref()
++            .unwrap()
++            .ends_with(".codex-plusplus/install/codex-plus-plus-manager")
++    );
++}
++
++#[cfg(target_os = "linux")]
++#[test]
++fn linux_adapter_entrypoint_detection_uses_synced_state_install_root() {
++    let _guard = linux_install_env_lock().lock().unwrap();
++    let temp = tempfile::tempdir().unwrap();
++    let data_home = temp.path().join("xdg-data");
++    let install_root = temp.path().join("external-codexpp");
++    let install_dir = install_root.join("install");
++    std::fs::create_dir_all(data_home.join("codex-plusplus")).unwrap();
++    std::fs::create_dir_all(&install_dir).unwrap();
++    std::fs::write(
++        install_dir.join("launch-codex-plus-plus"),
++        "#!/bin/sh
++",
++    )
++    .unwrap();
++    std::fs::write(install_dir.join("codex-plus-plus-manager"), "").unwrap();
++    std::fs::write(
++        data_home.join("codex-plusplus").join("state.json"),
++        format!(
++            r#"{{"linuxAdapterInstallRoot":"{}","appRoot":"/stale/codex-app"}}"#,
++            install_root.display()
++        ),
++    )
++    .unwrap();
++
++    let _restore = set_xdg_data_home_for_test(&data_home);
++    let state = codex_plus_core::install::inspect_entrypoints_for_app(None);
++
++    assert!(state.silent_shortcut.installed);
++    assert!(state.management_shortcut.installed);
++    assert_eq!(
++        state.silent_shortcut.path.as_deref(),
++        Some(install_dir.join("launch-codex-plus-plus").to_str().unwrap())
++    );
++    assert_eq!(
++        state.management_shortcut.path.as_deref(),
++        Some(
++            install_dir
++                .join("codex-plus-plus-manager")
++                .to_str()
++                .unwrap()
++        )
++    );
++}
 diff --git a/crates/codex-plus-core/tests/launcher.rs b/crates/codex-plus-core/tests/launcher.rs
 index ec12600..d2adfb6 100644
 --- a/crates/codex-plus-core/tests/launcher.rs
@@ -377,7 +632,7 @@ index ec12600..d2adfb6 100644
 @@ -24,6 +25,39 @@ use codex_plus_core::ports::{
  use codex_plus_core::settings::{BackendSettings, RelayProfile, RelayProtocol};
  use codex_plus_core::status::StatusStore;
-
+ 
 +#[cfg(target_os = "linux")]
 +fn linux_app_paths_env_lock() -> &'static Mutex<()> {
 +    static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
@@ -417,7 +672,7 @@ index ec12600..d2adfb6 100644
 @@ -194,6 +228,104 @@ fn app_paths_saved_path_is_used_when_no_explicit_path_is_provided() {
      );
  }
-
+ 
 +#[cfg(target_os = "linux")]
 +#[test]
 +fn app_paths_linux_falls_back_to_adapter_state_when_saved_path_is_stale() {
@@ -520,7 +775,7 @@ index ec12600..d2adfb6 100644
  fn launcher_builds_debug_arguments_and_commands() {
      let app_dir = PathBuf::from(r"C:\Codex\app");
 @@ -261,10 +393,7 @@ fn launcher_appends_extra_codex_arguments_after_debug_arguments() {
-
+ 
  #[test]
  fn launcher_fast_startup_adds_statsig_fast_fail_argument_when_enabled() {
 -    let settings = BackendSettings {
@@ -529,12 +784,12 @@ index ec12600..d2adfb6 100644
 -    };
 +    let settings = BackendSettings::default();
      let args = build_codex_arguments_for_settings(9229, &settings);
-
+ 
      assert!(args.iter().any(|arg| {
 @@ -320,6 +449,24 @@ fn launcher_native_menu_inspector_arguments_are_added_before_extra_args() {
      assert_eq!(command[4], "--force_high_performance_gpu");
  }
-
+ 
 +#[cfg(target_os = "linux")]
 +#[test]
 +fn launcher_linux_native_menu_inspector_preserves_start_sh_passthrough_separator() {
@@ -559,7 +814,7 @@ index ec12600..d2adfb6 100644
 @@ -520,7 +667,7 @@ async fn default_helper_serves_backend_status_over_http() {
      let port = listener.local_addr().unwrap().port();
      drop(listener);
-
+ 
 -    hooks.start_helper(port).await.unwrap();
 +    hooks.start_helper(port, None).await.unwrap();
      let client = reqwest::Client::builder().no_proxy().build().unwrap();
@@ -568,7 +823,7 @@ index ec12600..d2adfb6 100644
 @@ -547,6 +694,76 @@ async fn default_helper_serves_backend_status_over_http() {
      hooks.shutdown_helper(port).await;
  }
-
+ 
 +#[tokio::test]
 +async fn default_helper_serves_settings_bridge_routes_over_http() {
 +    let temp = tempfile::tempdir().unwrap();
@@ -645,7 +900,7 @@ index ec12600..d2adfb6 100644
 @@ -557,7 +774,7 @@ async fn default_helper_accepts_diagnostic_log_events_over_http() {
      let port = listener.local_addr().unwrap().port();
      drop(listener);
-
+ 
 -    hooks.start_helper(port).await.unwrap();
 +    hooks.start_helper(port, None).await.unwrap();
      let response = reqwest::Client::builder()
@@ -654,7 +909,7 @@ index ec12600..d2adfb6 100644
 @@ -651,6 +868,23 @@ async fn launch_lifecycle_runs_enabled_maintenance_without_applying_relay_profil
      );
  }
-
+ 
 +#[test]
 +fn launch_lifecycle_does_not_scan_large_logs_database_on_startup() {
 +    let source = include_str!("../src/launcher.rs");
@@ -678,7 +933,7 @@ index ec12600..d2adfb6 100644
 @@ -1292,6 +1526,100 @@ async fn default_launch_hooks_provider_sync_enabled_returns_explicit_error() {
      );
  }
-
+ 
 +#[test]
 +fn linux_start_script_command_uses_new_instance_separator() {
 +    let temp = tempfile::tempdir().unwrap();
@@ -779,7 +1034,7 @@ index ec12600..d2adfb6 100644
 @@ -1414,7 +1742,11 @@ impl LaunchHooks for FakeHooks {
          Ok(())
      }
-
+ 
 -    async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
 +    async fn start_helper(
 +        &self,
@@ -792,7 +1047,7 @@ index ec12600..d2adfb6 100644
 @@ -1451,7 +1783,13 @@ impl LaunchHooks for FakeHooks {
          Ok(())
      }
-
+ 
 -    async fn ensure_injection(&self, debug_port: u16, helper_port: u16, _app_dir: &Path) -> bool {
 +    async fn ensure_injection(
 +        &self,
@@ -804,6 +1059,115 @@ index ec12600..d2adfb6 100644
          self.event(format!("inject:{debug_port}:{helper_port}"));
          self.inject_error.is_none()
      }
+diff --git a/crates/codex-plus-core/tests/relay_config.rs b/crates/codex-plus-core/tests/relay_config.rs
+index c19476f..6c1d2bd 100644
+--- a/crates/codex-plus-core/tests/relay_config.rs
++++ b/crates/codex-plus-core/tests/relay_config.rs
+@@ -467,7 +467,7 @@ fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
+     assert!(config.contains("[model_providers.custom]"));
+     assert!(config.contains(r#"name = "custom""#));
+     assert!(config.contains(r#"wire_api = "responses""#));
+-    assert!(config.contains("requires_openai_auth = true"));
++    assert!(config.contains("requires_openai_auth = false"));
+     assert!(config.contains(r#"base_url = "http://192.168.188.245:3001/v1""#));
+     assert!(config.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
+ }
+@@ -1330,25 +1330,6 @@ fn apply_relay_config_file_switches_config_without_touching_auth_json() {
+     );
+ }
+ 
+-#[test]
+-fn apply_relay_config_file_accepts_utf8_bom_config() {
+-    let temp = tempfile::tempdir().unwrap();
+-    let home = temp.path();
+-    std::fs::write(home.join("config.toml"), "\u{feff}model = \"old\"\n").unwrap();
+-    std::fs::write(home.join("auth.json"), "{\"auth_mode\":\"chatgpt\"}\n").unwrap();
+-
+-    let result = apply_relay_config_file_to_home(
+-        home,
+-        "\u{feff}model_provider = \"custom\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"http://127.0.0.1:57321/v1\"\nexperimental_bearer_token = \"sk-new\"\n",
+-    )
+-    .unwrap();
+-
+-    let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+-    assert!(result.configured);
+-    assert!(config.contains(r#"model_provider = "custom""#));
+-    assert!(config.contains("http://127.0.0.1:57321/v1"));
+-}
+-
+ #[test]
+ fn apply_relay_config_does_not_carry_profiles_from_live_config() {
+     let temp = tempfile::tempdir().unwrap();
+@@ -2320,6 +2301,69 @@ requires_openai_auth = true
+     assert!(!config.contains("[model_providers.custom]"));
+ }
+ 
++#[test]
++fn pure_api_config_is_configured_without_openai_auth_requirement() {
++    let temp = tempfile::tempdir().unwrap();
++
++    apply_pure_api_config_to_home(temp.path(), "https://wemx.cc", "sk-test-redacted").unwrap();
++
++    let status = relay_config_status_from_home(temp.path());
++    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
++
++    assert!(status.configured);
++    assert!(!status.requires_openai_auth);
++    assert!(status.has_bearer_token);
++    assert!(config.contains("requires_openai_auth = false"));
++    assert!(config.contains(r#"base_url = "https://wemx.cc""#));
++}
++
++#[test]
++fn pure_api_config_preserves_direct_ip_and_explicit_http_port() {
++    let temp = tempfile::tempdir().unwrap();
++
++    apply_pure_api_config_to_home(temp.path(), "http://64.83.38.106:8080", "sk-test-redacted")
++        .unwrap();
++
++    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
++    assert!(config.contains(r#"base_url = "http://64.83.38.106:8080""#));
++}
++
++#[test]
++fn pure_api_config_upgrades_plain_http_public_hostname_to_https() {
++    let temp = tempfile::tempdir().unwrap();
++
++    apply_pure_api_config_to_home(temp.path(), "http://wemx.cc", "sk-test-redacted").unwrap();
++
++    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
++    assert!(config.contains(r#"base_url = "https://wemx.cc""#));
++}
++
++#[test]
++fn apply_relay_files_normalizes_duplicate_config_before_validation() {
++    let temp = tempfile::tempdir().unwrap();
++    let duplicate_config = r#"
++model_provider = "custom"
++model_provider = "custom"
++
++[model_providers.custom]
++name = "custom"
++wire_api = "responses"
++requires_openai_auth = false
++base_url = "https://example.test"
++
++[model_providers.custom]
++base_url = "https://duplicate.example.test"
++"#;
++
++    apply_relay_config_file_to_home(temp.path(), duplicate_config).unwrap();
++
++    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
++    assert_eq!(config.matches("model_provider =").count(), 1);
++    assert_eq!(config.matches("[model_providers.custom]").count(), 1);
++    assert!(config.contains(r#"base_url = "https://example.test""#));
++    assert!(config.ends_with('\n'));
++}
++
+ #[cfg(windows)]
+ #[test]
+ fn apply_relay_profile_to_home_with_switch_rules_does_not_preserve_computer_use_guard_config_by_default()
 diff --git a/crates/codex-plus-core/tests/watcher.rs b/crates/codex-plus-core/tests/watcher.rs
 index 84fa2da..8b4a74d 100644
 --- a/crates/codex-plus-core/tests/watcher.rs
@@ -816,12 +1180,12 @@ index 84fa2da..8b4a74d 100644
 +    filter_killable_unix_launcher_processes, process_ids_still_running,
 +    should_recover_stale_launcher, watcher_disabled_flag,
  };
-
+ 
  #[cfg(windows)]
 @@ -99,6 +100,43 @@ fn launcher_process_filter_protects_current_process_ancestry() {
      assert_eq!(filter_killable_launcher_processes(processes, 30), vec![40]);
  }
-
+ 
 +#[test]
 +fn unix_launcher_process_filter_kills_stale_silent_launcher_only() {
 +    let processes = [
@@ -869,7 +1233,7 @@ index 2584939..913f2fe 100644
 @@ -74,6 +74,148 @@ fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
      }
  }
-
+ 
 +fn create_legacy_state_db_for_catalog(path: &Path) {
 +    let db = Connection::open(path).unwrap();
 +    db.execute(
@@ -1018,7 +1382,7 @@ index 2584939..913f2fe 100644
 @@ -350,6 +492,562 @@ fn provider_sync_updates_new_codex_sqlite_directory_db() {
      assert!(backup_dir.join("db/sqlite/codex-dev.db").exists());
  }
-
+ 
 +#[test]
 +fn provider_sync_backfills_local_thread_catalog_from_legacy_state_db() {
 +    let tmp = tempdir().unwrap();
@@ -1581,7 +1945,7 @@ index 2584939..913f2fe 100644
 @@ -497,41 +1195,6 @@ fn provider_sync_repairs_sqlite_when_rollout_provider_matches_and_normalizes_pat
      );
  }
-
+ 
 -#[test]
 -fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
 -    let tmp = tempdir().unwrap();
@@ -1623,7 +1987,7 @@ index 2584939..913f2fe 100644
 @@ -744,6 +1407,57 @@ fn provider_sync_skips_when_home_missing_or_lock_exists_and_prunes_backups() {
      assert_eq!(backups, 5);
  }
-
+ 
 +#[test]
 +fn provider_sync_removes_stale_lock_and_runs() {
 +    let tmp = tempdir().unwrap();

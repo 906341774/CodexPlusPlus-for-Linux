@@ -1,0 +1,183 @@
+= Codex++ v1.2.28 Fast service-tier hotfix
+:toc:
+:toclevels: 2
+
+Date: 2026-07-08
+
+== Scope
+
+This note records the `v1.2.28-fix-0004` hotfix for the Codex++ injected `Fast` / `Standard` service-tier badge on Linux Codex Desktop.
+
+The maintainer reported that clicking the Codex++ badge showed:
+
+[source,text]
+----
+Fast 仅支持 gpt-5.4 / gpt-5.5，当前模型未获取
+----
+
+The same window showed the upstream Codex Desktop model selector with `5.5 超高` and the upstream Fast menu, so the model was available to the renderer even though Codex++ could not read it through its own backend catalog.
+
+== Root Cause
+
+The Codex++ renderer injection only accepted the current Fast-capable model from:
+
+* the intercepted request payload, or
+* `/codex-model-catalog`, which is derived from Codex++ relay/config state.
+
+That misses the current upstream Codex Desktop active model in ChatGPT or official desktop flows where the selected model is represented in the composer footer and upstream React state instead of Codex++ config.
+
+As a result, the local badge click path rejected Fast before any request was sent, even when the visible upstream model was `5.5 超高`.
+
+== Fix
+
+`assets/inject/renderer-inject.js` now has a narrow model fallback:
+
+* preserve explicit catalog/request model priority;
+* keep blocking Fast when the catalog explicitly reports an unsupported model such as `gpt-4.1`;
+* when catalog and request model are empty, inspect only visible composer/footer candidates;
+* canonicalize supported labels such as `GPT-5.5` or `5.5 超高` to `gpt-5.5`.
+
+The request override still sends Fast only for the supported set:
+
+[source,text]
+----
+gpt-5.4
+gpt-5.5
+----
+
+== Patch Updates
+
+The following snippet attachments were regenerated from real replay trees:
+
+* `060-renderer-linux-compatibility.patch`
+* `900-regression-tests.patch`
+
+`060` was regenerated from a temporary `v1.2.28 + 010-050` tree.
+`900` was regenerated from a temporary `v1.2.28 + 010-080` tree.
+
+== Validation
+
+Local validation:
+
+[source,sh]
+----
+TMPDIR=.tmp/cargo-tmp cargo test -p codex-plus-core --test cdp_bridge injection_script_applies_fast_service_tier_contract -- --nocapture
+cargo fmt --check
+TMPDIR=.tmp/cargo-tmp cargo test -p codex-plus-core --test cdp_bridge -- --nocapture
+node --test codex-desktop-linux/src/scripts/patch-linux-window-ui.test.js
+pwsh -NoLogo -NoProfile -File ./scripts/Test-AdapterWorkflow.ps1
+pwsh -NoLogo -NoProfile -File ./scripts/Installer-and-Manager.ps1 -Action selftest -NonInteractive -NoTui
+----
+
+Results:
+
+* Targeted service-tier contract: passed.
+* `cdp_bridge`: 75 passed.
+* `patch-linux-window-ui.test.js`: 330 passed.
+* `Test-AdapterWorkflow.ps1`: `Adapter workflow contract OK`.
+* Installer selftest: `Selftest OK`.
+
+Clean replay validation:
+
+[source,sh]
+----
+pwsh -NoLogo -NoProfile -File ./scripts/Installer-and-Manager.ps1 \
+  -Action apply-snippets \
+  -CodexPlusPlusLocalSourcePath .tmp/codexpp-v128-fix0004-replay-v128d \
+  -NonInteractive -NoTui
+
+TMPDIR=.tmp/cargo-tmp-replay \
+  cargo test -p codex-plus-core --test cdp_bridge \
+  injection_script_applies_fast_service_tier_contract -- --nocapture
+----
+
+Results:
+
+* All snippets `010` through `900` applied from a clean `v1.2.28` source export.
+* Installer source adaptation markers verified.
+* Replayed service-tier contract test passed.
+
+== Container Validation
+
+The restored XFS-backed Podman container was:
+
+[source,text]
+----
+codexpp-v128-fix-debug
+----
+
+Container install command:
+
+[source,sh]
+----
+TMPDIR=/home/deck/opt/CodexPlusPlus-on-Linux/.tmp/container-tmp-fix0004 \
+  pwsh -NoLogo -NoProfile -File ./scripts/Installer-and-Manager.ps1 \
+  -Action install \
+  -CodexDesktopRootPath /home/deck/opt/CodexDesktop \
+  -CodexPlusPlusLocalSourcePath /home/deck/opt/CodexPlusPlus-on-Linux/.tmp/codexpp-upstream-v1.2.28-clean \
+  -NonInteractive -NoTui -KeepWorkDir
+----
+
+Results:
+
+* Snippets `010` through `900` applied successfully.
+* `node --check assets/inject/renderer-inject.js`: passed.
+* Container `cdp_bridge`: 75 passed.
+* Manager frontend `vite build`: passed.
+* Release build for `codex-plus-launcher` and `codex-plus-manager`: passed.
+* Installed binary verification: passed.
+* Container `Test-AdapterWorkflow.ps1`: `Adapter workflow contract OK`.
+* Container installer selftest: `Selftest OK`.
+* Installed `codex-plus-plus` binary contains `codexServiceTierSupportedModelFromLabelText`.
+* Container build info reports 17 enabled Linux features in both build-info files.
+
+== Host Replacement
+
+The validated container `CodexDesktop` tree was archived with maximum 7z compression and non-solid mode:
+
+[source,text]
+----
+docs/modules/ROOT/attachments/build-artifacts/v1.2.28/codexplusplus-linux-v1.2.28-codexdesktop-alma9-20260708-fix-0004.7z
+sha256: a38cab3f196df6d4b55ab2edaf211188928a24f171925521595742fa1de947ef
+----
+
+Archive properties:
+
+[source,text]
+----
+Method: ARM64 LZMA2:28 LZMA:20 BCJ2
+Solid: -
+Blocks: 22145
+Compressed size: 909425099 bytes
+----
+
+The previous host install was backed up at:
+
+[source,text]
+----
+/home/deck/opt/CodexDesktop.backup-20260708-133318-pre-fix-0004
+----
+
+The host install was restored from the archive and verified with:
+
+[source,sh]
+----
+pwsh -NoLogo -NoProfile -File ./scripts/Installer-and-Manager.ps1 \
+  -Action install \
+  -CodexDesktopRootPath /home/deck/opt/CodexDesktop \
+  -CodexPlusPlusLocalSourcePath /home/deck/opt/CodexPlusPlus-on-Linux/.tmp/codexpp-upstream-v1.2.28-clean \
+  -NonInteractive -NoTui -KeepWorkDir -SkipBuild
+
+sha256sum -c docs/modules/ROOT/attachments/build-artifacts/v1.2.28/codexplusplus-linux-v1.2.28-codexdesktop-alma9-20260708-fix-0004.7z.sha256
+----
+
+Host results:
+
+* Host `-SkipBuild` maintenance install passed installed binary verification.
+* `/home/deck/opt/CodexDesktop/.codex-linux/build-info.json`: 17 enabled Linux features.
+* `/home/deck/opt/CodexDesktop/resources/codex-linux-build-info.json`: 17 enabled Linux features.
+* `/home/deck/.local/share/codex-plusplus/state.json`: version `1.2.28`, app root `/home/deck/opt/CodexDesktop`.
+* Host `codex-plus-plus` binary contains `codexServiceTierSupportedModelFromLabelText`.
+* Archive checksum verification: OK.
+
+The currently running desktop process may need a normal application restart before it loads the replaced on-disk binaries and injected renderer script.

@@ -774,6 +774,9 @@ fn injection_script_applies_fast_service_tier_contract() {
     );
 
     assert_eq!(cases["startConversation"]["serviceTier"], "priority");
+
+    assert_eq!(cases["composerFallbackFast"]["serviceTier"], "priority");
+    assert_eq!(cases["composerFallbackFastDiagnosticModel"], "gpt-5.5");
 }
 
 fn run_service_tier_contract_harness() -> serde_json::Value {
@@ -809,8 +812,18 @@ function node() {{
     innerHTML: "",
   }};
 }}
+function footerNode(text) {{
+  const el = node();
+  el.textContent = text;
+  el.className = "_footer_test_1";
+  el.getBoundingClientRect = () => ({{ width: 320, height: 40, top: 600, bottom: 640, left: 0, right: 320 }});
+  return el;
+}}
+const composerFooter = footerNode("5.5 超高");
 globalThis.window = globalThis;
 window.__CODEX_PLUS_TEST_SERVICE_TIER__ = true;
+globalThis.HTMLElement = Object;
+globalThis.getComputedStyle = () => ({{ display: "block", visibility: "visible" }});
 globalThis.document = {{
   scripts: [],
   documentElement: node(),
@@ -818,7 +831,7 @@ globalThis.document = {{
   createElement: () => node(),
   getElementById: () => null,
   querySelector: () => null,
-  querySelectorAll: () => [],
+  querySelectorAll: (selector) => selector === "div" ? [composerFooter] : [],
   addEventListener() {{}},
   removeEventListener() {{}},
 }};
@@ -871,6 +884,14 @@ const startConversation = api.requestOverride({{
   model: "gpt-5.5",
 }});
 
+api.setModelCatalog({{ status: "ok", model: "", default_model: "", models: [] }});
+api.setThreadState({{ mode: "global-fast", defaultMode: "fast", entries: {{}} }});
+const composerFallbackFast = api.applyServiceTierOverride("turn/start", {{
+  threadId: "thread-12345678",
+  service_tier: null,
+}});
+const composerFallbackFastDiagnosticModel = api.diagnostics().at(-1)?.detail?.model;
+
 process.stdout.write(JSON.stringify({{
   supportedFast,
   unsupportedModel,
@@ -878,6 +899,8 @@ process.stdout.write(JSON.stringify({{
   turnWithoutModelDiagnosticModel,
   customInheritUnsupported,
   startConversation,
+  composerFallbackFast,
+  composerFallbackFastDiagnosticModel,
 }}));
 "#,
         script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())

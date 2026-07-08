@@ -1524,6 +1524,30 @@
     return String(model || "").trim().toLowerCase();
   }
 
+  function codexServiceTierSupportedModelFromLabelText(text) {
+    const normalized = String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
+    if (!normalized || normalized.length > 160) return "";
+    if (codexServiceTierSupportedFastModels.has(normalized)) return normalized;
+    const explicit = normalized.match(/\bgpt[-_\s]?5[._-]([45])\b/);
+    if (explicit) return `gpt-5.${explicit[1]}`;
+    if (!/(超高|high|ultra|reasoning|推理|model|模型|gpt)/i.test(normalized)) return "";
+    for (const modelName of codexServiceTierSupportedFastModels) {
+      const shortName = modelName.replace(/^gpt-/, "");
+      const escapedShortName = shortName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (new RegExp(`(^|[^0-9])${escapedShortName}([^0-9]|$)`).test(normalized)) {
+        return modelName;
+      }
+    }
+    return "";
+  }
+
+  function codexServiceTierCanonicalModelName(modelName) {
+    const direct = normalizeCodexServiceTierModelName(modelName);
+    return codexServiceTierSupportedFastModels.has(direct)
+      ? direct
+      : codexServiceTierSupportedModelFromLabelText(modelName);
+  }
+
   function codexServiceTierModelFromValue(value, visited = new WeakSet(), depth = 0) {
     if (typeof value === "string") return value.trim();
     if (!value || typeof value !== "object" || visited.has(value) || depth > 3) return "";
@@ -1539,16 +1563,74 @@
     return "";
   }
 
+  function codexServiceTierModelFromElementText(element) {
+    const values = [
+      element?.textContent,
+      element?.getAttribute?.("aria-label"),
+      element?.getAttribute?.("title"),
+    ];
+    for (const value of values) {
+      const modelName = codexServiceTierSupportedModelFromLabelText(value);
+      if (modelName) return modelName;
+    }
+    return "";
+  }
+
+  function codexServiceTierElementLooksVisible(element) {
+    if (!element || !element.isConnected) return false;
+    if (typeof getComputedStyle === "function") {
+      const style = getComputedStyle(element);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+    }
+    const rect = typeof element.getBoundingClientRect === "function" ? element.getBoundingClientRect() : null;
+    return !rect || (rect.width > 0 && rect.height > 0);
+  }
+
+  function codexServiceTierModelFromComposerFooter() {
+    if (typeof document === "undefined") return "";
+    const roots = new Set();
+    try {
+      codexServiceTierLinuxComposerFooters(document).forEach((footer) => roots.add(footer));
+    } catch (_) {}
+    try {
+      document.querySelectorAll?.(".composer-footer, [class*='_footer_'], [data-codex-intelligence-trigger='true'], [data-codex-composer='true']")
+        ?.forEach((node) => {
+          roots.add(node);
+          const footer = codexServiceTierFindLinuxFooterNear(node);
+          if (footer) roots.add(footer);
+          const composerFooter = node.closest?.(".composer-footer");
+          if (composerFooter) roots.add(composerFooter);
+        });
+    } catch (_) {}
+    for (const root of roots) {
+      if (!codexServiceTierElementLooksVisible(root)) continue;
+      const rootModel = codexServiceTierModelFromElementText(root);
+      if (rootModel) return rootModel;
+      const nodes = Array.from(root.querySelectorAll?.("button, [role='button'], span, [aria-label], [title]") || []);
+      for (const node of nodes) {
+        if (!codexServiceTierElementLooksVisible(node)) continue;
+        const modelName = codexServiceTierModelFromElementText(node);
+        if (modelName) return modelName;
+      }
+    }
+    return "";
+  }
+
   function codexServiceTierCurrentModelName() {
-    return codexServiceTierModelFromValue(codexModelCatalog.model) || codexServiceTierModelFromValue(codexModelCatalog.default_model);
+    const catalogModel = codexServiceTierModelFromValue(codexModelCatalog.model)
+      || codexServiceTierModelFromValue(codexModelCatalog.default_model);
+    if (catalogModel) return codexServiceTierCanonicalModelName(catalogModel) || catalogModel;
+    return codexServiceTierModelFromComposerFooter();
   }
 
   function codexServiceTierModelForRequest(params, modelHint = "") {
-    return codexServiceTierModelFromValue(params) || codexServiceTierModelFromValue(modelHint) || codexServiceTierCurrentModelName();
+    const modelName = codexServiceTierModelFromValue(params) || codexServiceTierModelFromValue(modelHint) || codexServiceTierCurrentModelName();
+    return codexServiceTierCanonicalModelName(modelName) || modelName;
   }
 
   function codexServiceTierFastSupportedForModel(modelName) {
-    return codexServiceTierSupportedFastModels.has(normalizeCodexServiceTierModelName(modelName));
+    return !!codexServiceTierCanonicalModelName(modelName)
+      || codexServiceTierSupportedFastModels.has(normalizeCodexServiceTierModelName(modelName));
   }
 
   function codexServiceTierFastUnsupportedMessage(modelName = codexServiceTierCurrentModelName()) {
