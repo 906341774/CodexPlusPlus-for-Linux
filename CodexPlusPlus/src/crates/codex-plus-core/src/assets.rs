@@ -70,6 +70,11 @@ fn local_plugin_marketplaces_from_home(home: &Path) -> Value {
     let candidates = [
         marketplace_dir.join("marketplace.json"),
         marketplace_dir.join("api_marketplace.json"),
+        home.join(".tmp")
+            .join("plugins-remote")
+            .join(".agents")
+            .join("plugins")
+            .join("marketplace.json"),
     ];
     let marketplaces = candidates
         .iter()
@@ -142,6 +147,12 @@ fn expand_local_plugin_marketplace(
         plugin_object
             .entry("id".to_string())
             .or_insert_with(|| Value::String(format!("{plugin_name}@{marketplace_name}")));
+        plugin_object
+            .entry("marketplaceName".to_string())
+            .or_insert_with(|| Value::String(marketplace_name.clone()));
+        plugin_object
+            .entry("marketplacePath".to_string())
+            .or_insert_with(|| Value::String(marketplace_name.clone()));
         plugin_object
             .entry("keywords".to_string())
             .or_insert_with(|| Value::Array(Vec::new()));
@@ -237,6 +248,7 @@ pub fn image_overlay_config(helper_port: u16, settings: &BackendSettings) -> Val
     json!({
         "enabled": enabled && !data_url.is_empty(),
         "opacity": f64::from(settings.codex_app_image_overlay_opacity.clamp(1, 100)) / 100.0,
+        "fitMode": settings.codex_app_image_overlay_fit_mode.as_str(),
         "dataUrl": data_url,
         "imageUrl": if enabled {
             format!("http://127.0.0.1:{helper_port}/overlay/image")
@@ -292,6 +304,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn image_overlay_config_includes_fit_mode() {
+        let settings = BackendSettings {
+            codex_app_image_overlay_fit_mode: "fill".to_string(),
+            ..BackendSettings::default()
+        };
+        let config = image_overlay_config(57321, &settings);
+
+        assert_eq!(config["fitMode"].as_str(), Some("fill"));
+    }
+
+    #[test]
     fn local_plugin_marketplaces_includes_api_marketplace_snapshot() {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path();
@@ -305,8 +328,20 @@ mod tests {
             .join("plugins")
             .join("plugins")
             .join("build-web-apps");
+        let remote_marketplace_dir = home
+            .join(".tmp")
+            .join("plugins-remote")
+            .join(".agents")
+            .join("plugins");
+        let remote_plugin_dir = home
+            .join(".tmp")
+            .join("plugins-remote")
+            .join("plugins")
+            .join("product-design");
         std::fs::create_dir_all(&marketplace_dir).unwrap();
+        std::fs::create_dir_all(&remote_marketplace_dir).unwrap();
         std::fs::create_dir_all(api_plugin_dir.join(".codex-plugin")).unwrap();
+        std::fs::create_dir_all(remote_plugin_dir.join(".codex-plugin")).unwrap();
         std::fs::write(
             marketplace_dir.join("marketplace.json"),
             r#"{"name":"openai-curated","plugins":[{"name":"gmail"}]}"#,
@@ -318,20 +353,43 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
+            remote_marketplace_dir.join("marketplace.json"),
+            r#"{"name":"openai-curated-remote","plugins":[{"name":"product-design"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
             api_plugin_dir.join(".codex-plugin").join("plugin.json"),
             r#"{"interface":{"displayName":"Build Web Apps"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            remote_plugin_dir.join(".codex-plugin").join("plugin.json"),
+            r#"{"interface":{"displayName":"Product Design"}}"#,
         )
         .unwrap();
 
         let marketplaces = local_plugin_marketplaces_from_home(home);
         let array = marketplaces.as_array().unwrap();
 
-        assert_eq!(array.len(), 2);
+        assert_eq!(array.len(), 3);
         assert_eq!(array[0]["name"].as_str(), Some("openai-curated"));
         assert_eq!(array[1]["name"].as_str(), Some("openai-api-curated"));
+        assert_eq!(array[2]["name"].as_str(), Some("openai-curated-remote"));
         assert_eq!(
             array[1]["plugins"][0]["interface"]["displayName"].as_str(),
             Some("Build Web Apps")
+        );
+        assert_eq!(
+            array[2]["plugins"][0]["interface"]["displayName"].as_str(),
+            Some("Product Design")
+        );
+        assert_eq!(
+            array[2]["plugins"][0]["marketplaceName"].as_str(),
+            Some("openai-curated-remote")
+        );
+        assert_eq!(
+            array[2]["plugins"][0]["marketplacePath"].as_str(),
+            Some("openai-curated-remote")
         );
     }
 }

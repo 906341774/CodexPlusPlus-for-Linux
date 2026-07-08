@@ -393,7 +393,10 @@ fn launcher_appends_extra_codex_arguments_after_debug_arguments() {
 
 #[test]
 fn launcher_fast_startup_adds_statsig_fast_fail_argument_when_enabled() {
-    let settings = BackendSettings::default();
+    let settings = BackendSettings {
+        codex_app_fast_startup: true,
+        ..BackendSettings::default()
+    };
     let args = build_codex_arguments_for_settings(9229, &settings);
 
     assert!(args.iter().any(|arg| {
@@ -686,10 +689,7 @@ async fn default_helper_serves_backend_status_over_http() {
         .send()
         .await
         .unwrap();
-    assert!(repair_response.status().is_success());
-    let repair_payload: serde_json::Value = repair_response.json().await.unwrap();
-    assert_eq!(repair_payload["status"], "ok");
-    assert_eq!(repair_payload["transport"], "http-helper");
+    assert!(!repair_response.status().is_success());
 
     hooks.shutdown_helper(port).await;
 }

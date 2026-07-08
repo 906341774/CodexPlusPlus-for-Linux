@@ -1,0 +1,195 @@
+= Codex++ v1.2.32 baseline and package validation
+:toc:
+:toclevels: 2
+
+Date: 2026-07-08
+
+== Scope
+
+This note records the `v1.2.32` baseline adaptation and the first Debian/RPM package validation round.
+
+Pinned inputs:
+
+* Codex++ upstream: `BigPizzaV3/CodexPlusPlus` `v1.2.32`.
+* Codex Desktop Linux upstream: `ilysenko/codex-desktop-linux` commit `90ea76122401255d74a28a2420d5d9e6c59aa72f`.
+* Upstream Codex Desktop app: `26.623.141536`.
+* Electron: `42.1.0`.
+
+The validated app tree is a Codex Desktop install directory that already contains Codex++ under `.codex-plusplus/install/`.
+
+== Root Cause Findings
+
+=== Fast / Standard injected toggle
+
+The host report showing `当前模型未获取` came from the still-running and still-installed host Codex++ `1.2.28` injection, not from the newly validated container payload.
+
+Fix carried into `v1.2.32`:
+
+* the renderer service-tier fallback preserves explicit request/catalog priority;
+* it canonicalizes visible upstream composer/footer labels such as `GPT-5.5` and `5.5 超高`;
+* it still blocks Fast when an explicit unsupported model is known.
+
+Validation:
+
+* `codex-plus-core` `cdp_bridge` service-tier regression passed;
+* container CDP reported `window.__CODEX_PLUS_VERSION__ = "1.2.32"`;
+* isolated container login UI did not contain `当前模型未获取`.
+
+=== Local conversations showing `暂无对话`
+
+The remaining empty entries were caused by Codex Desktop local catalog and route hydration behavior after provider-sync backfill.
+
+Fix carried into the Codex Desktop Linux snapshot:
+
+* preserve provider-sync rollout-backed local catalog rows during pruning;
+* patch the webview initial local thread snapshot;
+* hydrate route-opened local conversations before resume.
+
+Validation:
+
+* `node --test scripts/patch-linux-window-ui.test.js` passed;
+* descriptor coverage includes `linux-local-thread-catalog-preserve-backfill`, `linux-local-thread-catalog-initial-snapshot`, and `linux-local-conversation-route-hydration`;
+* isolated container login UI did not show `暂无对话`.
+
+== Linux Features `None`
+
+The durable build procedure fix is to make the direct Codex Desktop `make build-app` path write an explicit local `linux-features/features.json`, export `CODEX_LINUX_FEATURES_CONFIG`, and validate both build-info files after install.
+
+The local Podman PowerShell fixture now:
+
+* writes the feature config before direct build;
+* exports `CODEX_LINUX_FEATURES`;
+* exports `CODEX_LINUX_FEATURES_CONFIG`;
+* verifies `$HOME/opt/CodexDesktop/.codex-linux/build-info.json`;
+* verifies `$HOME/opt/CodexDesktop/resources/codex-linux-build-info.json`.
+
+The tracked workflow contract checks for this fixture behavior when `.podman-test/` exists, and the official maintenance workflow now documents this requirement.
+
+Validated enabled feature count: 17.
+
+[source,text]
+----
+agent-workspace, api-key-service-tier, appshots, authenticated-proxy,
+codex-wrapper-updater, conversation-mode, copilot-reasoning-effort,
+frameless-titlebar, node-repl-reaper, open-target-discovery,
+persistent-status-panel, read-aloud, read-aloud-mcp, remote-control-ui,
+remote-mobile-control, thorium-chrome-plugin, x11-ewmh-computer-use
+----
+
+== Validated Container Build
+
+XFS-backed Podman container:
+
+[source,text]
+----
+codexpp-v128-fix-debug
+----
+
+Validated install root inside the container:
+
+[source,text]
+----
+/home/deck/opt/CodexDesktop
+----
+
+Build metadata:
+
+* `.codex-linux/build-info.json`: 17 enabled Linux features.
+* `resources/codex-linux-build-info.json`: 17 enabled Linux features.
+* Codex Desktop Linux commit: `90ea76122401255d74a28a2420d5d9e6c59aa72f`.
+* Upstream DMG SHA256: `30a2fe991e486f1ed6d5251679639733568d20dedc0d71c989e8200bc711c46c`.
+
+Clean release payload:
+
+[source,text]
+----
+.tmp/package-payload-v1.2.32-release
+----
+
+The clean payload excludes `.codex-plusplus/work` and `.codex-plusplus/tools`, and includes:
+
+[source,text]
+----
+.codex-plusplus/install/codex-plus-plus
+.codex-plusplus/install/codex-plus-plus-manager
+.codex-plusplus/install/launch-codex-plus-plus
+----
+
+== Package Validation
+
+=== RPM
+
+Artifact:
+
+[source,text]
+----
+dist/v1.2.32/rpm/codex-desktop-1.2.32-1.x86_64.rpm
+sha256: 8f92825694baa8b07bb99eecfa96abce73b4627b396288b6cd88f29b4475cdad
+size: 261860340 bytes
+----
+
+Compatibility target: RHEL 9 / AlmaLinux 9.
+
+Validation:
+
+* built from the clean payload;
+* package content contains the three Codex++ install entrypoints;
+* package content does not contain `.codex-plusplus/work` or `.codex-plusplus/tools`;
+* clean AlmaLinux 9 install validation succeeded;
+* installed build-info records 17 enabled Linux features and source commit `90ea76122401255d74a28a2420d5d9e6c59aa72f`.
+
+Packaging fix:
+
+* `scripts/build-rpm.sh` passes `--define "__os_install_post %{nil}"` so `rpmbuild` does not rewrite or strip the already validated Electron, Node, and Codex++ payload.
+* `tests/scripts_smoke.sh` asserts this rpmbuild argument.
+
+=== Debian
+
+Artifact:
+
+[source,text]
+----
+dist/v1.2.32/deb/codex-desktop_1.2.32_amd64.deb
+sha256: 72547024be5541a92ee978725d26b4bdc2b33c2a91c0e270a5bf818cc10d8f3a
+size: 249727680 bytes
+----
+
+Compatibility target: Debian 10.
+
+Validation:
+
+* built inside `docker.io/library/debian:10`;
+* Debian 10 validation used `archive.debian.org` because the default buster sources have moved;
+* `apt-get install ./codex-desktop_1.2.32_amd64.deb` succeeded;
+* dependency alternatives resolved to Debian 10 package names such as `libasound2`, `libcups2`, `libglib2.0-0`, and `libgtk-3-0`;
+* installed package status was `install ok installed`;
+* installed Codex++ binaries contain `CodexPlusPlus/1.2.32`;
+* installed build-info records 17 enabled Linux features.
+
+== Regression Commands
+
+[source,sh]
+----
+cargo test -p codex-plus-core --test launcher --test watcher --test cdp_bridge --test relay_config -- --nocapture
+cargo test -p codex-plus-data --test provider_sync -- --nocapture
+pwsh -NoLogo -NoProfile -File ./scripts/Test-AdapterWorkflow.ps1
+cd codex-desktop-linux/src && node --test scripts/patch-linux-window-ui.test.js
+cd codex-desktop-linux/src && bash tests/scripts_smoke.sh
+----
+
+Results before publication:
+
+* Codex++ focused Rust tests passed.
+* Codex Desktop patcher tests passed.
+* Codex Desktop script smoke tests passed.
+* Adapter workflow contract passed after documenting the direct-build Linux features config requirement.
+
+== Host Note
+
+Before final replacement, the host `/home/deck/opt/CodexDesktop` still contained Codex++ `1.2.28`.
+This explains the maintainer-visible Fast/Standard failure on the running host instance.
+The validated `v1.2.32` payload must replace the host install after packaging and release work completes.
+
+== Release Status
+
+This baseline is suitable for tag `v1.2.32` once the remaining repository commit, tag push, GitHub release asset upload, archive export, and host replacement steps complete.

@@ -1,11 +1,14 @@
 "use strict";
 
 const {
+  webviewAssetPatch,
+} = require("../../../../descriptor.js");
+const {
   applyLinuxLocalThreadCatalogInitialSnapshotPatch,
-} = require("../../../../webview-assets.js");
+} = require("../../../../impl/webview/index.js");
 
 module.exports = [
-  {
+  webviewAssetPatch({
     id: "linux-local-thread-catalog-initial-snapshot",
     phase: "webview-asset",
     order: 1044,
@@ -14,5 +17,5 @@ module.exports = [
     missingDescription: "local thread catalog webview bundle",
     skipDescription: "Linux local thread catalog initial snapshot patch",
     apply: applyLinuxLocalThreadCatalogInitialSnapshotPatch,
-  },
+  }),
 ];

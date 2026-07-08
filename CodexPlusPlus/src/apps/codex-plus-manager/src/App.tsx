@@ -45,6 +45,7 @@ import {
   Settings,
   ShieldCheck,
   ShieldAlert,
+  Stethoscope,
   Sun,
   TestTube,
   Trash2,
@@ -117,6 +118,15 @@ type PluginMarketplaceStatusResult = CommandResult<{
   needsRepair: boolean;
 }>;
 
+type RemotePluginMarketplaceResult = CommandResult<{
+  codexHome: string;
+  marketplaceRoot?: string | null;
+  configRegistered: boolean;
+  needsRepair: boolean;
+  pluginCount: number;
+  skillCount: number;
+}>;
+
 type BackendSettings = {
   codexAppPath: string;
   codexExtraArgs: string[];
@@ -128,7 +138,6 @@ type BackendSettings = {
   enhancementsEnabled: boolean;
   computerUseGuardEnabled: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
-  codexAppForcePluginInstall: boolean;
   codexAppPluginAutoExpand: boolean;
   codexAppModelWhitelistUnlock: boolean;
   codexAppSessionDelete: boolean;
@@ -161,6 +170,7 @@ type BackendSettings = {
   codexAppImageOverlayEnabled: boolean;
   codexAppImageOverlayPath: string;
   codexAppImageOverlayOpacity: number;
+  codexAppImageOverlayFitMode: ImageOverlayFitMode;
   codexGoalsEnabled: boolean;
   launchMode: LaunchMode;
   relayBaseUrl: string;
@@ -172,14 +182,11 @@ type BackendSettings = {
   relayContextConfigContents: string;
   activeRelayId: string;
   relayTestModel: string;
-  cliWrapperEnabled: boolean;
-  cliWrapperBaseUrl: string;
-  cliWrapperApiKey: string;
-  cliWrapperApiKeyEnv: string;
 };
 
 type ZedOpenStrategy = "addToFocusedWorkspace" | "reuseWindow" | "newWindow" | "default";
 type LaunchMode = "patch" | "relay";
+type ImageOverlayFitMode = "fill" | "fit" | "stretch" | "tile" | "center";
 
 export type RelayProfile = {
   id: string;
@@ -394,6 +401,21 @@ type RelayProfileModelsResult = CommandResult<{
   endpoint: string;
 }>;
 
+type ProviderDoctorCheck = {
+  id: string;
+  title: string;
+  status: Status;
+  detail: string;
+};
+
+type ProviderDoctorResult = CommandResult<{
+  profileName: string;
+  model: string;
+  summary: string;
+  recommendation: string;
+  checks: ProviderDoctorCheck[];
+}>;
+
 type CcsProviderImport = {
   sourceId: string;
   name: string;
@@ -523,6 +545,7 @@ type AdItem = {
   title: string;
   description: string;
   url: string;
+  image?: string;
   highlights?: string[];
   expires_at?: string;
 };
@@ -637,14 +660,13 @@ const defaultSettings: BackendSettings = {
   enhancementsEnabled: true,
   computerUseGuardEnabled: false,
   codexAppPluginMarketplaceUnlock: true,
-  codexAppForcePluginInstall: true,
   codexAppPluginAutoExpand: true,
   codexAppModelWhitelistUnlock: true,
   codexAppSessionDelete: true,
   codexAppMarkdownExport: true,
   codexAppPasteFix: false,
   codexAppForceChineseLocale: true,
-  codexAppFastStartup: true,
+  codexAppFastStartup: false,
   codexAppProjectMove: true,
   codexAppThreadIdBadge: false,
   codexAppConversationView: false,
@@ -670,6 +692,7 @@ const defaultSettings: BackendSettings = {
   codexAppImageOverlayEnabled: false,
   codexAppImageOverlayPath: "",
   codexAppImageOverlayOpacity: 35,
+  codexAppImageOverlayFitMode: "fit",
   codexGoalsEnabled: false,
   launchMode: "patch",
   relayBaseUrl: "",
@@ -704,10 +727,6 @@ const defaultSettings: BackendSettings = {
   aggregateRelayProfiles: [],
   activeAggregateRelayId: "",
   relayTestModel: "gpt-5.4-mini",
-  cliWrapperEnabled: false,
-  cliWrapperBaseUrl: "",
-  cliWrapperApiKey: "",
-  cliWrapperApiKeyEnv: "CUSTOM_OPENAI_API_KEY",
 };
 
 export function App() {
@@ -721,7 +740,6 @@ export function App() {
     cancelText: string;
     resolve: (confirmed: boolean) => void;
   } | null>(null);
-  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [overview, setOverview] = useState<OverviewResult | null>(null);
   const [settings, setSettings] = useState<SettingsResult | null>(null);
   const [relay, setRelay] = useState<RelayResult | null>(null);
@@ -736,6 +754,11 @@ export function App() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
   const [watcher, setWatcher] = useState<WatcherResult | null>(null);
   const [update, setUpdate] = useState<UpdateResult | null>(null);
+  const [updateInstallProgress, setUpdateInstallProgress] = useState<TaskProgress>({
+    active: false,
+    percent: 0,
+    message: t("尚未运行安装包更新。"),
+  });
   const [ads, setAds] = useState<AdsResult | null>(null);
   const [scriptMarket, setScriptMarket] = useState<ScriptMarketResult | null>(null);
   const [launchForm, setLaunchForm] = useState({
@@ -756,7 +779,12 @@ export function App() {
     percent: 0,
     message: t("尚未运行插件市场修复。"),
   });
-  const [pluginMarketplacePrompt, setPluginMarketplacePrompt] = useState<PluginMarketplaceStatusResult | null>(null);
+  const [remotePluginMarketplace, setRemotePluginMarketplace] = useState<RemotePluginMarketplaceResult | null>(null);
+  const [remotePluginMarketplaceProgress, setRemotePluginMarketplaceProgress] = useState<TaskProgress>({
+    active: false,
+    percent: 0,
+    message: t("尚未检查官方远端插件缓存。"),
+  });
   const [providerSyncTargets, setProviderSyncTargets] = useState<ProviderSyncTargetsResult | null>(null);
   const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
@@ -1161,18 +1189,8 @@ export function App() {
     return result;
   };
 
-  const repairBackend = async () => {
-    const result = await run(() => call<SettingsResult>("repair_backend"));
-    if (result) {
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
-      showNotice(t("后端修复"), result.message, result.status);
-    }
-  };
-
   const repairPluginMarketplace = async () => {
     if (pluginMarketplaceProgress.active) return;
-    setPluginMarketplacePrompt(null);
     setPluginMarketplaceProgress({ active: true, percent: 8, message: t("正在检查本地插件市场…") });
     const progressTimer = window.setInterval(() => {
       setPluginMarketplaceProgress((current) => {
@@ -1210,10 +1228,62 @@ export function App() {
     }
   };
 
-  const checkPluginMarketplacePrompt = async () => {
-    const result = await run(() => call<PluginMarketplaceStatusResult>("plugin_marketplace_status"));
-    if (result?.needsRepair) setPluginMarketplacePrompt(result);
+  const refreshRemotePluginMarketplace = async (silent = false) => {
+    const result = await run(() => call<RemotePluginMarketplaceResult>("remote_plugin_marketplace_status"));
+    if (result) {
+      setRemotePluginMarketplace(result);
+      if (!silent) {
+        setRemotePluginMarketplaceProgress({
+          active: false,
+          percent: 100,
+          message: result.message,
+        });
+      }
+      if (!silent) showNotice(t("官方远端插件缓存"), result.message, result.status);
+    }
     return result;
+  };
+
+  const repairRemotePluginMarketplace = async () => {
+    if (remotePluginMarketplaceProgress.active) return;
+    setRemotePluginMarketplaceProgress({
+      active: true,
+      percent: 18,
+      message: t("正在检查内置官方远端插件缓存…"),
+    });
+    const progressTimer = window.setInterval(() => {
+      setRemotePluginMarketplaceProgress((current) => {
+        if (!current.active) return current;
+        const nextPercent = Math.min(92, current.percent + 18);
+        const message =
+          nextPercent < 50
+            ? t("正在释放内置远端插件快照…")
+            : nextPercent < 78
+              ? t("正在注册官方远端插件市场…")
+              : t("正在刷新官方远端插件缓存状态…");
+        return { ...current, percent: nextPercent, message };
+      });
+    }, 450);
+    try {
+      const result = await run(() => call<RemotePluginMarketplaceResult>("repair_remote_plugin_marketplace"));
+      if (result) {
+        setRemotePluginMarketplace(result);
+        setRemotePluginMarketplaceProgress({
+          active: false,
+          percent: 100,
+          message: result.message,
+        });
+        showNotice(t("官方远端插件缓存"), result.message, result.status);
+      } else {
+        setRemotePluginMarketplaceProgress({
+          active: false,
+          percent: 100,
+          message: t("官方远端插件缓存修复失败，请查看错误提示后重试。"),
+        });
+      }
+    } finally {
+      window.clearInterval(progressTimer);
+    }
   };
 
   const installEntrypoints = async () => {
@@ -1263,6 +1333,7 @@ export function App() {
   };
 
   const performUpdate = async () => {
+    if (updateInstallProgress.active) return;
     const release =
       update?.latestVersion && update.assetName && update.assetUrl
         ? {
@@ -1273,10 +1344,43 @@ export function App() {
             asset_url: update.assetUrl,
           }
         : null;
-    const result = await run(() => call<UpdateResult>("perform_update", { release }));
-    if (result) {
-      setUpdate(result);
-      showNotice(t("更新安装"), result.message, result.status);
+    setUpdateInstallProgress({
+      active: true,
+      percent: 8,
+      message: t("正在准备安装包下载…"),
+    });
+    const progressTimer = window.setInterval(() => {
+      setUpdateInstallProgress((current) => {
+        if (!current.active) return current;
+        const nextPercent = Math.min(92, current.percent + 10);
+        const message =
+          nextPercent < 32
+            ? t("正在获取 GitHub Release 信息…")
+            : nextPercent < 72
+              ? t("正在下载安装包…")
+              : t("正在启动安装包…");
+        return { ...current, percent: nextPercent, message };
+      });
+    }, 500);
+    try {
+      const result = await run(() => call<UpdateResult>("perform_update", { release }));
+      if (result) {
+        setUpdate(result);
+        setUpdateInstallProgress({
+          active: false,
+          percent: result.progress ?? 100,
+          message: result.message,
+        });
+        showNotice(t("更新安装"), result.message, result.status);
+      } else {
+        setUpdateInstallProgress({
+          active: false,
+          percent: 100,
+          message: t("安装包更新失败，请查看错误提示后重试。"),
+        });
+      }
+    } finally {
+      window.clearInterval(progressTimer);
     }
   };
 
@@ -1525,6 +1629,12 @@ export function App() {
     if (result) showNotice(t("供应商测试"), result.message, result.status);
   };
 
+  const diagnoseRelayProfile = async (profile: RelayProfile) => {
+    const result = await run(() => call<ProviderDoctorResult>("diagnose_relay_profile", { profile }));
+    if (result) showNotice("Provider Doctor", result.message, result.status);
+    return result ?? null;
+  };
+
   const testStepwiseSettings = async (settings: BackendSettings) => {
     const result = await run(() => call<StepwiseTestResult>("test_stepwise_settings", { settings }));
     if (result) showNotice("Stepwise 测试", result.message, result.status);
@@ -1677,31 +1787,11 @@ export function App() {
     setNotice({ title, message: t(message), status });
   };
 
-  useEffect(() => {
-    let active = true;
-    let unlisten: (() => void) | null = null;
-    void listen("manager://close-requested", () => {
-      setCloseConfirmOpen(true);
-    }).then((cleanup) => {
-      if (active) {
-        unlisten = cleanup;
-      } else {
-        cleanup();
-      }
-    });
-    return () => {
-      active = false;
-      unlisten?.();
-    };
-  }, []);
-
   const exitManagerApp = async () => {
-    setCloseConfirmOpen(false);
     await call<void>("manager_exit_app");
   };
 
   const hideManagerToTray = async () => {
-    setCloseConfirmOpen(false);
     await call<void>("manager_hide_to_tray");
   };
 
@@ -1729,7 +1819,7 @@ export function App() {
       await refreshEnvConflicts(true);
       await refreshProviderSyncTargets(true);
       await refreshPendingProviderImport(true);
-      await checkPluginMarketplacePrompt();
+      await refreshRemotePluginMarketplace(true);
     })();
   }, []);
 
@@ -1774,9 +1864,9 @@ export function App() {
       refreshCurrent: () => navigate(route),
       launch,
       restart,
-      repairBackend,
       repairPluginMarketplace,
-      checkPluginMarketplacePrompt,
+      refreshRemotePluginMarketplace,
+      repairRemotePluginMarketplace,
       installEntrypoints,
       uninstallEntrypoints,
       repairShortcuts,
@@ -1895,6 +1985,7 @@ export function App() {
       deleteContextEntry,
       extractRelayCommonConfig,
       testRelayProfile,
+      diagnoseRelayProfile,
       testStepwiseSettings,
       fetchRelayProfileModels,
       switchRelayProfile,
@@ -1919,7 +2010,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, removeOwnedData, update, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, ccsProviders],
+    [route, launchForm, settingsForm, settings, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, ccsProviders],
   );
   const hasUpdate = update?.updateAvailable === true;
 
@@ -2045,6 +2136,8 @@ export function App() {
             <EnhanceScreen
               form={settingsForm}
               pluginMarketplaceProgress={pluginMarketplaceProgress}
+              remotePluginMarketplace={remotePluginMarketplace}
+              remotePluginMarketplaceProgress={remotePluginMarketplaceProgress}
               onFormChange={setSettingsForm}
               actions={actions}
             />
@@ -2066,7 +2159,16 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "about" ? <AboutScreen overview={overview} update={update} logs={logs} diagnostics={diagnostics} actions={actions} /> : null}
+          {route === "about" ? (
+            <AboutScreen
+              overview={overview}
+              update={update}
+              updateInstallProgress={updateInstallProgress}
+              logs={logs}
+              diagnostics={diagnostics}
+              actions={actions}
+            />
+          ) : null}
           {route === "settings" ? (
             <SettingsScreen settings={settings} theme={theme} form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
           ) : null}
@@ -2092,21 +2194,6 @@ export function App() {
           }}
         />
       ) : null}
-      {closeConfirmOpen ? (
-        <CloseConfirmDialog
-          onExit={() => void exitManagerApp()}
-          onHide={() => void hideManagerToTray()}
-          onCancel={() => setCloseConfirmOpen(false)}
-        />
-      ) : null}
-      {pluginMarketplacePrompt ? (
-        <PluginMarketplacePromptDialog
-          progress={pluginMarketplaceProgress}
-          status={pluginMarketplacePrompt}
-          onClose={() => setPluginMarketplacePrompt(null)}
-          onRepair={() => void actions.repairPluginMarketplace()}
-        />
-      ) : null}
       {pendingProviderImport ? (
         <PendingProviderImportDialog
           request={pendingProviderImport}
@@ -2122,9 +2209,9 @@ type Actions = {
   refreshCurrent: () => Promise<void>;
   launch: () => Promise<void>;
   restart: () => Promise<void>;
-  repairBackend: () => Promise<void>;
   repairPluginMarketplace: () => Promise<void>;
-  checkPluginMarketplacePrompt: () => Promise<PluginMarketplaceStatusResult | null>;
+  refreshRemotePluginMarketplace: (silent?: boolean) => Promise<RemotePluginMarketplaceResult | null>;
+  repairRemotePluginMarketplace: () => Promise<void>;
   installEntrypoints: () => Promise<void>;
   uninstallEntrypoints: () => Promise<void>;
   repairShortcuts: () => Promise<void>;
@@ -2176,6 +2263,7 @@ type Actions = {
   deleteContextEntry: (settings: BackendSettings, kind: ContextKind, id: string) => Promise<BackendSettings | null>;
   extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
+  diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
   testStepwiseSettings: (settings: BackendSettings) => Promise<void>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
   switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<void>;
@@ -2270,9 +2358,6 @@ function OverviewScreen({
             <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>
               <Wrench className="h-4 w-4" />
               {t("修复入口")}
-            </Button>
-            <Button variant="secondary" onClick={() => void actions.repairBackend()}>
-              {t("修复后端")}
             </Button>
             <Button disabled={pluginMarketplaceProgress.active} variant="secondary" onClick={() => void actions.repairPluginMarketplace()}>
               {pluginMarketplaceProgress.active ? t("正在修复…") : t("修复插件市场")}
@@ -2516,17 +2601,32 @@ function envConflictSourceLabel(source: string): string {
 function EnhanceScreen({
   form,
   pluginMarketplaceProgress,
+  remotePluginMarketplace,
+  remotePluginMarketplaceProgress,
   onFormChange,
   actions,
 }: {
   form: BackendSettings;
   pluginMarketplaceProgress: TaskProgress;
+  remotePluginMarketplace: RemotePluginMarketplaceResult | null;
+  remotePluginMarketplaceProgress: TaskProgress;
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
   const setEnhanceFlag = (key: keyof BackendSettings, value: boolean) => onFormChange({ ...form, [key]: value });
   const masterEnabled = form.enhancementsEnabled;
   const patchMode = form.launchMode === "patch";
+  const remoteMarketplaceStatus = remotePluginMarketplace?.marketplaceRoot
+    ? remotePluginMarketplace.configRegistered
+      ? t("已注册")
+      : t("已缓存未注册")
+    : t("未发现缓存");
+  const remoteMarketplaceSummary = remotePluginMarketplace?.marketplaceRoot
+    ? tf("已缓存 {0} 个插件 / {1} 个技能。", [
+        String(remotePluginMarketplace.pluginCount),
+        String(remotePluginMarketplace.skillCount),
+      ])
+    : t("未发现本地缓存；点击按钮会从 Codex++ 内置快照释放并注册，无需官方账号预缓存。");
   return (
     <>
       <Panel>
@@ -2558,16 +2658,38 @@ function EnhanceScreen({
           {form.launchMode === "relay" ? (
             <div className="hint-line">
               <ShieldCheck className="h-4 w-4" />
-              <span>{t("当前为兼容增强模式，插件市场解锁和特殊插件强制安装不会启用；其他页面功能仍可用。")}</span>
+              <span>{t("当前为兼容增强模式，插件市场解锁不会启用；其他页面功能仍可用。")}</span>
             </div>
           ) : null}
           <div className="enhance-feature-groups">
             <FeatureGroup title={t("插件与模型")} detail={t("管理插件市场、模型列表和服务档位相关增强。")}>
               <FeatureToggle title={t("插件市场解锁")} detail={t("API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。")} checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
-              <FeatureToggle title={t("特殊插件强制安装")} detail={t("解除 App unavailable / 应用不可用导致的前端安装禁用。")} checked={form.codexAppForcePluginInstall} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppForcePluginInstall", value)} />
-              <FeatureToggle title={t("插件列表全量展示")} detail={t("进入插件页后自动连续展开“更多”，尽量一次显示完整插件列表。")} checked={form.codexAppPluginAutoExpand} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPluginAutoExpand", value)} />
+              <FeatureToggle title={t("插件列表全量展示")} detail={t("进入插件页后自动连续展开“更多”，尽量一次显示完整插件列表。")} checked={form.codexAppPluginAutoExpand} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginAutoExpand", value)} />
               <FeatureToggle title={t("模型白名单解锁")} detail={t("从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。")} checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
               <FeatureToggle title={t("Fast 按钮")} detail={t("显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。")} checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
+              <div className="feature-action-row">
+                <div>
+                  <strong>{t("官方远端插件缓存")}</strong>
+                  <small>{t("使用 Codex++ 内置快照补齐远端插件，API 模式也可显示和安装 Product Design 插件。")}</small>
+                  <small>{remoteMarketplaceSummary}</small>
+                </div>
+                <Badge status={remotePluginMarketplace?.configRegistered ? "ok" : "not_checked"} />
+                <Button
+                  disabled={remotePluginMarketplaceProgress.active}
+                  onClick={() => void actions.repairRemotePluginMarketplace()}
+                  variant="secondary"
+                >
+                  {remotePluginMarketplaceProgress.active ? t("正在处理…") : t("释放并注册内置缓存")}
+                </Button>
+                <Button
+                  disabled={remotePluginMarketplaceProgress.active}
+                  onClick={() => void actions.refreshRemotePluginMarketplace()}
+                  variant="outline"
+                >
+                  {t("刷新")}
+                </Button>
+                <span className="feature-action-status">{remoteMarketplaceStatus}</span>
+              </div>
             </FeatureGroup>
             <FeatureGroup title={t("对话与输入")} detail={t("调整会话管理、输入行为和对话阅读体验。")}>
               <FeatureToggle title={t("会话删除")} detail={t("在会话列表悬停显示删除按钮，并支持撤销。")} checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
@@ -2584,7 +2706,7 @@ function EnhanceScreen({
             </FeatureGroup>
             <FeatureGroup title={t("界面与启动")} detail={t("控制语言、启动速度和 Codex 原生界面调整。")}>
               <FeatureToggle title={t("强制中文界面")} detail={t("强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。")} checked={form.codexAppForceChineseLocale} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppForceChineseLocale", value)} />
-              <FeatureToggle title={t("快速启动")} detail={t("默认开启；无 VPN 时让 Statsig 初始化快速失败，减少启动时长。需重启 Codex 才生效。")} checked={form.codexAppFastStartup} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppFastStartup", value)} />
+              <FeatureToggle title={t("快速启动")} detail={t("默认关闭；无 VPN 时可开启，让 Statsig 初始化快速失败，减少启动时长。需重启 Codex 才生效。")} checked={form.codexAppFastStartup} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppFastStartup", value)} />
               <FeatureToggle title={t("原生菜单栏位置")} detail={t("把 Codex++ 菜单插入 Codex 顶部原生菜单栏。")} checked={form.codexAppNativeMenuPlacement} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuPlacement", value)} />
               <FeatureToggle title={t("原生菜单汉化")} detail={t("启动时通过本地主进程调试端口汉化 Codex 原生菜单；不修改安装包。需重启 Codex 才生效。")} checked={form.codexAppNativeMenuLocalization} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuLocalization", value)} />
             </FeatureGroup>
@@ -2603,6 +2725,7 @@ function EnhanceScreen({
             </Button>
           </div>
           <TaskProgressBox progress={pluginMarketplaceProgress} title={t("插件市场修复进度")} />
+          <TaskProgressBox progress={remotePluginMarketplaceProgress} title={t("官方远端插件缓存进度")} />
           <div className="zed-remote-settings">
             <Field label={t("Zed 默认打开策略")}>
               <select
@@ -2620,7 +2743,7 @@ function EnhanceScreen({
           </div>
           <div className="hint-line">
             <Info className="h-4 w-4" />
-            <span>{t("如果使用官方模式或官方混入 API 模式，通常不需要开启插件市场解锁和特殊插件强制安装。")}</span>
+            <span>{t("如果使用官方模式或官方混入 API 模式，通常不需要开启插件市场解锁。")}</span>
           </div>
           <Toolbar>
             <Button onClick={() => void actions.saveSettings()}>{t("保存增强设置")}</Button>
@@ -3106,7 +3229,6 @@ function MaintenanceScreen({
           <Toolbar>
             <Button onClick={() => void actions.checkHealth()}>{t("检查")}</Button>
             <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>{t("修复快捷方式")}</Button>
-            <Button variant="secondary" onClick={() => void actions.repairBackend()}>{t("修复后端")}</Button>
           </Toolbar>
         </CardContent>
       </Panel>
@@ -3195,12 +3317,14 @@ function MaintenanceScreen({
 function AboutScreen({
   overview,
   update,
+  updateInstallProgress,
   logs,
   diagnostics,
   actions,
 }: {
   overview: OverviewResult | null;
   update: UpdateResult | null;
+  updateInstallProgress: TaskProgress;
   logs: LogsResult | null;
   diagnostics: DiagnosticsResult | null;
   actions: Actions;
@@ -3245,9 +3369,12 @@ function AboutScreen({
             <Metric label={t("进度")} value={`${update?.progress ?? 0}%`} />
           </div>
           <Textarea className="log-view" readOnly value={update?.releaseSummary || update?.message || t("尚未检查 GitHub Release；更新会下载并启动安装包。")} />
+          <TaskProgressBox completedTitle={t("上次更新结果")} progress={updateInstallProgress} title={t("安装包更新进度")} />
           <Toolbar>
             <Button onClick={() => void actions.checkUpdate()}>{t("检查更新")}</Button>
-            <Button variant="secondary" onClick={() => void actions.performUpdate()}>{t("下载并运行安装包")}</Button>
+            <Button disabled={updateInstallProgress.active} variant="secondary" onClick={() => void actions.performUpdate()}>
+              {updateInstallProgress.active ? t("正在下载安装包…") : t("下载并运行安装包")}
+            </Button>
           </Toolbar>
         </CardContent>
       </Panel>
@@ -3287,35 +3414,6 @@ function SettingsScreen({
               value={form.relayTestModel}
               onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
               placeholder={t("例如 gpt-5.4-mini")}
-            />
-          </Field>
-          <label className="check-row">
-            <input
-              checked={form.cliWrapperEnabled}
-              onChange={(event) => onFormChange({ ...form, cliWrapperEnabled: event.currentTarget.checked })}
-              type="checkbox"
-            />
-            <span>{t("启用 Codex 命令包装器")}</span>
-          </label>
-          <div className="form-row">
-            <Field label={t("包装器 Base URL")}>
-              <Input
-                value={form.cliWrapperBaseUrl}
-                onChange={(event) => onFormChange({ ...form, cliWrapperBaseUrl: event.currentTarget.value })}
-              />
-            </Field>
-            <Field label={t("API Key 环境变量")}>
-              <Input
-                value={form.cliWrapperApiKeyEnv}
-                onChange={(event) => onFormChange({ ...form, cliWrapperApiKeyEnv: event.currentTarget.value })}
-              />
-            </Field>
-          </div>
-          <Field label="API Key">
-            <Input
-              type="password"
-              value={form.cliWrapperApiKey}
-              onChange={(event) => onFormChange({ ...form, cliWrapperApiKey: event.currentTarget.value })}
             />
           </Field>
           <div className="settings-block stepwise-settings-block">
@@ -3441,6 +3539,24 @@ function SettingsScreen({
                   })
                 }
               />
+            </Field>
+            <Field label={t("背景适配方式")}>
+              <select
+                className="select-input"
+                value={form.codexAppImageOverlayFitMode}
+                onChange={(event) =>
+                  onFormChange({
+                    ...form,
+                    codexAppImageOverlayFitMode: event.currentTarget.value as ImageOverlayFitMode,
+                  })
+                }
+              >
+                <option value="fill">{t("填充")}</option>
+                <option value="fit">{t("适应")}</option>
+                <option value="stretch">{t("拉伸")}</option>
+                <option value="tile">{t("平铺")}</option>
+                <option value="center">{t("居中")}</option>
+              </select>
             </Field>
           </div>
           <Toolbar>
@@ -3887,6 +4003,9 @@ function RelayProfileEditor({
   setModelWindowRows: (value: ModelWindowRow[]) => void;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
+  const [doctorOpen, setDoctorOpen] = useState(false);
+  const [doctorRunning, setDoctorRunning] = useState(false);
   if (isAggregateRelayProfile(profile)) {
     return (
       <AggregateRelayProfileEditor
@@ -3913,6 +4032,21 @@ function RelayProfileEditor({
   };
   const addModelWindowRows = (rows: ModelWindowRow[]) => {
     setModelWindowRows(mergeModelWindowRows(modelWindowRows, rows));
+  };
+  const runProviderDoctor = async () => {
+    setDoctorOpen(true);
+    setDoctorRunning(true);
+    setDoctorResult(null);
+    const serializedRows = serializeModelWindowRows(modelWindowRows);
+    const result = await actions.diagnoseRelayProfile(
+      deriveRelayProfileFromFiles({
+        ...profile,
+        modelList: serializedRows.modelList,
+        modelWindows: serializedRows.modelWindows,
+      }),
+    );
+    setDoctorResult(result);
+    setDoctorRunning(false);
   };
   return (
     <div className="relay-profile-editor">
@@ -4072,6 +4206,21 @@ function RelayProfileEditor({
           </div>
         ) : null}
         {showApiFields ? (
+          <div className="provider-doctor">
+            <div className="provider-doctor-head">
+              <div>
+                <strong>Provider Doctor</strong>
+                <span>{t("检查配置、模型列表和一次真实请求，定位供应商不可用原因。")}</span>
+              </div>
+              <Button onClick={() => void runProviderDoctor()} size="sm" type="button" variant="secondary">
+                <Stethoscope className="h-4 w-4" />
+                {t("诊断供应商")}
+              </Button>
+            </div>
+            <span>{doctorResult?.summary ?? t("点击后会打开诊断弹框，按步骤检查供应商。")}</span>
+          </div>
+        ) : null}
+        {showApiFields ? (
           <Field className="relay-field-model-list" label={t("模型列表")}>
             <div className="relay-model-row-editor">
               <div className="relay-model-row relay-model-row-head">
@@ -4159,6 +4308,15 @@ function RelayProfileEditor({
         <ShieldCheck className="h-4 w-4" />
         <span>{relayProfileModeHelp(profile)}</span>
       </div>
+      {doctorOpen ? (
+        <ProviderDoctorModal
+          result={doctorResult}
+          running={doctorRunning}
+          onClose={() => {
+            if (!doctorRunning) setDoctorOpen(false);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -4633,6 +4791,115 @@ function RelayFileEditors({
   );
 }
 
+function ProviderDoctorModal({
+  result,
+  running,
+  onClose,
+}: {
+  result: ProviderDoctorResult | null;
+  running: boolean;
+  onClose: () => void;
+}) {
+  const steps = providerDoctorSteps(result, running);
+  const doneCount = steps.filter((step) => step.state === "ok" || step.state === "warning" || step.state === "failed").length;
+  const progress = Math.round((doneCount / steps.length) * 100);
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal-card provider-doctor-modal">
+        <div className="modal-head">
+          <div>
+            <h2>Provider Doctor</h2>
+            <p>{running ? t("正在诊断供应商，请稍候。") : result?.summary ?? t("诊断已完成。")}</p>
+          </div>
+          <UiBadge variant={result && !isSuccessStatus(result.status) ? "outline" : "secondary"}>
+            {running ? t("诊断中") : result && !isSuccessStatus(result.status) ? t("异常") : t("完成")}
+          </UiBadge>
+        </div>
+        <div className="provider-doctor-progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} role="progressbar">
+          <div style={{ width: `${progress}%` }} />
+        </div>
+        <div className="provider-doctor-step-list">
+          {steps.map((step) => (
+            <div className={`provider-doctor-step ${step.state}`} key={step.id}>
+              <span className="provider-doctor-step-icon">
+                {step.state === "running" ? (
+                  <RefreshCw className="h-4 w-4" />
+                ) : step.state === "ok" ? (
+                  <CheckCircle2 className="h-4 w-4" />
+                ) : step.state === "warning" ? (
+                  <ShieldAlert className="h-4 w-4" />
+                ) : step.state === "failed" ? (
+                  <Info className="h-4 w-4" />
+                ) : (
+                  <span />
+                )}
+              </span>
+              <div>
+                <strong>{step.title}</strong>
+                <small>{step.detail}</small>
+              </div>
+            </div>
+          ))}
+        </div>
+        {result?.recommendation ? <p className="provider-doctor-recommendation">{result.recommendation}</p> : null}
+        <div className="modal-actions">
+          <Button disabled={running} onClick={onClose} variant="secondary">
+            {running ? t("诊断中") : t("关闭")}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type ProviderDoctorStepState = "pending" | "running" | "ok" | "warning" | "failed";
+
+function providerDoctorSteps(
+  result: ProviderDoctorResult | null,
+  running: boolean,
+): Array<{ id: string; title: string; detail: string; state: ProviderDoctorStepState }> {
+  const base = [
+    { id: "config", title: t("配置完整性"), pending: t("等待检查 Base URL / API Key。") },
+    { id: "models", title: t("模型列表"), pending: t("等待检查 /v1/models。") },
+    { id: "request", title: t("真实请求"), pending: t("等待发送一次测试请求。") },
+    { id: "recommendation", title: t("处理建议"), pending: t("等待生成建议。") },
+  ];
+  if (!result) {
+    return base.map((step, index) => ({
+      id: step.id,
+      title: step.title,
+      detail: index === 0 && running ? t("正在检查配置完整性…") : step.pending,
+      state: index === 0 && running ? "running" : "pending",
+    }));
+  }
+  const checks = new Map(result.checks.map((check) => [check.id, check]));
+  return base.map((step) => {
+    if (step.id === "recommendation") {
+      return {
+        id: step.id,
+        title: step.title,
+        detail: result.recommendation || step.pending,
+        state: result.status === "failed" ? "warning" : "ok",
+      };
+    }
+    const check = checks.get(step.id);
+    if (!check) {
+      return {
+        id: step.id,
+        title: step.title,
+        detail: step.id === "models" || step.id === "request" ? t("该步骤未执行。") : step.pending,
+        state: "pending",
+      };
+    }
+    return {
+      id: step.id,
+      title: check.title || step.title,
+      detail: check.detail,
+      state: check.status === "ok" ? "ok" : check.status === "warning" ? "warning" : "failed",
+    };
+  });
+}
+
 function ModeSelector({ launchMode, actions }: { launchMode: LaunchMode; actions: Actions }) {
   return (
     <div className="mode-grid">
@@ -4650,7 +4917,7 @@ function ModeSelector({ launchMode, actions }: { launchMode: LaunchMode; actions
         type="button"
       >
         <strong>{t("完整增强")}</strong>
-        <span>{t("适合纯 API；启用插件市场、强制安装、会话删除导出、项目移动等全部页面能力。")}</span>
+        <span>{t("适合纯 API；启用插件市场、会话删除导出、项目移动等全部页面能力。")}</span>
       </button>
     </div>
   );
@@ -4795,79 +5062,6 @@ function ConfirmDialog({
   );
 }
 
-function CloseConfirmDialog({
-  onExit,
-  onHide,
-  onCancel,
-}: {
-  onExit: () => void;
-  onHide: () => void;
-  onCancel: () => void;
-}) {
-  return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal-card">
-        <div className="modal-head">
-          <div>
-            <h2>{t("关闭确认")}</h2>
-            <p className="modal-message">{t("要退出 Codex++ 管理工具，还是最小化到系统托盘？")}</p>
-          </div>
-          <button className="toast-close" onClick={onCancel} type="button">×</button>
-        </div>
-        <Toolbar>
-          <Button onClick={onExit}>
-            <PowerOff className="h-4 w-4" />
-            {t("退出程序")}
-          </Button>
-          <Button onClick={onHide} variant="secondary">
-            <Power className="h-4 w-4" />
-            {t("最小化到托盘")}
-          </Button>
-        </Toolbar>
-      </div>
-    </div>
-  );
-}
-
-function PluginMarketplacePromptDialog({
-  status,
-  progress,
-  onRepair,
-  onClose,
-}: {
-  status: PluginMarketplaceStatusResult;
-  progress: TaskProgress;
-  onRepair: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal-card plugin-marketplace-modal">
-        <div className="modal-head">
-          <div>
-            <h2>{t("插件市场需要修复")}</h2>
-            <p>{t("当前 CODEX_HOME 未发现可用的完整插件市场，API Key 模式下可能出现插件安装后不可用。")}</p>
-          </div>
-          <button className="toast-close" onClick={onClose} type="button">×</button>
-        </div>
-        <div className="metric-list">
-          <Metric label="CODEX_HOME" value={status.codexHome} />
-          <Metric label={t("本地插件市场")} value={status.marketplaceRoot ?? t("未发现")} />
-          <Metric label={t("配置状态")} value={status.configRegistered ? t("已注册") : t("未注册")} />
-        </div>
-        <TaskProgressBox progress={progress} title={t("修复进度")} />
-        <Toolbar>
-          <Button disabled={progress.active} onClick={onRepair}>
-            <Download className="h-4 w-4" />
-            {progress.active ? t("正在修复…") : t("一键修复")}
-          </Button>
-          <Button disabled={progress.active} onClick={onClose} variant="secondary">{t("稍后处理")}</Button>
-        </Toolbar>
-      </div>
-    </div>
-  );
-}
-
 function PendingProviderImportDialog({
   request,
   onConfirm,
@@ -4906,12 +5100,12 @@ function PendingProviderImportDialog({
   );
 }
 
-function TaskProgressBox({ progress, title }: { progress: TaskProgress; title: string }) {
+function TaskProgressBox({ progress, title, completedTitle = t("上次修复结果") }: { progress: TaskProgress; title: string; completedTitle?: string }) {
   if (!progress.active && progress.percent <= 0) return null;
   return (
     <div className="provider-sync-progress task-progress" data-active={progress.active}>
       <div className="provider-sync-progress-head">
-        <strong>{progress.active ? title : t("上次修复结果")}</strong>
+        <strong>{progress.active ? title : completedTitle}</strong>
         <span>{progress.percent}%</span>
       </div>
       <div
@@ -5025,6 +5219,7 @@ function AdGrid({ ads, empty, actions }: { ads: AdItem[]; empty: string; actions
     <div className="ad-grid">
       {ads.map((ad) => (
         <button className="ad-card" key={ad.id || `${ad.type}-${ad.title}`} onClick={() => void actions.openExternalUrl(ad.url)} type="button">
+          {ad.image ? <img alt="" className="ad-image" src={ad.image} /> : null}
           <div>
             <strong>{ad.title}</strong>
             <p>{ad.description}</p>
@@ -5068,7 +5263,7 @@ function routeSubtitle(route: Route) {
     recommendations: t("赞助商推荐与普通推荐"),
     maintenance: t("入口安装、修复、Watcher 与手动启动"),
     about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
-    settings: t("主题、命令包装器和启动参数"),
+    settings: t("主题和启动参数"),
   };
   return subtitles[route];
 }
@@ -5787,6 +5982,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     computerUseGuardEnabled: settings.computerUseGuardEnabled === true,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
+    codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),
     codexAppStepwiseMaxItems: clampNumber(settings.codexAppStepwiseMaxItems ?? 6, 0, 6),
     codexAppStepwiseMaxInputChars: clampNumber(settings.codexAppStepwiseMaxInputChars || 6000, 1000, 24000),
     codexAppStepwiseMaxOutputTokens: clampNumber(settings.codexAppStepwiseMaxOutputTokens || 500, 100, 4000),
@@ -5801,6 +5997,12 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
 function clampNumber(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function normalizeImageOverlayFitMode(value: string | undefined): ImageOverlayFitMode {
+  return value === "fill" || value === "fit" || value === "stretch" || value === "tile" || value === "center"
+    ? value
+    : "fit";
 }
 
 function codexExtraArgsToInput(args: string[] | undefined) {

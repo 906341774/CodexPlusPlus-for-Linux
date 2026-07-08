@@ -65,6 +65,18 @@
 . 更新或恢复 `CodexPlusPlus/src` 和 `codex-desktop-linux/src` 中的源码快照。
 . 使用现有脚本完成静态检查、patch apply check 和白盒测试。
 . 在 Podman 容器内完成 CodexDesktop 与 Codex++ 构建、安装和基本启动。
++
+对于 Codex Desktop 的直接 `make build-app` 构建路径，PowerShell 构建流程必须先写入本地 gitignored 的 `linux-features/features.json`，同时导出 `CODEX_LINUX_FEATURES` 和 `CODEX_LINUX_FEATURES_CONFIG`，并在执行 `make build-app` 前让 `CODEX_LINUX_FEATURES_CONFIG` 指向该文件。
+构建产物复制到 `$HOME/opt/CodexDesktop` 后，必须验证两个 build metadata 文件：
++
+[source,text]
+----
+$HOME/opt/CodexDesktop/.codex-linux/build-info.json
+$HOME/opt/CodexDesktop/resources/codex-linux-build-info.json
+----
++
+两个文件都必须记录预期启用的 Linux feature ids。
+此直接构建路径不得只依赖环境变量中的 feature 列表；如果 metadata 会显示 `Enabled features: None`，必须停下修复构建流程后再继续。
 . 根据维护者反馈选择一个具体问题做复现和修复。
 . 将验证通过的修改整理为 Antora snippet 或脚本改动。
 . 提交前总结已解决问题、已验证功能和未解决问题。
@@ -200,4 +212,3 @@ v1.2.29-fix-0002
 
 在确认自动化问题来源之前，下一轮上游基线适配应使用 `manual-stable`。
 Agent 可以协助运行脚本、分析日志、写补丁和整理发布日志，但不应自主启动长时间全流程自动适配。
-

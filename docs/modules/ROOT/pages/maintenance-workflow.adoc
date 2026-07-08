@@ -64,6 +64,18 @@ Procedure:
 . Update or restore source snapshots under `CodexPlusPlus/src` and `codex-desktop-linux/src`.
 . Run static checks, patch apply checks, and white-box tests with the existing scripts.
 . Build, install, and smoke-launch CodexDesktop and Codex++ inside Podman.
++
+For the direct `make build-app` Codex Desktop path, the PowerShell build procedure must write a local git-ignored `linux-features/features.json`, export both `CODEX_LINUX_FEATURES` and `CODEX_LINUX_FEATURES_CONFIG`, and point `CODEX_LINUX_FEATURES_CONFIG` at that file before invoking `make build-app`.
+After copying the build output to `$HOME/opt/CodexDesktop`, verify both build metadata files:
++
+[source,text]
+----
+$HOME/opt/CodexDesktop/.codex-linux/build-info.json
+$HOME/opt/CodexDesktop/resources/codex-linux-build-info.json
+----
++
+Each file must record the expected enabled Linux feature ids.
+Do not rely on an environment-only feature list for this direct build path; if the metadata would show `Enabled features: None`, stop and fix the build procedure before continuing.
 . Reproduce and fix one concrete maintainer-reported issue.
 . Convert verified changes into Antora snippets or script changes.
 . Summarize fixed issues, verified features, and known gaps before committing.
@@ -199,4 +211,3 @@ Stop and report when:
 
 Until the automation failure source is understood, use `manual-stable` for the next upstream baseline adaptation.
 Agents may help run scripts, analyze logs, write patches, and prepare release notes, but should not launch a long unattended end-to-end adaptation run.
-

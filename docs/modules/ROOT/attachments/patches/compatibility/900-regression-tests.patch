@@ -1,8 +1,8 @@
 diff --git a/crates/codex-plus-core/tests/bridge_routes.rs b/crates/codex-plus-core/tests/bridge_routes.rs
-index cf63669..fa1e487 100644
+index 98d6e5c..3d723f7 100644
 --- a/crates/codex-plus-core/tests/bridge_routes.rs
 +++ b/crates/codex-plus-core/tests/bridge_routes.rs
-@@ -120,7 +120,7 @@ async fn settings_get_includes_runtime_codex_app_version() {
+@@ -119,7 +119,7 @@ async fn settings_get_includes_runtime_codex_app_version() {
  
      assert_eq!(result["codexAppVersion"], json!("26.601.21317"));
      assert_eq!(result["codexAppPluginMarketplaceUnlock"], json!(true));
@@ -11,7 +11,7 @@ index cf63669..fa1e487 100644
      assert_eq!(result["codexAppThreadIdBadge"], json!(false));
  }
  
-@@ -731,6 +731,31 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
+@@ -720,6 +720,31 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
      assert!(evaluated[0].contains("window.demo = true;"));
  }
  
@@ -43,7 +43,7 @@ index cf63669..fa1e487 100644
  #[tokio::test]
  async fn core_runtime_open_devtools_uses_inspector_url_opener() {
      let opened = Arc::new(Mutex::new(Vec::<String>::new()));
-@@ -1036,6 +1061,7 @@ impl BridgeSettingsService for FakeSettings {
+@@ -1025,6 +1050,7 @@ impl BridgeSettingsService for FakeSettings {
          }
          for key in [
              "codexAppPluginMarketplaceUnlock",
@@ -51,7 +51,7 @@ index cf63669..fa1e487 100644
              "codexAppModelWhitelistUnlock",
              "codexAppSessionDelete",
              "codexAppMarkdownExport",
-@@ -1411,7 +1437,11 @@ impl LaunchHooks for ContextHooks {
+@@ -1384,7 +1410,11 @@ impl LaunchHooks for ContextHooks {
          Ok(())
      }
  
@@ -65,10 +65,10 @@ index cf63669..fa1e487 100644
      }
  
 diff --git a/crates/codex-plus-core/tests/cdp_bridge.rs b/crates/codex-plus-core/tests/cdp_bridge.rs
-index c0d06e3..fb97418 100644
+index 96d7e22..cabd5d5 100644
 --- a/crates/codex-plus-core/tests/cdp_bridge.rs
 +++ b/crates/codex-plus-core/tests/cdp_bridge.rs
-@@ -122,6 +122,18 @@ fn injection_script_times_out_backend_bridge_calls_and_falls_back_to_helper() {
+@@ -127,6 +127,18 @@ fn injection_script_times_out_backend_bridge_calls_and_falls_back_to_helper() {
      assert!(script.contains("backend_status_bridge_and_http_failed"));
  }
  
@@ -87,7 +87,7 @@ index c0d06e3..fb97418 100644
  #[test]
  fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
      let script = assets::injection_script(57321);
-@@ -130,14 +142,13 @@ fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
+@@ -135,14 +147,13 @@ fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
  }
  
  #[test]
@@ -103,7 +103,7 @@ index c0d06e3..fb97418 100644
      assert!(!script.contains("强制解锁入口"));
      assert!(!script.contains("data-codex-plus-setting=\"pluginEntryUnlock\""));
  }
-@@ -218,7 +229,7 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
+@@ -254,7 +265,7 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
      let script = assets::injection_script(57321);
  
      assert!(script.contains("function pluginPatchDisabledInRelayMode()"));
@@ -112,7 +112,7 @@ index c0d06e3..fb97418 100644
      assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
      assert!(script.contains("clearPluginPatchArtifacts()"));
  }
-@@ -240,23 +251,31 @@ fn injection_script_gates_legacy_and_modern_plugin_unlock_by_codex_version() {
+@@ -285,23 +296,31 @@ fn injection_script_gates_legacy_and_modern_plugin_unlock_by_codex_version() {
      let script = assets::injection_script(57321);
  
      assert!(script.contains("const pluginUnlockStrategy = codexPluginUnlockStrategy()"));
@@ -152,7 +152,7 @@ index c0d06e3..fb97418 100644
  }
  
  #[test]
-@@ -295,9 +314,8 @@ fn injection_script_does_not_unlock_disabled_plugin_install_buttons() {
+@@ -340,9 +359,8 @@ fn injection_script_does_not_unlock_disabled_plugin_install_buttons() {
      assert!(script.contains("button[aria-disabled=\"true\"]"));
      assert!(script.contains("[role=\"button\"][data-disabled]"));
      assert!(!script.contains("installButtonUnlockNodes"));
@@ -163,7 +163,7 @@ index c0d06e3..fb97418 100644
      assert!(!script.contains("button.dataset.codexForceInstallUnlocked"));
  }
  
-@@ -408,13 +426,12 @@ fn injection_script_logs_marketplace_grouping_diagnostics() {
+@@ -455,13 +473,12 @@ fn injection_script_logs_marketplace_grouping_diagnostics() {
  }
  
  #[test]
@@ -178,7 +178,7 @@ index c0d06e3..fb97418 100644
  }
  
  #[test]
-@@ -465,6 +482,18 @@ fn injection_script_exposes_sidebar_thread_id_badge_control() {
+@@ -512,6 +529,18 @@ fn injection_script_exposes_sidebar_thread_id_badge_control() {
      assert!(script.contains("refreshThreadIdBadges();"));
  }
  
@@ -197,7 +197,7 @@ index c0d06e3..fb97418 100644
  #[test]
  fn injection_script_keeps_session_action_buttons_in_pr_style() {
      let script = assets::injection_script(57321);
-@@ -597,7 +626,9 @@ fn injection_script_exposes_fast_service_tier_control() {
+@@ -644,7 +673,9 @@ fn injection_script_exposes_fast_service_tier_control() {
      assert!(script.contains("codexServiceTierBadgeFooterGroup"));
      assert!(script.contains("codexServiceTierFindComposerEl"));
      assert!(script.contains("codexServiceTierVisibleComposerFooters"));
@@ -207,7 +207,7 @@ index c0d06e3..fb97418 100644
      assert!(script.contains("codexServiceTierComposerCandidates"));
      assert!(script.contains("codexServiceTierComposerScore"));
      assert!(script.contains("data-codex-service-tier-badge"));
-@@ -613,41 +644,105 @@ fn injection_script_exposes_fast_service_tier_control() {
+@@ -660,41 +691,105 @@ fn injection_script_exposes_fast_service_tier_control() {
  }
  
  #[test]
@@ -336,7 +336,7 @@ index c0d06e3..fb97418 100644
  }
  
  #[test]
-@@ -679,6 +774,9 @@ fn injection_script_applies_fast_service_tier_contract() {
+@@ -726,6 +821,9 @@ fn injection_script_applies_fast_service_tier_contract() {
      );
  
      assert_eq!(cases["startConversation"]["serviceTier"], "priority");
@@ -346,7 +346,7 @@ index c0d06e3..fb97418 100644
  }
  
  fn run_service_tier_contract_harness() -> serde_json::Value {
-@@ -714,8 +812,18 @@ function node() {{
+@@ -761,8 +859,18 @@ function node() {{
      innerHTML: "",
    }};
  }}
@@ -365,7 +365,7 @@ index c0d06e3..fb97418 100644
  globalThis.document = {{
    scripts: [],
    documentElement: node(),
-@@ -723,7 +831,7 @@ globalThis.document = {{
+@@ -770,7 +878,7 @@ globalThis.document = {{
    createElement: () => node(),
    getElementById: () => null,
    querySelector: () => null,
@@ -374,7 +374,7 @@ index c0d06e3..fb97418 100644
    addEventListener() {{}},
    removeEventListener() {{}},
  }};
-@@ -776,6 +884,14 @@ const startConversation = api.requestOverride({{
+@@ -823,6 +931,14 @@ const startConversation = api.requestOverride({{
    model: "gpt-5.5",
  }});
  
@@ -389,7 +389,7 @@ index c0d06e3..fb97418 100644
  process.stdout.write(JSON.stringify({{
    supportedFast,
    unsupportedModel,
-@@ -783,6 +899,8 @@ process.stdout.write(JSON.stringify({{
+@@ -830,6 +946,8 @@ process.stdout.write(JSON.stringify({{
    turnWithoutModelDiagnosticModel,
    customInheritUnsupported,
    startConversation,
@@ -398,7 +398,7 @@ index c0d06e3..fb97418 100644
  }}));
  "#,
          script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
-@@ -1088,6 +1206,31 @@ fn pick_injectable_codex_page_target_rejects_non_codex_pages() {
+@@ -1148,6 +1266,31 @@ fn pick_injectable_codex_page_target_rejects_non_codex_pages() {
      );
  }
  
@@ -430,7 +430,7 @@ index c0d06e3..fb97418 100644
  #[test]
  fn pick_injectable_codex_page_target_requires_websocket() {
      let targets = vec![target("codex", "page", "Codex", "https://codex.test", None)];
-@@ -1681,3 +1824,59 @@ fn noop_handler() -> bridge::BridgeHandler {
+@@ -1741,3 +1884,59 @@ fn noop_handler() -> bridge::BridgeHandler {
              as Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send>>
      })
  }
@@ -618,7 +618,7 @@ index 7cd4e79..0626153 100644
 +    );
 +}
 diff --git a/crates/codex-plus-core/tests/launcher.rs b/crates/codex-plus-core/tests/launcher.rs
-index ec12600..d2adfb6 100644
+index c6a0a4a..c39a2b5 100644
 --- a/crates/codex-plus-core/tests/launcher.rs
 +++ b/crates/codex-plus-core/tests/launcher.rs
 @@ -14,6 +14,7 @@ use codex_plus_core::launcher::{
@@ -774,19 +774,7 @@ index ec12600..d2adfb6 100644
  #[test]
  fn launcher_builds_debug_arguments_and_commands() {
      let app_dir = PathBuf::from(r"C:\Codex\app");
-@@ -261,10 +393,7 @@ fn launcher_appends_extra_codex_arguments_after_debug_arguments() {
- 
- #[test]
- fn launcher_fast_startup_adds_statsig_fast_fail_argument_when_enabled() {
--    let settings = BackendSettings {
--        codex_app_fast_startup: true,
--        ..BackendSettings::default()
--    };
-+    let settings = BackendSettings::default();
-     let args = build_codex_arguments_for_settings(9229, &settings);
- 
-     assert!(args.iter().any(|arg| {
-@@ -320,6 +449,24 @@ fn launcher_native_menu_inspector_arguments_are_added_before_extra_args() {
+@@ -320,6 +452,24 @@ fn launcher_native_menu_inspector_arguments_are_added_before_extra_args() {
      assert_eq!(command[4], "--force_high_performance_gpu");
  }
  
@@ -811,7 +799,7 @@ index ec12600..d2adfb6 100644
  #[test]
  fn launcher_constructs_windows_packaged_activation_without_real_app() {
      let app_dir = PathBuf::from(
-@@ -520,7 +667,7 @@ async fn default_helper_serves_backend_status_over_http() {
+@@ -520,7 +670,7 @@ async fn default_helper_serves_backend_status_over_http() {
      let port = listener.local_addr().unwrap().port();
      drop(listener);
  
@@ -820,7 +808,7 @@ index ec12600..d2adfb6 100644
      let client = reqwest::Client::builder().no_proxy().build().unwrap();
      let response = client
          .post(format!("http://127.0.0.1:{port}/backend/status"))
-@@ -547,6 +694,76 @@ async fn default_helper_serves_backend_status_over_http() {
+@@ -544,6 +694,76 @@ async fn default_helper_serves_backend_status_over_http() {
      hooks.shutdown_helper(port).await;
  }
  
@@ -897,7 +885,7 @@ index ec12600..d2adfb6 100644
  #[tokio::test]
  async fn default_helper_accepts_diagnostic_log_events_over_http() {
      let temp = tempfile::tempdir().unwrap();
-@@ -557,7 +774,7 @@ async fn default_helper_accepts_diagnostic_log_events_over_http() {
+@@ -554,7 +774,7 @@ async fn default_helper_accepts_diagnostic_log_events_over_http() {
      let port = listener.local_addr().unwrap().port();
      drop(listener);
  
@@ -906,7 +894,7 @@ index ec12600..d2adfb6 100644
      let response = reqwest::Client::builder()
          .no_proxy()
          .build()
-@@ -651,6 +868,23 @@ async fn launch_lifecycle_runs_enabled_maintenance_without_applying_relay_profil
+@@ -648,6 +868,23 @@ async fn launch_lifecycle_runs_enabled_maintenance_without_applying_relay_profil
      );
  }
  
@@ -930,7 +918,7 @@ index ec12600..d2adfb6 100644
  #[tokio::test]
  async fn launch_lifecycle_passes_configured_extra_args_to_codex_launch() {
      let temp = tempfile::tempdir().unwrap();
-@@ -1292,6 +1526,100 @@ async fn default_launch_hooks_provider_sync_enabled_returns_explicit_error() {
+@@ -1289,6 +1526,100 @@ async fn default_launch_hooks_provider_sync_enabled_returns_explicit_error() {
      );
  }
  
@@ -1031,7 +1019,7 @@ index ec12600..d2adfb6 100644
  #[derive(Clone)]
  struct FakeHooks {
      events: Arc<Mutex<Vec<String>>>,
-@@ -1414,7 +1742,11 @@ impl LaunchHooks for FakeHooks {
+@@ -1411,7 +1742,11 @@ impl LaunchHooks for FakeHooks {
          Ok(())
      }
  
@@ -1044,7 +1032,7 @@ index ec12600..d2adfb6 100644
          self.event(format!("start-helper:{helper_port}"));
          Ok(())
      }
-@@ -1451,7 +1783,13 @@ impl LaunchHooks for FakeHooks {
+@@ -1448,7 +1783,13 @@ impl LaunchHooks for FakeHooks {
          Ok(())
      }
  
@@ -1060,10 +1048,10 @@ index ec12600..d2adfb6 100644
          self.inject_error.is_none()
      }
 diff --git a/crates/codex-plus-core/tests/relay_config.rs b/crates/codex-plus-core/tests/relay_config.rs
-index c19476f..6c1d2bd 100644
+index c5e61c0..1ffd9d0 100644
 --- a/crates/codex-plus-core/tests/relay_config.rs
 +++ b/crates/codex-plus-core/tests/relay_config.rs
-@@ -467,7 +467,7 @@ fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
+@@ -514,7 +514,7 @@ fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
      assert!(config.contains("[model_providers.custom]"));
      assert!(config.contains(r#"name = "custom""#));
      assert!(config.contains(r#"wire_api = "responses""#));
@@ -1072,7 +1060,7 @@ index c19476f..6c1d2bd 100644
      assert!(config.contains(r#"base_url = "http://192.168.188.245:3001/v1""#));
      assert!(config.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
  }
-@@ -1330,25 +1330,6 @@ fn apply_relay_config_file_switches_config_without_touching_auth_json() {
+@@ -1377,25 +1377,6 @@ fn apply_relay_config_file_switches_config_without_touching_auth_json() {
      );
  }
  
@@ -1098,7 +1086,7 @@ index c19476f..6c1d2bd 100644
  #[test]
  fn apply_relay_config_does_not_carry_profiles_from_live_config() {
      let temp = tempfile::tempdir().unwrap();
-@@ -2320,6 +2301,69 @@ requires_openai_auth = true
+@@ -2367,6 +2348,69 @@ requires_openai_auth = true
      assert!(!config.contains("[model_providers.custom]"));
  }
  

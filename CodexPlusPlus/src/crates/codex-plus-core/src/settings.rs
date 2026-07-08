@@ -201,8 +201,6 @@ pub struct BackendSettings {
     pub computer_use_guard_enabled: bool,
     #[serde(rename = "codexAppPluginMarketplaceUnlock", default = "default_true")]
     pub codex_app_plugin_marketplace_unlock: bool,
-    #[serde(rename = "codexAppForcePluginInstall", default = "default_true")]
-    pub codex_app_force_plugin_install: bool,
     #[serde(rename = "codexAppPluginAutoExpand", default = "default_true")]
     pub codex_app_plugin_auto_expand: bool,
     #[serde(rename = "codexAppModelWhitelistUnlock", default = "default_true")]
@@ -215,7 +213,7 @@ pub struct BackendSettings {
     pub codex_app_paste_fix: bool,
     #[serde(rename = "codexAppForceChineseLocale", default = "default_true")]
     pub codex_app_force_chinese_locale: bool,
-    #[serde(rename = "codexAppFastStartup", default = "default_true")]
+    #[serde(rename = "codexAppFastStartup", default)]
     pub codex_app_fast_startup: bool,
     #[serde(rename = "codexAppProjectMove", default = "default_true")]
     pub codex_app_project_move: bool,
@@ -291,6 +289,12 @@ pub struct BackendSettings {
         deserialize_with = "deserialize_image_overlay_opacity"
     )]
     pub codex_app_image_overlay_opacity: u8,
+    #[serde(
+        rename = "codexAppImageOverlayFitMode",
+        default = "default_image_overlay_fit_mode",
+        deserialize_with = "deserialize_image_overlay_fit_mode"
+    )]
+    pub codex_app_image_overlay_fit_mode: String,
     #[serde(rename = "codexGoalsEnabled", default)]
     pub codex_goals_enabled: bool,
     #[serde(rename = "launchMode", default)]
@@ -313,18 +317,6 @@ pub struct BackendSettings {
     pub active_aggregate_relay_id: String,
     #[serde(rename = "relayTestModel", default = "default_relay_test_model")]
     pub relay_test_model: String,
-    #[serde(rename = "cliWrapperEnabled", default)]
-    pub cli_wrapper_enabled: bool,
-    #[serde(rename = "cliWrapperBaseUrl", default)]
-    pub cli_wrapper_base_url: String,
-    #[serde(rename = "cliWrapperApiKey", default)]
-    pub cli_wrapper_api_key: String,
-    #[serde(
-        rename = "cliWrapperApiKeyEnv",
-        default = "default_api_key_env",
-        deserialize_with = "empty_as_default_api_key_env"
-    )]
-    pub cli_wrapper_api_key_env: String,
 }
 
 impl Default for BackendSettings {
@@ -340,14 +332,13 @@ impl Default for BackendSettings {
             enhancements_enabled: true,
             computer_use_guard_enabled: false,
             codex_app_plugin_marketplace_unlock: true,
-            codex_app_force_plugin_install: true,
             codex_app_plugin_auto_expand: true,
             codex_app_model_whitelist_unlock: true,
             codex_app_session_delete: true,
             codex_app_markdown_export: true,
             codex_app_paste_fix: false,
             codex_app_force_chinese_locale: true,
-            codex_app_fast_startup: true,
+            codex_app_fast_startup: false,
             codex_app_project_move: true,
             codex_app_thread_id_badge: false,
             codex_app_conversation_view: false,
@@ -373,6 +364,7 @@ impl Default for BackendSettings {
             codex_app_image_overlay_enabled: false,
             codex_app_image_overlay_path: String::new(),
             codex_app_image_overlay_opacity: default_image_overlay_opacity(),
+            codex_app_image_overlay_fit_mode: default_image_overlay_fit_mode(),
             codex_goals_enabled: false,
             launch_mode: LaunchMode::Patch,
             relay_base_url: default_relay_base_url(),
@@ -384,10 +376,6 @@ impl Default for BackendSettings {
             aggregate_relay_profiles: Vec::new(),
             active_aggregate_relay_id: String::new(),
             relay_test_model: default_relay_test_model(),
-            cli_wrapper_enabled: false,
-            cli_wrapper_base_url: String::new(),
-            cli_wrapper_api_key: String::new(),
-            cli_wrapper_api_key_env: default_api_key_env(),
         }
     }
 }
@@ -508,10 +496,6 @@ impl BackendSettings {
     }
 }
 
-pub fn default_api_key_env() -> String {
-    "CUSTOM_OPENAI_API_KEY".to_string()
-}
-
 pub fn default_stepwise_api_key_env() -> String {
     "CODEX_STEPWISE_API_KEY".to_string()
 }
@@ -538,6 +522,17 @@ fn default_image_overlay_opacity() -> u8 {
 
 fn clamp_image_overlay_opacity(value: u8) -> u8 {
     value.clamp(1, 100)
+}
+
+pub fn default_image_overlay_fit_mode() -> String {
+    "fit".to_string()
+}
+
+fn normalize_image_overlay_fit_mode(value: &str) -> String {
+    match value {
+        "fill" | "fit" | "stretch" | "tile" | "center" => value.to_string(),
+        _ => default_image_overlay_fit_mode(),
+    }
 }
 
 pub fn clamp_stepwise_max_items(value: u8) -> u8 {
@@ -580,16 +575,6 @@ pub fn default_aggregate_member_weight() -> u32 {
     1
 }
 
-pub fn empty_as_default_api_key_env<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = Option::<String>::deserialize(deserializer)?;
-    Ok(value
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(default_api_key_env))
-}
-
 pub fn empty_as_default_stepwise_api_key_env<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -607,6 +592,15 @@ where
     Ok(Option::<u8>::deserialize(deserializer)?
         .map(clamp_image_overlay_opacity)
         .unwrap_or_else(default_image_overlay_opacity))
+}
+
+fn deserialize_image_overlay_fit_mode<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?
+        .map(|value| normalize_image_overlay_fit_mode(&value))
+        .unwrap_or_else(default_image_overlay_fit_mode))
 }
 
 fn deserialize_stepwise_max_items<'de, D>(deserializer: D) -> Result<u8, D::Error>
@@ -778,7 +772,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         target.insert("computerUseGuardEnabled".to_string(), Value::Bool(value));
     }
     merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
-    merge_bool_setting(target, source, "codexAppForcePluginInstall");
     merge_bool_setting(target, source, "codexAppPluginAutoExpand");
     merge_bool_setting(target, source, "codexAppModelWhitelistUnlock");
     merge_bool_setting(target, source, "codexAppSessionDelete");
@@ -901,6 +894,15 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             Value::Number(serde_json::Number::from(clamp_image_overlay_opacity(value))),
         );
     }
+    if let Some(value) = source
+        .get("codexAppImageOverlayFitMode")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppImageOverlayFitMode".to_string(),
+            Value::String(normalize_image_overlay_fit_mode(value)),
+        );
+    }
     if let Some(value) = source.get("codexGoalsEnabled").and_then(Value::as_bool) {
         target.insert("codexGoalsEnabled".to_string(), Value::Bool(value));
     }
@@ -970,31 +972,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
                 default_relay_test_model()
             } else {
                 value.trim().to_string()
-            }),
-        );
-    }
-    if let Some(value) = source.get("cliWrapperEnabled").and_then(Value::as_bool) {
-        target.insert("cliWrapperEnabled".to_string(), Value::Bool(value));
-    }
-    if let Some(value) = source.get("cliWrapperBaseUrl").and_then(Value::as_str) {
-        target.insert(
-            "cliWrapperBaseUrl".to_string(),
-            Value::String(value.to_string()),
-        );
-    }
-    if let Some(value) = source.get("cliWrapperApiKey").and_then(Value::as_str) {
-        target.insert(
-            "cliWrapperApiKey".to_string(),
-            Value::String(value.to_string()),
-        );
-    }
-    if let Some(value) = source.get("cliWrapperApiKeyEnv").and_then(Value::as_str) {
-        target.insert(
-            "cliWrapperApiKeyEnv".to_string(),
-            Value::String(if value.is_empty() {
-                default_api_key_env()
-            } else {
-                value.to_string()
             }),
         );
     }
@@ -1084,12 +1061,13 @@ fn active_provider_id(doc: &DocumentMut) -> Option<String> {
 }
 
 fn parse_toml_document(contents: &str) -> anyhow::Result<DocumentMut> {
+    let contents = contents.trim_start_matches('\u{feff}');
     if contents.trim().is_empty() {
         Ok(DocumentMut::new())
     } else {
         contents
             .parse::<DocumentMut>()
-            .with_context(|| "config.toml TOML 解析失败")
+            .map_err(|error| anyhow::anyhow!("config.toml TOML 解析失败：{error}"))
     }
 }
 
@@ -1114,6 +1092,8 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     }
     settings.codex_app_image_overlay_opacity =
         clamp_image_overlay_opacity(settings.codex_app_image_overlay_opacity);
+    settings.codex_app_image_overlay_fit_mode =
+        normalize_image_overlay_fit_mode(&settings.codex_app_image_overlay_fit_mode);
     settings.codex_app_stepwise_base_url = settings
         .codex_app_stepwise_base_url
         .trim()
@@ -1241,7 +1221,6 @@ mod tests {
         assert!(settings.enhancements_enabled);
         assert!(!settings.computer_use_guard_enabled);
         assert!(settings.codex_app_plugin_marketplace_unlock);
-        assert!(settings.codex_app_force_plugin_install);
         assert!(settings.codex_app_plugin_auto_expand);
         assert!(!settings.codex_app_thread_id_badge);
         assert!(settings.codex_app_force_chinese_locale);
@@ -1261,8 +1240,6 @@ mod tests {
         assert_eq!(settings.relay_profiles[0].relay_mode, RelayMode::Official);
         assert!(settings.relay_common_config_contents.is_empty());
         assert_eq!(settings.relay_test_model, default_relay_test_model());
-        assert!(!settings.cli_wrapper_enabled);
-        assert_eq!(settings.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
         assert!(!settings.codex_app_stepwise_enabled);
         assert!(!settings.codex_app_stepwise_direct_send);
         assert!(settings.codex_app_stepwise_base_url.is_empty());
@@ -1279,7 +1256,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_deserialize_uses_existing_json_keys() {
+    fn settings_deserialize_ignores_removed_cli_wrapper_keys() {
         let settings: BackendSettings = serde_json::from_str(
             r#"{"codexAppPath":"C:\\Portable\\Codex\\app","providerSyncEnabled":true,"codexGoalsEnabled":true,"cliWrapperEnabled":true,"cliWrapperBaseUrl":"https://example.test","cliWrapperApiKey":"sk-test","cliWrapperApiKeyEnv":""}"#,
         )
@@ -1287,12 +1264,13 @@ mod tests {
         assert_eq!(settings.codex_app_path, r"C:\Portable\Codex\app");
         assert!(settings.provider_sync_enabled);
         assert!(settings.codex_goals_enabled);
-        assert!(settings.cli_wrapper_enabled);
-        assert_eq!(settings.cli_wrapper_base_url, "https://example.test");
-        assert_eq!(settings.cli_wrapper_api_key, "sk-test");
-        assert_eq!(settings.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.codex_extra_args.is_empty());
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert!(saved.get("cliWrapperEnabled").is_none());
+        assert!(saved.get("cliWrapperBaseUrl").is_none());
+        assert!(saved.get("cliWrapperApiKey").is_none());
+        assert!(saved.get("cliWrapperApiKeyEnv").is_none());
     }
 
     #[test]
@@ -1300,14 +1278,12 @@ mod tests {
         let settings: BackendSettings = serde_json::from_str(
             r#"{
                 "codexAppPluginMarketplaceUnlock": true,
-                "codexAppForcePluginInstall": false,
                 "codexAppPluginAutoExpand": false
             }"#,
         )
         .unwrap();
 
         assert!(settings.codex_app_plugin_marketplace_unlock);
-        assert!(!settings.codex_app_force_plugin_install);
         assert!(!settings.codex_app_plugin_auto_expand);
 
         let legacy_settings: BackendSettings = serde_json::from_str(
@@ -1318,7 +1294,6 @@ mod tests {
         .unwrap();
 
         assert!(legacy_settings.codex_app_plugin_marketplace_unlock);
-        assert!(!legacy_settings.codex_app_force_plugin_install);
         assert!(legacy_settings.codex_app_plugin_auto_expand);
     }
 
@@ -1712,10 +1687,6 @@ experimental_bearer_token = "sk-existing""#
         let store = SettingsStore::new(dir.join("nested").join("settings.json"));
         let settings = BackendSettings {
             provider_sync_enabled: true,
-            cli_wrapper_enabled: true,
-            cli_wrapper_base_url: "https://example.test".to_string(),
-            cli_wrapper_api_key: "sk-test".to_string(),
-            cli_wrapper_api_key_env: "CUSTOM_ENV".to_string(),
             codex_extra_args: vec!["--force_high_performance_gpu".to_string()],
             ..BackendSettings::default()
         };
@@ -1789,10 +1760,6 @@ experimental_bearer_token = "sk-existing""#
         let store = SettingsStore::new(dir.join("settings.json"));
         let initial = BackendSettings {
             provider_sync_enabled: false,
-            cli_wrapper_enabled: true,
-            cli_wrapper_base_url: "https://old.test".to_string(),
-            cli_wrapper_api_key: "old-key".to_string(),
-            cli_wrapper_api_key_env: "OLD_ENV".to_string(),
             ..BackendSettings::default()
         };
         store.save(&initial).unwrap();
@@ -1811,7 +1778,6 @@ experimental_bearer_token = "sk-existing""#
             "relayBaseUrl": "https://relay.example.test/v1",
             "relayApiKey": "sk-relay",
             "codexExtraArgs": ["--force_high_performance_gpu", "", "  ", " --enable-gpu "],
-            "cliWrapperApiKeyEnv": "",
             "unknownKey": "ignored"
             }))
             .unwrap();
@@ -1834,10 +1800,6 @@ experimental_bearer_token = "sk-existing""#
                 "--enable-gpu".to_string(),
             ]
         );
-        assert!(updated.cli_wrapper_enabled);
-        assert_eq!(updated.cli_wrapper_base_url, "https://old.test");
-        assert_eq!(updated.cli_wrapper_api_key, "old-key");
-        assert_eq!(updated.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
         assert_eq!(store.load().unwrap(), updated);
     }
 
@@ -1850,7 +1812,8 @@ experimental_bearer_token = "sk-existing""#
             .update(json!({
                 "codexAppImageOverlayEnabled": true,
                 "codexAppImageOverlayPath": "C:\\Users\\me\\Pictures\\overlay.png",
-                "codexAppImageOverlayOpacity": 42
+                "codexAppImageOverlayOpacity": 42,
+                "codexAppImageOverlayFitMode": "fill"
             }))
             .unwrap();
 
@@ -1860,7 +1823,22 @@ experimental_bearer_token = "sk-existing""#
             r"C:\Users\me\Pictures\overlay.png"
         );
         assert_eq!(updated.codex_app_image_overlay_opacity, 42);
+        assert_eq!(updated.codex_app_image_overlay_fit_mode, "fill");
         assert_eq!(store.load().unwrap(), updated);
+    }
+
+    #[test]
+    fn settings_store_defaults_invalid_image_overlay_fit_mode_to_fit() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+
+        let updated = store
+            .update(json!({
+                "codexAppImageOverlayFitMode": "unknown"
+            }))
+            .unwrap();
+
+        assert_eq!(updated.codex_app_image_overlay_fit_mode, "fit");
     }
 
     #[test]

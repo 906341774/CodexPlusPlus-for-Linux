@@ -1,10 +1,13 @@
 "use strict";
 
 const {
+  webviewAssetPatch,
+} = require("../../../../descriptor.js");
+const {
   applyLinuxLocalConversationRouteHydrationPatch,
-} = require("../../../../webview-assets.js");
+} = require("../../../../impl/webview/index.js");
 
-module.exports = {
+module.exports = webviewAssetPatch({
   id: "linux-local-conversation-route-hydration",
   phase: "webview-asset",
   order: 1093,
@@ -13,4 +16,4 @@ module.exports = {
   missingDescription: "local conversation thread webview bundle",
   skipDescription: "Linux local conversation route hydration patch",
   apply: applyLinuxLocalConversationRouteHydrationPatch,
-};
+});

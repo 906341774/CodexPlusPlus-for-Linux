@@ -3,6 +3,7 @@
 ** xref:snippets.adoc[Linux adaptation snippets]
 ** xref:maintenance-workflow.adoc[Maintenance workflow]
 ** xref:adapter-workflow.adoc[Recurring adaptation workflow]
+** xref:maintenance/2026-07-08-v1.2.32-baseline-packaging.adoc[v1.2.32 baseline and packages]
 ** xref:maintenance/2026-07-02-v1.2.28-completed.adoc[v1.2.28 completed]
 ** xref:maintenance/2026-07-08-v1.2.28-service-tier-hotfix.adoc[v1.2.28 Fast service-tier hotfix]
 ** xref:maintenance/2026-07-07-v1.2.28-host-regression-hotfix.adoc[v1.2.28 host regression hotfix]

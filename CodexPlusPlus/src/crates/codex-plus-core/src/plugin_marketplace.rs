@@ -6,28 +6,108 @@ use toml_edit::{DocumentMut, Item, Table};
 
 const OPENAI_CURATED_MARKETPLACE: &str = "openai-curated";
 const OPENAI_API_CURATED_MARKETPLACE: &str = "openai-api-curated";
+const OPENAI_CURATED_REMOTE_MARKETPLACE: &str = "openai-curated-remote";
 const OPENAI_PLUGINS_ZIP_URL: &str =
     "https://codeload.github.com/openai/plugins/zip/refs/heads/main";
 const OPENAI_PLUGINS_DOWNLOAD_LIMIT_BYTES: usize = 128 * 1024 * 1024;
+const OPENAI_CURATED_REMOTE_MARKETPLACE_ZIP: &[u8] =
+    include_bytes!("../../../assets/plugin-marketplaces/openai-curated-remote.zip");
 
 pub fn ensure_openai_curated_marketplace_config(home: &Path) -> anyhow::Result<bool> {
     let Some(marketplace_root) = local_openai_curated_marketplace_root(home)? else {
         return Ok(false);
     };
-    ensure_marketplace_configs(
+    let mut changed = ensure_marketplace_configs(
         home,
         &[OPENAI_CURATED_MARKETPLACE, OPENAI_API_CURATED_MARKETPLACE],
+        &marketplace_root,
+    )?;
+    if let Some(remote_marketplace_root) = local_openai_curated_remote_marketplace_root(home)? {
+        changed |= ensure_marketplace_configs(
+            home,
+            &[OPENAI_CURATED_REMOTE_MARKETPLACE],
+            &remote_marketplace_root,
+        )?;
+    }
+    Ok(changed)
+}
+
+pub fn ensure_openai_curated_remote_marketplace_config(home: &Path) -> anyhow::Result<bool> {
+    let Some(marketplace_root) = local_openai_curated_remote_marketplace_root(home)? else {
+        return Ok(false);
+    };
+    ensure_marketplace_configs(
+        home,
+        &[OPENAI_CURATED_REMOTE_MARKETPLACE],
+        &marketplace_root,
+    )
+}
+
+pub fn ensure_openai_curated_remote_marketplace_available(
+    home: &Path,
+) -> anyhow::Result<MarketplaceEnsureResult> {
+    let mut initialized = false;
+    if local_openai_curated_remote_marketplace_root(home)?.is_none() {
+        install_openai_curated_remote_marketplace_zip(home, OPENAI_CURATED_REMOTE_MARKETPLACE_ZIP)?;
+        initialized = true;
+    }
+    let configured = ensure_openai_curated_remote_marketplace_config(home)?;
+    Ok(MarketplaceEnsureResult {
+        initialized,
+        configured,
+    })
+}
+
+pub fn preserve_openai_curated_remote_marketplace_config(
+    home: &Path,
+    config_text: &str,
+) -> anyhow::Result<String> {
+    let Some(marketplace_root) = local_openai_curated_remote_marketplace_root(home)? else {
+        return Ok(config_text.to_string());
+    };
+    merge_marketplace_configs_into_text(
+        config_text,
+        &[OPENAI_CURATED_REMOTE_MARKETPLACE],
         &marketplace_root,
     )
 }
 
 pub fn openai_curated_marketplace_status(home: &Path) -> MarketplaceStatus {
     let marketplace_root = local_openai_curated_marketplace_root(home).ok().flatten();
+    let remote_marketplace_root = local_openai_curated_remote_marketplace_root(home)
+        .ok()
+        .flatten();
     let config_registered = marketplace_root
         .as_deref()
         .map(|root| {
             marketplace_config_points_to_root(home, OPENAI_CURATED_MARKETPLACE, root)
                 && marketplace_config_points_to_root(home, OPENAI_API_CURATED_MARKETPLACE, root)
+                && remote_marketplace_root
+                    .as_deref()
+                    .map(|remote_root| {
+                        marketplace_config_points_to_root(
+                            home,
+                            OPENAI_CURATED_REMOTE_MARKETPLACE,
+                            remote_root,
+                        )
+                    })
+                    .unwrap_or(true)
+        })
+        .unwrap_or(false);
+    MarketplaceStatus {
+        marketplace_root,
+        config_registered,
+    }
+}
+
+pub fn openai_curated_remote_marketplace_status(home: &Path) -> MarketplaceStatus {
+    let marketplace_root = local_openai_curated_remote_marketplace_root(home)
+        .ok()
+        .flatten();
+    let config_registered = marketplace_root
+        .as_deref()
+        .map(|root| {
+            marketplace_config_points_to_root(home, OPENAI_CURATED_REMOTE_MARKETPLACE, root)
         })
         .unwrap_or(false);
     MarketplaceStatus {
@@ -98,6 +178,35 @@ fn local_openai_curated_marketplace_root(home: &Path) -> anyhow::Result<Option<P
     Ok(Some(root))
 }
 
+fn local_openai_curated_remote_marketplace_root(home: &Path) -> anyhow::Result<Option<PathBuf>> {
+    let root = home.join(".tmp").join("plugins-remote");
+    let marketplace_path = root
+        .join(".agents")
+        .join("plugins")
+        .join("marketplace.json");
+    if !marketplace_path.is_file() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&marketplace_path)
+        .with_context(|| format!("failed to read {}", marketplace_path.display()))?;
+    let marketplace: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse {}", marketplace_path.display()))?;
+    if marketplace.get("name").and_then(serde_json::Value::as_str)
+        != Some(OPENAI_CURATED_REMOTE_MARKETPLACE)
+    {
+        return Ok(None);
+    }
+    let has_plugins = marketplace
+        .get("plugins")
+        .and_then(serde_json::Value::as_array)
+        .map(|plugins| !plugins.is_empty())
+        .unwrap_or(false);
+    if !has_plugins || !root.join("plugins").is_dir() {
+        return Ok(None);
+    }
+    Ok(Some(root))
+}
+
 async fn initialize_openai_curated_marketplace_from_github(home: &Path) -> anyhow::Result<()> {
     let bytes = download_openai_plugins_zip().await?;
     install_openai_plugins_zip(home, &bytes)
@@ -154,6 +263,40 @@ fn install_openai_plugins_zip(home: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     result
 }
 
+fn install_openai_curated_remote_marketplace_zip(home: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let destination = home.join(".tmp").join("plugins-remote");
+    let staging_parent = home.join(".tmp");
+    std::fs::create_dir_all(&staging_parent)
+        .with_context(|| format!("failed to create {}", staging_parent.display()))?;
+    let staging = staging_parent.join(format!(
+        "plugins-remote-embedded-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    ));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging)
+            .with_context(|| format!("failed to remove stale {}", staging.display()))?;
+    }
+    std::fs::create_dir_all(&staging)
+        .with_context(|| format!("failed to create {}", staging.display()))?;
+
+    let result = extract_zip_exact(bytes, &staging)
+        .and_then(|_| validate_openai_curated_remote_marketplace_root(&staging))
+        .and_then(|_| {
+            replace_directory_with_backup_name(
+                &staging,
+                &destination,
+                "plugins-remote.previous-codex-plus",
+            )
+        });
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    result
+}
+
 fn extract_openai_plugins_zip(bytes: &[u8], destination: &Path) -> anyhow::Result<()> {
     let cursor = Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor).context("failed to read openai/plugins zip")?;
@@ -183,6 +326,49 @@ fn extract_openai_plugins_zip(bytes: &[u8], destination: &Path) -> anyhow::Resul
     Ok(())
 }
 
+fn extract_zip_exact(bytes: &[u8], destination: &Path) -> anyhow::Result<()> {
+    let cursor = Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(cursor).context("failed to read embedded plugin zip")?;
+    for index in 0..archive.len() {
+        let mut file = archive
+            .by_index(index)
+            .with_context(|| format!("failed to read zip entry {index}"))?;
+        let relative_path = safe_zip_path(file.name())?;
+        let output_path = destination.join(relative_path);
+        if file.is_dir() {
+            std::fs::create_dir_all(&output_path)
+                .with_context(|| format!("failed to create {}", output_path.display()))?;
+            continue;
+        }
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents)
+            .with_context(|| format!("failed to read zip entry {}", file.name()))?;
+        std::fs::write(&output_path, contents)
+            .with_context(|| format!("failed to write {}", output_path.display()))?;
+    }
+    Ok(())
+}
+
+fn safe_zip_path(name: &str) -> anyhow::Result<PathBuf> {
+    let path = Path::new(name);
+    let mut relative = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(value) => relative.push(value),
+            Component::CurDir => {}
+            _ => anyhow::bail!("zip entry escapes destination: {name}"),
+        }
+    }
+    if relative.as_os_str().is_empty() {
+        anyhow::bail!("zip entry has empty path");
+    }
+    Ok(relative)
+}
+
 fn zip_entry_relative_path(name: &str) -> Option<PathBuf> {
     let path = Path::new(name);
     let mut components = path.components();
@@ -206,6 +392,15 @@ fn validate_openai_plugins_marketplace_root(root: &Path) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("downloaded openai/plugins marketplace is invalid"))?;
     if marketplace != root {
         anyhow::bail!("downloaded openai/plugins marketplace root mismatch");
+    }
+    Ok(())
+}
+
+fn validate_openai_curated_remote_marketplace_root(root: &Path) -> anyhow::Result<()> {
+    let marketplace = local_openai_curated_remote_marketplace_root_from_root(root)?
+        .ok_or_else(|| anyhow::anyhow!("embedded official remote plugin marketplace is invalid"))?;
+    if marketplace != root {
+        anyhow::bail!("embedded official remote plugin marketplace root mismatch");
     }
     Ok(())
 }
@@ -238,8 +433,46 @@ fn local_openai_curated_marketplace_root_from_root(root: &Path) -> anyhow::Resul
     Ok(Some(root.to_path_buf()))
 }
 
+fn local_openai_curated_remote_marketplace_root_from_root(
+    root: &Path,
+) -> anyhow::Result<Option<PathBuf>> {
+    let marketplace_path = root
+        .join(".agents")
+        .join("plugins")
+        .join("marketplace.json");
+    if !marketplace_path.is_file() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&marketplace_path)
+        .with_context(|| format!("failed to read {}", marketplace_path.display()))?;
+    let marketplace: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse {}", marketplace_path.display()))?;
+    if marketplace.get("name").and_then(serde_json::Value::as_str)
+        != Some(OPENAI_CURATED_REMOTE_MARKETPLACE)
+    {
+        return Ok(None);
+    }
+    let has_plugins = marketplace
+        .get("plugins")
+        .and_then(serde_json::Value::as_array)
+        .map(|plugins| !plugins.is_empty())
+        .unwrap_or(false);
+    if !has_plugins || !root.join("plugins").is_dir() {
+        return Ok(None);
+    }
+    Ok(Some(root.to_path_buf()))
+}
+
 fn replace_directory(source: &Path, destination: &Path) -> anyhow::Result<()> {
-    let backup = destination.with_file_name("plugins.previous-codex-plus");
+    replace_directory_with_backup_name(source, destination, "plugins.previous-codex-plus")
+}
+
+fn replace_directory_with_backup_name(
+    source: &Path,
+    destination: &Path,
+    backup_name: &str,
+) -> anyhow::Result<()> {
+    let backup = destination.with_file_name(backup_name);
     if backup.exists() {
         std::fs::remove_dir_all(&backup)
             .with_context(|| format!("failed to remove {}", backup.display()))?;
@@ -290,7 +523,21 @@ fn ensure_marketplace_configs(
         }
     };
     let without_bom = existing.trim_start_matches('\u{feff}');
-    let mut doc = parse_toml_document(without_bom)?;
+    let updated =
+        merge_marketplace_configs_into_text(without_bom, marketplace_names, marketplace_root)?;
+    if updated.as_bytes() == without_bom.as_bytes() {
+        return Ok(false);
+    }
+    crate::settings::atomic_write(&config_path, updated.as_bytes())?;
+    Ok(true)
+}
+
+fn merge_marketplace_configs_into_text(
+    config_text: &str,
+    marketplace_names: &[&str],
+    marketplace_root: &Path,
+) -> anyhow::Result<String> {
+    let mut doc = parse_toml_document(config_text)?;
     let marketplaces = table_mut_or_insert(&mut doc, "marketplaces")?;
     for marketplace_name in marketplace_names {
         if marketplaces
@@ -304,13 +551,7 @@ fn ensure_marketplace_configs(
         marketplaces[marketplace_name]["source"] =
             toml_edit::value(windows_extended_path(marketplace_root));
     }
-
-    let updated = ensure_trailing_newline(doc.to_string());
-    if updated.as_bytes() == without_bom.as_bytes() {
-        return Ok(false);
-    }
-    crate::settings::atomic_write(&config_path, updated.as_bytes())?;
-    Ok(true)
+    Ok(ensure_trailing_newline(doc.to_string()))
 }
 
 fn marketplace_config_points_to_root(home: &Path, marketplace_name: &str, root: &Path) -> bool {
@@ -353,12 +594,13 @@ fn windows_extended_path(path: &Path) -> String {
 }
 
 fn parse_toml_document(contents: &str) -> anyhow::Result<DocumentMut> {
+    let contents = contents.trim_start_matches('\u{feff}');
     if contents.trim().is_empty() {
         Ok(DocumentMut::new())
     } else {
         contents
             .parse::<DocumentMut>()
-            .with_context(|| "config.toml TOML parse failed")
+            .map_err(|error| anyhow::anyhow!("config.toml TOML parse failed: {error}"))
     }
 }
 
@@ -398,11 +640,25 @@ mod tests {
         .unwrap();
     }
 
+    fn write_remote_marketplace(home: &Path) {
+        let root = home.join(".tmp").join("plugins-remote");
+        std::fs::create_dir_all(root.join(".agents").join("plugins")).unwrap();
+        std::fs::create_dir_all(root.join("plugins").join("product-design")).unwrap();
+        std::fs::write(
+            root.join(".agents")
+                .join("plugins")
+                .join("marketplace.json"),
+            r#"{"name":"openai-curated-remote","plugins":[{"name":"product-design","path":"./plugins/product-design"}]}"#,
+        )
+        .unwrap();
+    }
+
     #[test]
     fn ensure_openai_curated_marketplace_config_registers_local_marketplace() {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path();
         write_marketplace(home);
+        write_remote_marketplace(home);
 
         let changed = ensure_openai_curated_marketplace_config(home).unwrap();
 
@@ -424,6 +680,20 @@ mod tests {
         assert_eq!(
             parsed["marketplaces"]["openai-api-curated"]["source"].as_str(),
             Some(format!(r"\\?\{}", home.join(".tmp").join("plugins").display()).as_str())
+        );
+        assert_eq!(
+            parsed["marketplaces"]["openai-curated-remote"]["source_type"].as_str(),
+            Some("local")
+        );
+        assert_eq!(
+            parsed["marketplaces"]["openai-curated-remote"]["source"].as_str(),
+            Some(
+                format!(
+                    r"\\?\{}",
+                    home.join(".tmp").join("plugins-remote").display()
+                )
+                .as_str()
+            )
         );
     }
 
@@ -455,6 +725,7 @@ mod tests {
         let home = temp.path();
         let root = home.join(".tmp").join("plugins");
         write_marketplace(home);
+        write_remote_marketplace(home);
         ensure_marketplace_configs(home, &[OPENAI_CURATED_MARKETPLACE], &root).unwrap();
 
         let status = openai_curated_marketplace_status(home);
@@ -462,6 +733,97 @@ mod tests {
         assert!(status.marketplace_root.is_some());
         assert!(!status.config_registered);
         assert!(status.needs_repair());
+    }
+
+    #[test]
+    fn openai_curated_remote_marketplace_status_detects_cached_marketplace() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        write_remote_marketplace(home);
+
+        let status = openai_curated_remote_marketplace_status(home);
+
+        assert_eq!(
+            status.marketplace_root,
+            Some(home.join(".tmp").join("plugins-remote"))
+        );
+        assert!(!status.config_registered);
+        assert!(status.needs_repair());
+    }
+
+    #[test]
+    fn ensure_openai_curated_remote_marketplace_config_registers_remote_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        write_remote_marketplace(home);
+
+        let changed = ensure_openai_curated_remote_marketplace_config(home).unwrap();
+
+        assert!(changed);
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        let parsed = config.parse::<DocumentMut>().unwrap();
+        assert!(
+            parsed
+                .get("marketplaces")
+                .and_then(Item::as_table)
+                .and_then(|marketplaces| marketplaces.get("openai-curated"))
+                .is_none()
+        );
+        assert_eq!(
+            parsed["marketplaces"]["openai-curated-remote"]["source_type"].as_str(),
+            Some("local")
+        );
+        assert_eq!(
+            parsed["marketplaces"]["openai-curated-remote"]["source"].as_str(),
+            Some(
+                format!(
+                    r"\\?\{}",
+                    home.join(".tmp").join("plugins-remote").display()
+                )
+                .as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn ensure_openai_curated_remote_marketplace_available_installs_embedded_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+
+        let result = ensure_openai_curated_remote_marketplace_available(home).unwrap();
+
+        assert!(result.initialized);
+        assert!(result.configured);
+        let root = home.join(".tmp").join("plugins-remote");
+        assert!(
+            root.join(".agents")
+                .join("plugins")
+                .join("marketplace.json")
+                .is_file()
+        );
+        assert!(
+            root.join("plugins")
+                .join("product-design")
+                .join(".codex-plugin")
+                .join("plugin.json")
+                .is_file()
+        );
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        let parsed = config.parse::<DocumentMut>().unwrap();
+        assert_eq!(
+            parsed["marketplaces"]["openai-curated-remote"]["source_type"].as_str(),
+            Some("local")
+        );
+        assert_eq!(
+            parsed["marketplaces"]["openai-curated-remote"]["source"].as_str(),
+            Some(
+                format!(
+                    r"\\?\{}",
+                    home.join(".tmp").join("plugins-remote").display()
+                )
+                .as_str()
+            )
+        );
     }
 
     #[test]

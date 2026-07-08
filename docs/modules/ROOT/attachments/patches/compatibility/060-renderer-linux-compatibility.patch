@@ -1,5 +1,5 @@
 diff --git a/assets/inject/renderer-inject.js b/assets/inject/renderer-inject.js
-index 9007c9c..e8fe411 100644
+index 4bd8a8e..bf91712 100644
 --- a/assets/inject/renderer-inject.js
 +++ b/assets/inject/renderer-inject.js
 @@ -343,6 +343,8 @@
@@ -11,7 +11,7 @@ index 9007c9c..e8fe411 100644
    const codexPlusImageOverlayId = "codex-plus-image-overlay";
    window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
    const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
-@@ -1388,30 +1390,80 @@
+@@ -1401,30 +1403,80 @@
    const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
    const codexServiceTierFallbackFastValue = "priority";
    const codexServiceTierModulePromises = new Map();
@@ -103,7 +103,7 @@ index 9007c9c..e8fe411 100644
        }
      }
      return "";
-@@ -1420,7 +1472,9 @@
+@@ -1433,7 +1485,9 @@
    async function loadCodexAppModule(namePart) {
      if (!codexServiceTierModulePromises.has(namePart)) {
        const promise = Promise.resolve().then(async () => {
@@ -114,7 +114,7 @@ index 9007c9c..e8fe411 100644
          if (!url) throw new Error(`未找到 Codex App asset: ${namePart}`);
          return await import(url);
        }).catch((error) => {
-@@ -1470,6 +1524,30 @@
+@@ -1483,6 +1537,30 @@
      return String(model || "").trim().toLowerCase();
    }
  
@@ -145,7 +145,7 @@ index 9007c9c..e8fe411 100644
    function codexServiceTierModelFromValue(value, visited = new WeakSet(), depth = 0) {
      if (typeof value === "string") return value.trim();
      if (!value || typeof value !== "object" || visited.has(value) || depth > 3) return "";
-@@ -1485,16 +1563,74 @@
+@@ -1498,16 +1576,74 @@
      return "";
    }
  
@@ -223,7 +223,7 @@ index 9007c9c..e8fe411 100644
    }
  
    function codexServiceTierFastUnsupportedMessage(modelName = codexServiceTierCurrentModelName()) {
-@@ -1702,7 +1838,7 @@
+@@ -1715,7 +1851,7 @@
    }
  
    function setCodexServiceTierControlMode(mode) {
@@ -232,7 +232,7 @@ index 9007c9c..e8fe411 100644
        showToast("后端未连接，无法切换服务模式", null);
        refreshCodexServiceTierControls();
        return;
-@@ -1776,8 +1912,13 @@
+@@ -1789,8 +1925,13 @@
      };
    }
  
@@ -247,7 +247,7 @@ index 9007c9c..e8fe411 100644
      if (codexPlusBackendStatus.status && codexPlusBackendStatus.status !== "ok") return { tier: "failed", label: "未连接", disabled: true, title: "服务模式：后端未连接，无法切换" };
      if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: "服务模式：正在读取" };
      if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: "服务模式：读取失败" };
-@@ -1896,7 +2037,7 @@
+@@ -1909,7 +2050,7 @@
    }
  
    function setCodexThreadServiceTierMode(mode) {
@@ -256,7 +256,7 @@ index 9007c9c..e8fe411 100644
        showToast("后端未连接，无法切换服务模式", null);
        refreshCodexServiceTierControls();
        return;
-@@ -1919,7 +2060,7 @@
+@@ -1932,7 +2073,7 @@
    }
  
    function toggleCodexServiceTierFromBadge() {
@@ -265,7 +265,7 @@ index 9007c9c..e8fe411 100644
        showToast("后端未连接，无法切换服务模式", null);
        refreshCodexServiceTierControls();
        return;
-@@ -2061,12 +2202,30 @@
+@@ -2074,12 +2215,30 @@
      return message;
    }
  
@@ -297,7 +297,7 @@ index 9007c9c..e8fe411 100644
          const dispatcher = dispatcherClass?.getInstance?.();
          if (!dispatcher || typeof dispatcher.dispatchMessage !== "function") throw new Error("Codex dispatcher unavailable");
          if (dispatcher.__codexServiceTierOriginalDispatchMessage) {
-@@ -2812,6 +2971,50 @@
+@@ -2811,6 +2970,50 @@
      return !!button.closest?.('[class*="ms-auto"][class*="shrink-0"][class*="items-center"]');
    }
  
@@ -348,7 +348,7 @@ index 9007c9c..e8fe411 100644
    function updateFloatingCodexPlusMenuPosition(menu) {
      if (!menu?.classList?.contains(codexPlusMenuFloatingClass)) return;
      const header = document.querySelector(selectors.appHeader) || document.querySelector("header");
-@@ -2828,6 +3031,7 @@
+@@ -2827,6 +3030,7 @@
        setCssPropIfChanged(menu, "--codex-plus-menu-top", `${anchor.rect.top}px`);
        setCssPropIfChanged(menu, "--codex-plus-menu-height", `${anchor.rect.height}px`);
        setCssPropIfChanged(menu, "--codex-plus-menu-right", `${Math.max(0, window.innerWidth - anchor.rect.left + gap)}px`);
@@ -356,7 +356,7 @@ index 9007c9c..e8fe411 100644
        return;
      }
  
-@@ -2837,6 +3041,7 @@
+@@ -2836,6 +3040,7 @@
        setCssPropIfChanged(menu, "--codex-plus-menu-height", `${headerRect.height}px`);
      }
      menu.style.removeProperty("--codex-plus-menu-right");
@@ -364,7 +364,7 @@ index 9007c9c..e8fe411 100644
    }
  
    function installCodexPlusMenu() {
-@@ -3343,6 +3548,14 @@
+@@ -3344,6 +3549,14 @@
        };
      }
      if (message.type === "mcp-request" && message.request && typeof message.request === "object") {
@@ -379,7 +379,7 @@ index 9007c9c..e8fe411 100644
        const requestMethod = appServerModelRequestMethod(String(message.request.method || ""), message.request.params);
        if (requestMethod !== "list-plugins" && requestMethod !== "install-plugin") return message;
        const requestParams = patchPluginMarketplaceRequestParams(
-@@ -3487,6 +3700,8 @@
+@@ -3488,6 +3701,8 @@
        window.addEventListener("message", (event) => {
          try {
            patchPluginMarketplaceResponseData(event?.data);
@@ -388,7 +388,7 @@ index 9007c9c..e8fe411 100644
          } catch (error) {
            sendCodexPlusDiagnostic("plugin_marketplace_response_message_patch_failed", {
              errorName: error?.name || "",
-@@ -3538,11 +3753,180 @@
+@@ -3539,11 +3754,180 @@
      void patch();
    }
  
@@ -570,7 +570,7 @@ index 9007c9c..e8fe411 100644
    }
  
    let cachedSessionRows = [];
-@@ -4381,18 +4765,81 @@
+@@ -4382,18 +4766,80 @@
    }
  
    async function postJson(path, payload) {
@@ -585,7 +585,6 @@ index 9007c9c..e8fe411 100644
 +      "/devtools/open",
 +      "/manager/open",
 +      "/backend/status",
-+      "/backend/repair",
 +      "/codex-model-catalog",
 +      "/codex-config-model",
 +      "/zed-remote/status",
@@ -644,7 +643,7 @@ index 9007c9c..e8fe411 100644
 +      return fallback;
 +    }
      if (!window.__codexSessionDeleteBridge) {
-       if (path === "/backend/status" || path === "/backend/repair") {
+       if (path === "/backend/status") {
 -        try {
 -          const response = await fetch(`${helperBase}${path}`, {
 -            method: "POST",
@@ -662,7 +661,7 @@ index 9007c9c..e8fe411 100644
        }
        sendCodexPlusDiagnostic("bridge_missing_for_route", { path });
        return { status: "failed", message: "桥接不可用，请重启启动器" };
-@@ -4404,16 +4851,7 @@
+@@ -4405,16 +4851,7 @@
        ]);
      }
      async function fetchBackendStatusFromHelper(path, payload) {
@@ -679,8 +678,8 @@ index 9007c9c..e8fe411 100644
 +      return await fetchJsonFromHelper(path, payload);
      }
      try {
-       if (path === "/backend/status" || path === "/backend/repair") {
-@@ -4460,6 +4898,9 @@
+       if (path === "/backend/status") {
+@@ -4461,6 +4898,9 @@
          });
          return fallback;
        }
@@ -690,7 +689,7 @@ index 9007c9c..e8fe411 100644
        throw error;
      }
    }
-@@ -4547,6 +4988,8 @@
+@@ -4548,6 +4988,8 @@
    let codexModelWhitelistRefreshTimer = 0;
    let codexModelWhitelistRefreshUntil = 0;
    const codexPlusModelListRequestIds = new Set();
@@ -699,7 +698,7 @@ index 9007c9c..e8fe411 100644
  
    if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) {
      window.__codexPlusServiceTierTest = {
-@@ -4924,6 +5367,91 @@
+@@ -4925,6 +5367,91 @@
      }, true);
    }
  
@@ -791,7 +790,7 @@ index 9007c9c..e8fe411 100644
    function patchMcpModelResponseData(data) {
      if (data?.type !== "mcp-response") return false;
      const message = data.message || data.response;
-@@ -5142,6 +5670,35 @@
+@@ -5143,6 +5670,35 @@
      return !!leftPath && !!rightPath && leftPath === rightPath;
    }
  
@@ -827,7 +826,7 @@ index 9007c9c..e8fe411 100644
    function displayProjectName(path) {
      const trimmed = String(path || "").replace(/\/+$/, "");
      return trimmed.split(/[\\/]+/).filter(Boolean).pop() || trimmed || "未命名项目";
-@@ -5311,14 +5868,14 @@
+@@ -5312,14 +5868,14 @@
    function projectItemMatchesTarget(projectItem, target) {
      const projectRow = projectRowFromListItem(projectItem);
      const projectPath = projectRow?.getAttribute?.("data-app-action-sidebar-project-id") || "";
@@ -844,7 +843,7 @@ index 9007c9c..e8fe411 100644
      if (nativeTarget?.listItem) return nativeTarget.listItem;
      const section = projectsSection();
      if (!section) return null;
-@@ -5881,6 +6438,8 @@
+@@ -5882,6 +6438,8 @@
      if (result.status !== "moved") throw new Error(result.message || "移动项目失败");
      await setProjectlessThreadIds(ref, "remove");
      await clearThreadWorkspaceHints(ref);
@@ -853,7 +852,7 @@ index 9007c9c..e8fe411 100644
      return result;
    }
  
-@@ -6672,8 +7231,9 @@
+@@ -6673,8 +7231,9 @@
      if (window.__codexUpstreamPendingWorktreeDispatcherPatch === patchVersion) return;
      const patch = async () => {
        try {
@@ -864,7 +863,7 @@ index 9007c9c..e8fe411 100644
          const dispatcher = dispatcherClass?.getInstance?.();
          if (!dispatcher || typeof dispatcher.dispatchMessage !== "function") throw new Error("Codex dispatcher unavailable");
          if (!dispatcher.__codexUpstreamWorktreeOriginalDispatchMessage) {
-@@ -6920,16 +7480,21 @@
+@@ -6921,16 +7480,21 @@
  
    function isCurrentSessionRow(row, ref) {
      if (row.getAttribute("aria-current") === "page" || row.getAttribute("aria-current") === "true") return true;
@@ -889,7 +888,7 @@ index 9007c9c..e8fe411 100644
    }
  
    function releaseDeleteFocus(row, button) {
-@@ -6944,7 +7509,7 @@
+@@ -6945,7 +7509,7 @@
      const shouldReload = isCurrentSessionRow(row, ref);
      row.remove();
      if (shouldReload) {
@@ -898,7 +897,7 @@ index 9007c9c..e8fe411 100644
      }
    }
  
-@@ -7655,12 +8220,58 @@
+@@ -7656,12 +8220,58 @@
        });
    }
  
@@ -958,7 +957,7 @@ index 9007c9c..e8fe411 100644
        .filter(codexServiceTierBadgeVisibleElement)
        .sort((left, right) => {
          const leftRect = left.getBoundingClientRect();
-@@ -7688,6 +8299,12 @@
+@@ -7689,6 +8299,12 @@
      const candidates = new Set();
      const threadComposer = conversationViewFindComposerEl();
      if (threadComposer && codexServiceTierBadgeVisibleElement(threadComposer)) candidates.add(threadComposer);
@@ -971,7 +970,7 @@ index 9007c9c..e8fe411 100644
      codexServiceTierVisibleComposerFooters().forEach((footer) => {
        candidates.add(footer);
        let node = footer.parentElement;
-@@ -7722,6 +8339,14 @@
+@@ -7723,6 +8339,14 @@
      }) || null;
    }
  
@@ -986,7 +985,7 @@ index 9007c9c..e8fe411 100644
    function codexServiceTierComposerFooter(composer) {
      if (composer?.matches?.(".composer-footer")) return composer;
      return codexServiceTierBestComposerFooter(composer) || codexServiceTierBestComposerFooter() || null;
-@@ -7740,12 +8365,24 @@
+@@ -7741,12 +8365,24 @@
      return providerGroup || children[children.length - 1] || footer;
    }
  
@@ -1014,7 +1013,7 @@ index 9007c9c..e8fe411 100644
    }
  
    function wireCodexServiceTierBadge(badge) {
-@@ -7756,14 +8393,14 @@
+@@ -7757,14 +8393,14 @@
      badge.addEventListener("click", (event) => {
        event.preventDefault();
        event.stopPropagation();
@@ -1031,7 +1030,7 @@ index 9007c9c..e8fe411 100644
        toggleCodexServiceTierFromBadge();
      });
    }
-@@ -8000,6 +8637,7 @@
+@@ -8001,6 +8637,7 @@
      installCodexServiceTierDispatcherPatch();
      installCodexPlusMenu();
      localizeCodexMenus();
@@ -1039,7 +1038,7 @@ index 9007c9c..e8fe411 100644
      scheduleBackendHeartbeat();
      installDeleteButtonEventDelegation();
      updateThreadScrollHandlers();
-@@ -8602,10 +9240,15 @@
+@@ -8603,10 +9240,15 @@
    function scanDeferred() {
      if (pluginPatchDisabledInRelayMode()) {
        clearPluginPatchArtifacts();
@@ -1055,7 +1054,7 @@ index 9007c9c..e8fe411 100644
        if ((pluginUnlockStrategy === "modern" || pluginUnlockStrategy === "unknown") && settings.pluginMarketplaceUnlock) {
          const marketplaceRequestPatchStrategy = codexPluginMarketplaceRequestPatchStrategy();
          installPluginBuildFlavorFilterPatch();
-@@ -8664,6 +9307,12 @@
+@@ -8665,6 +9307,12 @@
        '[class*="user-message"]',
        '[class*="UserMessage"]',
        ".composer-footer",
@@ -1068,7 +1067,7 @@ index 9007c9c..e8fe411 100644
        selectors.appHeader,
        selectors.archiveNav,
        codexMenuLocalizationScopeSelector(),
-@@ -8748,7 +9397,7 @@
+@@ -8749,7 +9397,7 @@
    window.addEventListener("resize", window.__codexPlusResizeHandler);
    window.__codexSessionDeleteObserver?.disconnect();
    window.__codexSessionDeleteObserver = new MutationObserver(scheduleScan);

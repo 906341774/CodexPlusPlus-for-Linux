@@ -97,7 +97,7 @@ main() {
     stage_optional_update_builder_bundle "$staging_root"
 
     cat > "$staging_root/usr/bin/$PACKAGE_NAME" <<SCRIPT
-#!/bin/bash
+#!/usr/bin/env bash
 exec /opt/$PACKAGE_NAME/start.sh "\$@"
 SCRIPT
     chmod 0755 "$staging_root/usr/bin/$PACKAGE_NAME"
@@ -133,6 +133,7 @@ SCRIPT
         --define "_sourcedir $rpmbuild_dir/SOURCES" \
         --define "_specdir $build_root" \
         --define "_build_name_fmt %%{NAME}-%%{VERSION}-%%{RELEASE}.%%{ARCH}.rpm" \
+        --define "__os_install_post %{nil}" \
     )
     if [ -n "$RPM_BINARY_PAYLOAD" ]; then
         info "RPM binary payload compression: $RPM_BINARY_PAYLOAD"

@@ -68,6 +68,7 @@ fn injection_script_exposes_image_overlay_config() {
         codex_app_image_overlay_enabled: true,
         codex_app_image_overlay_path: image_path.to_string_lossy().to_string(),
         codex_app_image_overlay_opacity: 42,
+        codex_app_image_overlay_fit_mode: "fill".to_string(),
         ..Default::default()
     };
     let script = assets::injection_script_with_settings(57321, &settings);
@@ -75,6 +76,7 @@ fn injection_script_exposes_image_overlay_config() {
     assert!(script.contains("window.__CODEX_PLUS_IMAGE_OVERLAY__"));
     assert!(script.contains("\"enabled\":true"));
     assert!(script.contains("\"opacity\":0.42"));
+    assert!(script.contains("\"fitMode\":\"fill\""));
     assert!(script.contains("\"dataUrl\":\"data:image/png;base64,"));
     assert!(script.contains("http://127.0.0.1:57321/overlay/image"));
 }
@@ -84,7 +86,10 @@ fn injection_script_installs_image_overlay_from_data_uri() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("const source = config.dataUrl || \"\""));
-    assert!(script.contains("image.src = source"));
+    assert!(script.contains("backgroundImage: `url(\"${source.replace(/\"/g, \"%22\")}\")`"));
+    assert!(script.contains(
+        "fit: { size: \"contain\", position: \"center center\", repeat: \"no-repeat\" }"
+    ));
     assert!(script.contains("image_overlay_installed"));
 }
 
@@ -117,7 +122,7 @@ fn injection_script_times_out_backend_bridge_calls_and_falls_back_to_helper() {
 
     assert!(script.contains("bridgeWithBackendTimeout"));
     assert!(script.contains("backend_bridge_timeout"));
-    assert!(script.contains("/backend/repair"));
+    assert!(!script.contains("/backend/repair"));
     assert!(script.contains("backend_status_bridge_failed_http_fallback_ok"));
     assert!(script.contains("backend_status_bridge_and_http_failed"));
 }
@@ -198,6 +203,37 @@ fn stepwise_assistant_detection_accepts_two_action_buttons() {
 }
 
 #[test]
+fn stepwise_refreshes_suggestions_for_virtualized_assistant_bubbles() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("function assistantBubbleCandidates("));
+    assert!(script.contains("\".group.flex.min-w-0.flex-col\""));
+    assert!(script.contains("candidates.push(...assistantBubbleCandidates())"));
+    assert!(script.contains("function latestMessageByDocumentOrder("));
+    assert!(script.contains("function clearPromptsForNewAssistant("));
+    assert!(script.contains(
+        "if (state.prompts.length || state.currentHash) clearPromptsForNewAssistant(hash);"
+    ));
+    assert!(script.contains("function setScanStatus("));
+    assert!(script.contains("setScanStatus(\"not-ready\""));
+    assert!(script.contains("setScanStatus(\"no-assistant-message\""));
+    assert!(!script.contains("setScanStatus(\"surface-not-ready\""));
+    assert!(!script.contains("return fallback[fallback.length - 1] || null;"));
+}
+
+#[test]
+fn stepwise_exposes_manual_refresh_without_refreshing_busy_chats() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("data-action=\"refresh\""));
+    assert!(script.contains("function forceRefreshStepwise("));
+    assert!(script.contains("state.bridgeStatus === \"pending\" || chatBusy()"));
+    assert!(script.contains("setScanStatus(\"manual-refresh-busy\""));
+    assert!(script.contains("state.bridgeCache.delete(bridgeKey)"));
+    assert!(script.contains("requestBridgeStepwise(bridgeKey, userText, assistantText)"));
+}
+
+#[test]
 fn injection_script_defers_backend_mapped_toggles_until_settings_load() {
     let script = assets::injection_script(57321);
 
@@ -232,6 +268,15 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
     assert!(script.contains("codexPlusBackendSettings.launchMode === \"relay\""));
     assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
     assert!(script.contains("clearPluginPatchArtifacts()"));
+}
+
+#[test]
+fn injection_script_disables_plugin_auto_expand_in_relay_mode() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("settings.pluginAutoExpand = false"));
+    assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
+    assert!(script.contains("if (!codexPlusSettings().pluginAutoExpand) return"));
 }
 
 #[test]
@@ -374,6 +419,8 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("__CODEX_PLUS_PLUGIN_MARKETPLACES__"));
     assert!(script.contains("mergeLocalPluginMarketplaces(result)"));
     assert!(script.contains("plugin_marketplace_local_merged"));
+    assert!(script.contains("cloned.marketplaceName = marketplaceName"));
+    assert!(script.contains("cloned.marketplacePath = marketplaceName"));
     assert!(script.contains("restorePluginMarketplaceName"));
     assert!(script.contains(
         "next.remoteMarketplaceName = restorePluginMarketplaceName(next.remoteMarketplaceName)"
@@ -1028,6 +1075,19 @@ fn manager_ui_exposes_pure_api_relay_mode_button() {
     assert!(source.contains("纯 API"));
     assert!(source.contains("apply_pure_api_injection"));
     assert!(commands.contains("commands::apply_pure_api_injection"));
+}
+
+#[test]
+fn manager_ui_disables_plugin_auto_expand_in_compatible_mode() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("core crate should live under crates/codex-plus-core");
+    let source = std::fs::read_to_string(repo.join("apps/codex-plus-manager/src/App.tsx")).unwrap();
+
+    assert!(source.contains(
+        "checked={form.codexAppPluginAutoExpand} disabled={!masterEnabled || !patchMode}"
+    ));
 }
 
 #[test]

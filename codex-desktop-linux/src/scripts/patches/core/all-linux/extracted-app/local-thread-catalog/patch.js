@@ -1,13 +1,16 @@
 "use strict";
 
 const {
+  extractedAppPatch,
+} = require("../../../../descriptor.js");
+const {
   patchLinuxLocalThreadCatalogBackfillAssets,
-} = require("../../../../main-process.js");
+} = require("../../../../impl/main-process/local-thread-catalog.js");
 
 module.exports = [
-  {
+  extractedAppPatch({
     id: "linux-local-thread-catalog-preserve-backfill",
-    phase: "extracted-app",
+    phase: "extracted-app:pre-webview",
     order: 1043,
     ciPolicy: "optional",
     apply: patchLinuxLocalThreadCatalogBackfillAssets,
@@ -24,5 +27,5 @@ module.exports = [
         warnings[0] ??
         (result?.matched ? null : "local thread catalog pruning chunk not found"),
     }),
-  },
+  }),
 ];
