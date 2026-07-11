@@ -2,7 +2,7 @@
 
 ## Context
 
-This decision record captures a performance comparison between Codex Desktop
+This decision record captures a performance comparison between ChatGPT Desktop
 and another Electron 42 app (Claude Desktop) running side by side on the same
 X11 GNOME 4K host, what the launcher changed as a result, and — just as
 importantly — what was reviewed and deliberately left alone so future work
@@ -56,11 +56,12 @@ papers over.
 
 ### Webview server model
 
-The bundled Python server already uses `ThreadingHTTPServer` and serves the
-hashed `/assets/` bundle with `Cache-Control: public, max-age=31536000,
-immutable`, so parallel chunk fetches and cross-restart disk caching are
-covered. Replacing it with a Rust server was evaluated and rejected until
-evidence shows Python itself is the bottleneck — see
+The bundled Python server already uses `ThreadingHTTPServer` and serves
+webview files with explicit `no-store` headers. The Linux packaging flow
+patches upstream webview assets without renaming every hashed chunk, so the
+server must force revalidation to keep Electron from reusing stale renderer
+code after rebuilds or updates. Replacing it with a Rust server was evaluated
+and rejected until evidence shows Python itself is the bottleneck — see
 [Webview server evaluation](webview-server-evaluation.md).
 
 ### Startup ordering (partially overlapped)

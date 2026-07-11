@@ -82,16 +82,20 @@
       ]
     },
     {
-      "id": "plugins-navigation",
-      "name": "Plugins navigation unlock",
+      "id": "plugins-marketplace-compatibility",
+      "name": "Plugin marketplace compatibility without entry spoofing",
       "patchIds": ["060-renderer-linux-compatibility"],
       "whiteBoxChecks": [
-        "Renderer injection contains plugin navigation unlock logic",
-        "Source marker: clearPluginEntryUnlockLabel"
+        "Regression test: injection_script_keeps_plugin_marketplace_unlock_separate_from_entry_unlock",
+        "Regression test: injection_script_removes_legacy_plugin_sidebar_entry_unlock",
+        "Regression test: injection_script_does_not_unlock_disabled_plugin_install_buttons",
+        "Source marker: pluginMarketplaceUnlock",
+        "Forbidden source marker: pluginEntryUnlock",
+        "Forbidden source marker: spoofChatGPTAuthMethod"
       ],
       "blackBoxChecks": [
-        "The Plugins entry is clickable in the Linux Codex Desktop sidebar",
-        "The Plugins label does not show temporary Unlocked debug suffixes"
+        "Codex++ may adapt API-key marketplace requests without changing upstream sidebar-entry authorization",
+        "Disabled plugin install controls remain disabled and no Unlocked debug suffix appears"
       ]
     },
     {
@@ -133,13 +137,17 @@
         "Source marker: findCodexDispatcherClass",
         "Source marker: isCodexHotkeyWindowRoute",
         "Source marker: helperBridgeFallbackRoutes",
+        "Source marker: gpt-5.6",
+        "Regression test: injection_script_keeps_official_fast_controls_outside_codex_plus_cleanup",
         "Regression test: linux_renderer_asset_loader_can_find_merged_codex_chunks_by_features",
         "Regression test: linux_renderer_service_tier_patch_finds_dispatcher_without_minified_export_name",
         "Regression test: linux_renderer_dispatcher_patches_skip_hotkey_window_route"
       ],
       "blackBoxChecks": [
         "When Fast mode is enabled in Codex++ Manager, the Fast badge appears in the Codex composer footer",
+        "GPT-5.6, GPT-5.6[1M], localized GPT-5.6 labels, and the Linux composer footer can switch between Fast and Standard without the current-model error",
         "The Fast badge remains clickable during transient backend-checking states",
+        "The official Codex Desktop Fast control remains present when Codex++ refreshes or cleans up its own injected badge",
         "Renderer diagnostics do not report missing setting-storage assets on current Linux Codex Desktop chunks",
         "Renderer diagnostics do not repeatedly report Codex dispatcher unavailable after current Linux Codex Desktop chunks load"
       ]
@@ -165,8 +173,9 @@
       "name": "Project sidebar visibility for existing local conversations",
       "patchIds": ["080-linux-local-thread-catalog-sync", "900-regression-tests"],
       "whiteBoxChecks": [
-        "Regression test: provider_sync_backfills_local_thread_catalog_from_legacy_state_db",
-        "Regression test: provider_sync_restores_local_thread_catalog_rows_marked_missing",
+        "Regression test: provider_sync_backfills_local_catalog_with_nonempty_source_title",
+        "Regression test: provider_sync_local_catalog_is_idempotent_when_source_is_unchanged",
+        "Regression test: provider_sync_does_not_restore_cwd_for_projectless_threads",
         "Regression test: preserves provider-sync backfilled rollout catalog rows during full scans",
         "Source marker: local_thread_catalog",
         "Source marker: collect_local_catalog_threads",
@@ -176,6 +185,21 @@
       "blackBoxChecks": [
         "Codex++ Manager local sessions and Codex Desktop project sidebars agree on visible unarchived conversations",
         "After provider sync, projects with legacy local threads no longer show the empty-state message for conversations"
+      ]
+    },
+    {
+      "id": "linux-features-build",
+      "name": "Dynamic all-feature Codex Desktop build metadata",
+      "patchIds": ["codex-desktop-build-workflow"],
+      "whiteBoxChecks": [
+        "Build-CodexDesktopLinux.ps1 discovers every documented top-level feature except example-feature and local",
+        "Build procedure writes linux-features/features.json and exports CODEX_LINUX_FEATURES plus CODEX_LINUX_FEATURES_CONFIG",
+        "Regression test: direct builds honor CODEX_LINUX_FEATURES when no config file exists",
+        "Both build-info files must contain exactly the discovered feature ids"
+      ],
+      "blackBoxChecks": [
+        "The frozen 60fbcf0 source discovers 23 enabled Linux features",
+        "Linux Desktop settings and both build-info files do not show Enabled features: None"
       ]
     },
     {

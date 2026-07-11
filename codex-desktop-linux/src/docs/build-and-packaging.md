@@ -164,7 +164,7 @@ make appimage
 The AppImage flow does not include `codex-update-manager`, the systemd user
 service, polkit policy, or the native-package update builder.
 
-When upstream Codex Desktop changes:
+When upstream ChatGPT Desktop changes:
 
 ```bash
 git pull --ff-only

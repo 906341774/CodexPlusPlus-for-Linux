@@ -22,7 +22,7 @@ The adapter does not modify the original Codex Desktop source tree. It builds an
 
 == Main outputs
 
-* `scripts/Installer-and-Manager.ps1`: bilingual PowerShell manager for install, update, uninstall, and snippet application.
+* `scripts/developer/Installer-and-Manager.ps1`: bilingual PowerShell manager for install, update, uninstall, and snippet application.
 * xref:snippets.adoc[]: structured documentation and snippet manifest.
 * xref:adapter-workflow.adoc[]: recurring upstream update, validation, and fork-push workflow.
 * xref:attachment$feature-matrix.json[`feature-matrix.json`]: machine-checkable feature coverage matrix.

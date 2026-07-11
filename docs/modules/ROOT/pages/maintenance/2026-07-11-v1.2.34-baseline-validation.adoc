@@ -1,0 +1,138 @@
+= Codex++ v1.2.34 baseline validation
+:toc:
+:toclevels: 2
+
+Date: 2026-07-11
+
+== Scope and pinned inputs
+
+This report closes the source-adaptation and GUI-validation phase for the
+`v1.2.34` baseline. Package construction and clean package installation are a
+separate phase that starts only after this baseline tag is published.
+
+Pinned inputs:
+
+* Codex++ upstream: `BigPizzaV3/CodexPlusPlus` tag `v1.2.34`, commit
+  `c1360294d43fce06116428555cbcf812902aced5`.
+* Codex++ Linux adaptation: `f2b1ae2ef2de78dd832246d2552f613720c48432`.
+* `codex-desktop-linux` upstream: commit
+  `60fbcf0e9288c570ecb4742b557c04f4e3c8bab3`.
+* Runtime adaptation used to build the validated application:
+  `2b64859c7531d2eb2d2c2c9a230cf282f4731617`.
+* Final source-only test-isolation commit:
+  `9fe1d14` (`upstream-dmg-intel` fixture isolation). This commit changes no
+  runtime payload.
+* ChatGPT Desktop: `26.707.31428`.
+* Electron: `42.1.0`.
+* Upstream DMG SHA256:
+  `6f67af7e2f934093ab8afebcec11374d40c8db8f9100fb6620f24155401d8319`.
+
+== Empty conversation entries
+
+The remaining `暂无对话` entries were not a stale screenshot or a completed
+fix that merely needed a restart. They involved three cooperating data paths:
+
+* Codex++ provider sync must backfill real rollout-backed rows into
+  `local_thread_catalog`, preserve non-empty titles, and exclude projectless
+  sessions from project sidebars.
+* Codex Desktop full scans must not prune valid rollout-backed rows that were
+  supplied by provider sync.
+* Initial snapshots and direct local conversation routes must hydrate a thread
+  before navigating or resuming it. The current guarded route shape required a
+  new patch for ChatGPT Desktop `26.707.31428`.
+
+The fixes are represented by the `080-linux-local-thread-catalog-sync`
+snippet and the companion `codex-desktop-linux` catalog, snapshot, pruning,
+and route-hydration patches.
+
+AlmaLinux 9 isolated GUI acceptance found 52 visible sidebar threads, 52 real
+titles, and zero empty-conversation placeholders. A history entry under the
+mounted project opened with its full conversation content.
+
+== Linux features reported as None
+
+The original failure was in the direct `make build-app` path: an environment
+feature list without a configuration file was not reliably carried into the
+feature resolver and generated metadata. It was not evidence that PowerShell
+had failed to set the requested list, and it was not acceptable to treat
+`Enabled features: None` as a cosmetic display issue.
+
+The current source also has a regression test proving that
+`CODEX_LINUX_FEATURES` is honored when no config file exists. The durable
+project workflow deliberately does not rely on that fallback alone:
+
+* `scripts/developer/Build-CodexDesktopLinux.ps1` discovers every top-level
+  feature with a valid `feature.json`, excluding only `example-feature` and
+  `local`.
+* It writes the discovered ids to the gitignored
+  `linux-features/features.json`.
+* It exports both `CODEX_LINUX_FEATURES` and
+  `CODEX_LINUX_FEATURES_CONFIG` before `make build-app`.
+* It rejects the build unless `.codex-linux/build-info.json` and
+  `resources/codex-linux-build-info.json` contain the same exact discovered
+  set.
+* The Podman fixture delegates to this tracked PowerShell entrypoint instead
+  of maintaining a second hard-coded list.
+
+Both validated metadata files contain the same 23 enabled feature ids and no
+required patch failure. The patch report contains 114 `applied` and 29
+`already-applied` records, with zero post-patch integrity findings.
+
+== Codex++ Fast and Standard switching
+
+The Codex++ injected service-tier control previously rejected Fast with
+`当前模型未获取` when the current model was represented by the upstream
+composer/footer instead of the Codex++ backend catalog.
+
+The `060-renderer-linux-compatibility` snippet now:
+
+* preserves explicit request and catalog model priority;
+* recognizes and canonicalizes visible GPT-5.6 labels and suffixes;
+* allows a known local supported model while a backend check is transient;
+* keeps explicit unsupported models blocked;
+* leaves the official upstream Speed control intact.
+
+Isolated GUI acceptance switched Codex++ from Standard to Fast and back to
+Standard with GPT-5.6 recognized and no error toast. The official Speed menu
+continued to expose both Standard and Fast.
+
+== Workflow revision
+
+The repository scripts are now split by audience:
+
+* maintainer tooling lives under `scripts/developer/`;
+* the portable end-user lifecycle manager lives under `scripts/normal_user/`;
+* `tests/Test-DistributionWorkflow.ps1` verifies script layout, dynamic feature
+  discovery, explicit build metadata, non-solid maximum 7z compression, and
+  install/update/uninstall behavior with user data preserved by default.
+
+The full regression runner also found and fixed a host-dependent upstream test
+problem. Two candidate-only DMG intelligence CLI fixtures implicitly scanned
+the repository's real 561 MB `Codex.dmg`; they now pass `--no-baseline`, while
+the dedicated automatic-baseline test remains enabled.
+
+== Validation results
+
+The following gates passed:
+
+* all nine snippets from `010` through `900` applied to a clean upstream
+  `v1.2.34` worktree;
+* installer selftest and both workflow contracts;
+* Codex++ focused core regression suites: 290 passed;
+* Codex++ provider sync suite: 19 passed;
+* Codex++ Pure API Node contract: passed;
+* Codex Desktop Node suite: 876 passed;
+* Codex Desktop shell and package smoke suite: passed;
+* AlmaLinux 9 build, install, launch, conversation catalog, history hydration,
+  Codex++ Fast control, and official Fast control GUI checks: passed.
+
+The large local screenshots and logs remain under the ignored
+`.adaptation-runs/2026-07-11-v1.2.34/` directory. They are recovery evidence,
+not repository or release payload.
+
+== Baseline conclusion
+
+The source and GUI baseline is suitable for the immutable `v1.2.34` tag.
+DEB, RPM, portable 7z, clean-container installation, GitHub Release asset
+upload, reusable container archival, and host replacement remain explicit
+post-tag release stages and are not claimed as complete by this report.

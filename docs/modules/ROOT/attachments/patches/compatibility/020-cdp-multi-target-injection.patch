@@ -1,5 +1,17 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 0db99bd..fdb748a 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -426,6 +426,7 @@ dependencies = [
+  "tokio-tungstenite",
+  "toml 0.8.2",
+  "toml_edit 0.22.27",
++ "url",
+  "uuid",
+  "windows 0.58.0",
+  "zip",
 diff --git a/apps/codex-plus-launcher/src/main.rs b/apps/codex-plus-launcher/src/main.rs
-index cc12fae..48a8b06 100644
+index 2fafb69..9bf871a 100644
 --- a/apps/codex-plus-launcher/src/main.rs
 +++ b/apps/codex-plus-launcher/src/main.rs
 @@ -517,6 +517,10 @@ impl LauncherRuntimeService {
@@ -13,7 +25,7 @@ index cc12fae..48a8b06 100644
  }
 
  #[async_trait::async_trait]
-@@ -663,10 +667,21 @@ async fn inject_with_context(
+@@ -659,10 +663,21 @@ async fn inject_with_context(
      runtime: Arc<LauncherRuntimeService>,
  ) -> anyhow::Result<()> {
      let mut last_error = None;
@@ -36,7 +48,7 @@ index cc12fae..48a8b06 100644
                  last_error = Some(error);
                  tokio::time::sleep(std::time::Duration::from_millis(500)).await;
              }
-@@ -682,12 +697,10 @@ async fn try_inject_with_context(
+@@ -678,12 +693,10 @@ async fn try_inject_with_context(
      runtime: Arc<LauncherRuntimeService>,
  ) -> anyhow::Result<()> {
      let targets = codex_plus_core::cdp::list_targets(debug_port).await?;
@@ -53,7 +65,7 @@ index cc12fae..48a8b06 100644
      let settings = codex_plus_core::settings::SettingsStore::default()
          .load()
          .unwrap_or_default();
-@@ -701,18 +714,63 @@ async fn try_inject_with_context(
+@@ -697,18 +710,63 @@ async fn try_inject_with_context(
      } else {
          vec![script, user_bundle]
      };
@@ -129,8 +141,20 @@ index cc12fae..48a8b06 100644
  }
 
  fn default_codex_db_path() -> PathBuf {
+diff --git a/crates/codex-plus-core/Cargo.toml b/crates/codex-plus-core/Cargo.toml
+index 2e5609e..370d132 100644
+--- a/crates/codex-plus-core/Cargo.toml
++++ b/crates/codex-plus-core/Cargo.toml
+@@ -23,6 +23,7 @@ tokio = { workspace = true, features = ["net"] }
+ tokio-tungstenite.workspace = true
+ toml.workspace = true
+ toml_edit.workspace = true
++url.workspace = true
+ uuid.workspace = true
+ zip.workspace = true
+
 diff --git a/crates/codex-plus-core/src/cdp.rs b/crates/codex-plus-core/src/cdp.rs
-index a561c28..0bf083a 100644
+index 9a442f0..6af5458 100644
 --- a/crates/codex-plus-core/src/cdp.rs
 +++ b/crates/codex-plus-core/src/cdp.rs
 @@ -1,8 +1,11 @@
@@ -213,13 +237,21 @@ index a561c28..0bf083a 100644
  }
 
  pub fn is_injectable_page_target(target: &CdpTarget) -> bool {
-@@ -102,5 +120,48 @@ pub fn is_codex_page_target(target: &CdpTarget) -> bool {
+@@ -102,7 +120,9 @@ pub fn is_codex_page_target(target: &CdpTarget) -> bool {
          return false;
      }
      let haystack = format!("{} {}", target.title, target.url).to_lowercase();
--    haystack.contains("codex")
-+    haystack.contains("codex") || is_linux_local_codex_app_url(&target.url)
-+}
+-    haystack.contains("codex") || is_chatgpt_desktop_page(&target.title, &target.url)
++    haystack.contains("codex")
++        || is_chatgpt_desktop_page(&target.title, &target.url)
++        || is_linux_local_codex_app_url(&target.url)
+ }
+
+ fn is_chatgpt_desktop_page(title: &str, url: &str) -> bool {
+@@ -115,3 +135,46 @@ fn is_chatgpt_desktop_page(title: &str, url: &str) -> bool {
+             || url.starts_with("https://chat.openai.com/")
+             || url.starts_with("data:text/html"))
+ }
 +
 +fn is_linux_local_codex_app_url(raw_url: &str) -> bool {
 +    let Ok(url) = Url::parse(raw_url) else {
@@ -262,4 +294,4 @@ index a561c28..0bf083a 100644
 +                "thread_id" | "conversation_id" | "initialRoute" | "initialroute"
 +            )
 +        })
- }
++}

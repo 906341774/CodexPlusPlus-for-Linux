@@ -47,7 +47,7 @@ usage() {
     cat <<'HELP'
 Usage: ./install.sh [OPTIONS] [path/to/Codex.dmg]
 
-Converts the official macOS Codex Desktop app to run on Linux.
+Converts the official macOS ChatGPT Desktop app to run on Linux.
 
 Options:
   -h, --help     Show this help message and exit
@@ -63,7 +63,7 @@ Environment variables:
                       Allow overwriting INSTALL_DIR while Codex is running
   CODEX_APP_ID        Override Linux app id/bin identity (default: codex-desktop)
   CODEX_APP_DISPLAY_NAME
-                      Override display name (default: Codex Desktop)
+                      Override display name (default: ChatGPT)
   CODEX_WEBVIEW_PORT  Override webview HTTP port (default: 5175, or 5176 for non-default app ids)
   CODEX_DMG_REFRESH_MODE=pinned
                       Reuse an existing cached Codex.dmg verbatim and refuse

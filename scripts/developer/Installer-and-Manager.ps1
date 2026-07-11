@@ -59,7 +59,7 @@ $ErrorActionPreference = "Stop"
 [string]$CodexPlusPlusGitHubRepo = 'https://github.com/BigPizzaV3/CodexPlusPlus'
 # Upstream version pinned by this adapter release.
 # 当前适配项目固定对应的上游 Codex++ 版本。
-[string]$CodexPlusPlusUpstreamVersion = '1.2.32'
+[string]$CodexPlusPlusUpstreamVersion = '1.2.34'
 [string]$CodexPlusPlusReleaseTag = "v$CodexPlusPlusUpstreamVersion"
 [string]$CodexPlusPlusVersionZipUrl = "https://github.com/BigPizzaV3/CodexPlusPlus/archive/refs/tags/$CodexPlusPlusReleaseTag.zip"
 [string]$CodexPlusPlusMainZipUrl = 'https://github.com/BigPizzaV3/CodexPlusPlus/archive/refs/heads/main.zip'
@@ -889,7 +889,7 @@ function Resolve-CodexPlusPlusSourceRoot {
 # =============================================================================
 
 function Get-RepositoryRoot {
-    return [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+    return [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 }
 
 function Read-SnippetManifest {
@@ -985,6 +985,21 @@ function Assert-TextFileContains {
     }
 }
 
+function Assert-TextFileNotContains {
+    param(
+        [string]$PathValue,
+        [string]$Literal,
+        [string]$Label
+    )
+    if (-not (Test-Path $PathValue)) {
+        throw "Missing file while verifying Linux adaptation: $PathValue"
+    }
+    $text = [System.IO.File]::ReadAllText($PathValue)
+    if ($text.Contains($Literal)) {
+        throw "Linux adaptation verification failed: forbidden $Label was found in $PathValue"
+    }
+}
+
 function Test-BinaryContainsAsciiLiteral {
     param(
         [string]$PathValue,
@@ -1039,13 +1054,21 @@ function Assert-SourceLinuxAdaptationApplied {
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/relay_config.rs') 'requires_openai_auth: bool' 'Pure API configurable OpenAI auth requirement'
     Assert-TextFileContains (Join-Path $SourceRoot 'assets/inject/renderer-inject.js') 'normalizeCodexPlusPluginDetail' 'Linux plugin detail response normalization'
     Assert-TextFileContains (Join-Path $SourceRoot 'assets/inject/renderer-inject.js') 'codexPlusSyntheticAccountReadResult' 'Pure API synthetic account read compatibility'
-    Assert-TextFileContains (Join-Path $SourceRoot 'assets/inject/renderer-inject.js') 'clearPluginEntryUnlockLabel' 'Native Plugins label cleanup'
+    $rendererInjection = Join-Path $SourceRoot 'assets/inject/renderer-inject.js'
+    Assert-TextFileContains $rendererInjection 'pluginMarketplaceUnlock' 'Plugin marketplace request compatibility'
+    Assert-TextFileContains $rendererInjection 'normalizeCodexPlusPluginDetail' 'Linux plugin detail response normalization'
+    Assert-TextFileNotContains $rendererInjection 'pluginEntryUnlock' 'legacy plugin sidebar entry unlock'
+    Assert-TextFileNotContains $rendererInjection 'spoofChatGPTAuthMethod' 'plugin entry ChatGPT authentication spoofing'
+    Assert-TextFileNotContains $rendererInjection 'Plugins - Unlocked' 'plugin entry debug unlock label'
     Assert-TextFileContains (Join-Path $SourceRoot 'assets/inject/renderer-inject.js') 'avoidFloatingCodexPlusMenuNativeControlOverlap' 'Floating Codex++ menu overlap avoidance'
     Assert-TextFileContains (Join-Path $SourceRoot 'assets/inject/renderer-inject.js') 'codexServiceTierLinuxComposerFooters' 'Linux Fast badge composer placement'
     Assert-TextFileContains (Join-Path $SourceRoot 'assets/inject/renderer-inject.js') 'codexServiceTierBackendBlocksLocalOverride' 'Linux Fast badge transient backend checking clickability'
+    Assert-TextFileContains (Join-Path $SourceRoot 'assets/inject/renderer-inject.js') '"gpt-5.6"' 'GPT-5.6 Fast service-tier compatibility'
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/user_scripts.rs') 'codexPlusLinuxUserScriptLocation' 'Linux user script location alias'
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/codex_sqlite.rs') 'local_thread_catalog' 'Linux Codex local thread catalog discovery'
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-data/src/provider_sync.rs') 'collect_local_catalog_threads' 'Linux local thread catalog provider sync backfill'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-data/src/provider_sync.rs') 'if pending_changes == 0' 'Idempotent local thread catalog provider sync'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-data/src/provider_sync.rs') 'projectless_thread_ids.extend' 'Projectless local thread catalog exclusion'
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/app_paths.rs') 'linuxAdapterDesktopEntryPath' 'Linux stale state desktop entry recovery'
     Add-AdapterLog "Verified Linux adaptation markers in patched source."
 }

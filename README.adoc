@@ -7,7 +7,7 @@ English | link:README_zh-CN.adoc[简体中文]
 `CodexPlusPlus-on-Linux` is a source-level Linux adaptation project for `BigPizzaV3/CodexPlusPlus`.
 It records and reapplies the patches needed to make Codex++ work with the unofficial Linux Codex Desktop build produced by `ilysenko/codex-desktop-linux`.
 
-Project version: `1.2.32`, synchronized with upstream Codex++ `v1.2.32`.
+Project version: `1.2.34`, synchronized with upstream Codex++ `v1.2.34`.
 
 This repository is maintained as a fork/adaptation of:
 
@@ -24,7 +24,7 @@ See link:LICENSE[LICENSE].
 * The official maintenance workflow in `docs/modules/ROOT/pages/maintenance-workflow.adoc`.
 * A historical/experimental recurring adaptation workflow in `docs/modules/ROOT/pages/adapter-workflow.adoc`.
 * Patch attachments in `docs/modules/ROOT/attachments/patches/`.
-* A bilingual PowerShell installer and manager script: `scripts/Installer-and-Manager.ps1`.
+* A bilingual PowerShell installer and manager script: `scripts/developer/Installer-and-Manager.ps1`.
 * Upstream source snapshots under `CodexPlusPlus/src` and `codex-desktop-linux/src` for research and reproducible comparison; nested `.git` metadata and local build caches are intentionally not tracked.
 
 The manager script can install, update, uninstall, and reapply the Linux adaptation from an original Codex++ source package.
@@ -63,21 +63,14 @@ The commands below are a practical example; review the upstream README for curre
 
 [source,powershell,subs="attributes,macros"]
 ----
-$codexDesktopLinuxSource = "$HOME/opt/CodexPlusPlus-on-Linux/codex-desktop-linux/src"
+$adapterRoot = "$HOME/opt/CodexPlusPlus-on-Linux"
 $codexDesktopInstallPath = "$HOME/opt/CodexDesktop"
 
-Set-Location $codexDesktopLinuxSource
-Set-Item Env:CODEX_LINUX_FEATURES 'agent-workspace,api-key-service-tier,appshots,authenticated-proxy,codex-wrapper-updater,conversation-mode,copilot-reasoning-effort,frameless-titlebar,node-repl-reaper,open-target-discovery,persistent-status-panel,read-aloud,read-aloud-mcp,remote-control-ui,remote-mobile-control,thorium-chrome-plugin,x11-ewmh-computer-use,zed-opener'
-Set-Item Env:CODEX_LINUX_DISABLE_FEATURES ''
-Set-Item Env:PACKAGE_WITH_UPDATER '0'
-Set-Item Env:CODEX_BOOTSTRAP_NONINTERACTIVE '1'
-Set-Item Env:CODEX_LINUX_ENABLE_COMPUTER_USE_UI '1'
-
-make build-app
-if (Test-Path $codexDesktopInstallPath) {
-    throw "Install path already exists: $codexDesktopInstallPath"
-}
-Move-Item -Path "codex-app" -Destination $codexDesktopInstallPath
+Set-Location $adapterRoot
+pwsh ./scripts/developer/Build-CodexDesktopLinux.ps1 `
+    -Action build-install `
+    -SourceRoot "$adapterRoot/codex-desktop-linux/src" `
+    -InstallPath $codexDesktopInstallPath
 
 New-Item -ItemType Directory -Force -Path "$HOME/.local/bin", "$HOME/.local/share/icons", "$HOME/.local/share/applications"
 New-Item -ItemType SymbolicLink -Force `
@@ -91,17 +84,19 @@ $desktopFilePath = "$HOME/.local/share/applications/codex-desktop-linux.desktop"
 Copy-Item -Path "contrib/user-local-install/files/.local/share/applications/codex-desktop.desktop" -Destination $desktopFilePath -Force
 (Get-Content $desktopFilePath) -creplace '^Exec=.*', 'Exec=codex-desktop-linux' | Set-Content $desktopFilePath
 
-Remove-Item -ErrorAction SilentlyContinue `
-    Env:CODEX_LINUX_FEATURES,
-    Env:CODEX_LINUX_DISABLE_FEATURES,
-    Env:PACKAGE_WITH_UPDATER,
-    Env:CODEX_BOOTSTRAP_NONINTERACTIVE,
-    Env:CODEX_LINUX_ENABLE_COMPUTER_USE_UI
 ----
+
+The build script discovers every documented top-level feature in the pinned
+`codex-desktop-linux` source except `example-feature` and `local`. It writes the
+git-ignored `linux-features/features.json`, exports both
+`CODEX_LINUX_FEATURES` and `CODEX_LINUX_FEATURES_CONFIG`, and rejects the build
+unless both build-info files record the exact discovered set. The `v1.2.34`
+baseline currently enables 23 Linux features; `Enabled features: None` is a
+hard build failure.
 
 The `ydotool` installation command itself is distribution-specific; follow `docs/linux-computer-use.md` in `ilysenko/codex-desktop-linux` for the current package name and service setup.
 
-To update the Linux Codex Desktop build, replace the `codex.dmg` used by `ilysenko/codex-desktop-linux`, then rerun its build procedure.
+To update the Linux Codex Desktop build, replace the `Codex.dmg` used by `ilysenko/codex-desktop-linux`, then rerun the same PowerShell build procedure.
 
 == Install adapted Codex++
 
@@ -109,7 +104,7 @@ Run the manager script with PowerShell:
 
 [source,powershell]
 ----
-pwsh ./scripts/Installer-and-Manager.ps1 -Action install -CodexDesktopRootPath "$HOME/opt/CodexDesktop"
+pwsh ./scripts/developer/Installer-and-Manager.ps1 -Action install -CodexDesktopRootPath "$HOME/opt/CodexDesktop"
 ----
 
 The script defaults are intentionally conservative:
@@ -132,7 +127,7 @@ It supports shell-style path values such as `$HOME/opt/CodexDesktop`, `${HOME}/o
 
 [source,powershell]
 ----
-pwsh ./scripts/Installer-and-Manager.ps1 -Action update -CodexDesktopRootPath "$HOME/opt/CodexDesktop"
+pwsh ./scripts/developer/Installer-and-Manager.ps1 -Action update -CodexDesktopRootPath "$HOME/opt/CodexDesktop"
 ----
 
 The update action fetches or copies a fresh upstream source, reapplies enabled snippets, rebuilds, and replaces the installed adapter binaries.
@@ -141,7 +136,7 @@ The update action fetches or copies a fresh upstream source, reapplies enabled s
 
 [source,powershell]
 ----
-pwsh ./scripts/Installer-and-Manager.ps1 -Action uninstall -CodexDesktopRootPath "$HOME/opt/CodexDesktop"
+pwsh ./scripts/developer/Installer-and-Manager.ps1 -Action uninstall -CodexDesktopRootPath "$HOME/opt/CodexDesktop"
 ----
 
 By default user scripts are preserved.

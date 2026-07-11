@@ -1,20 +1,8 @@
-diff --git a/Cargo.lock b/Cargo.lock
-index 04bcc81..bf127fc 100644
---- a/Cargo.lock
-+++ b/Cargo.lock
-@@ -426,6 +426,7 @@ dependencies = [
-  "tokio-tungstenite",
-  "toml 0.8.2",
-  "toml_edit 0.22.27",
-+ "url",
-  "uuid",
-  "windows 0.58.0",
-  "zip",
 diff --git a/apps/codex-plus-manager/src/App.tsx b/apps/codex-plus-manager/src/App.tsx
-index 11a2c70..1674e5b 100644
+index e9f83d1..a2dd7d2 100644
 --- a/apps/codex-plus-manager/src/App.tsx
 +++ b/apps/codex-plus-manager/src/App.tsx
-@@ -6243,7 +6243,7 @@ function buildRelayConfigToml(
+@@ -6244,7 +6244,7 @@ function buildRelayConfigToml(
    profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol">,
    options: { includeBearerToken: boolean },
  ): string {
@@ -23,7 +11,7 @@ index 11a2c70..1674e5b 100644
    const apiKey = profile.apiKey.trim();
    const rootLines = [
      profile.model.trim() ? `model = "${tomlString(profile.model.trim())}"` : null,
-@@ -6255,13 +6255,32 @@ function buildRelayConfigToml(
+@@ -6256,13 +6256,32 @@ function buildRelayConfigToml(
      "[model_providers.custom]",
      'name = "custom"',
      'wire_api = "responses"',
@@ -57,29 +45,50 @@ index 11a2c70..1674e5b 100644
  function buildRelayAuthJson(profile: Pick<RelayProfile, "apiKey">): string {
    return `${JSON.stringify({ OPENAI_API_KEY: profile.apiKey.trim() }, null, 2)}\n`;
  }
-@@ -6346,7 +6365,7 @@ function applyRelayProfilePatchToFiles(
+@@ -6347,8 +6366,8 @@ function applyRelayProfilePatchToFiles(
      next.baseUrl = patch.upstreamBaseUrl || "";
    }
    if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch) {
 -    const baseUrlForConfig = next.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : next.upstreamBaseUrl || next.baseUrl;
+-    next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig);
 +    const baseUrlForConfig = next.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : effectiveCodexBaseUrl(next.upstreamBaseUrl || next.baseUrl);
-     next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig);
++    next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, next.relayMode !== "pureApi");
      next.configContents = removeRootTomlKey(next.configContents, CHAT_UPSTREAM_BASE_URL_KEY);
    }
-diff --git a/crates/codex-plus-core/Cargo.toml b/crates/codex-plus-core/Cargo.toml
-index 2e5609e..370d132 100644
---- a/crates/codex-plus-core/Cargo.toml
-+++ b/crates/codex-plus-core/Cargo.toml
-@@ -23,6 +23,7 @@ tokio = { workspace = true, features = ["net"] }
- tokio-tungstenite.workspace = true
- toml.workspace = true
- toml_edit.workspace = true
-+url.workspace = true
- uuid.workspace = true
- zip.workspace = true
+   if ("contextWindow" in patch) {
+@@ -6508,13 +6527,13 @@ function setRootTomlLine(contents: string, key: string, lineText: string): strin
+   return ensureTrailingNewline(lines.join("\n").trimEnd());
+ }
 
+-function setCodexProviderStringKey(contents: string, key: string, value: string): string {
++function setCodexProviderStringKey(contents: string, key: string, value: string, requiresOpenAiAuth = true): string {
+   const provider = rootTomlStringValue(contents, "model_provider") || "custom";
+   let next = contents;
+   if (!rootTomlStringValue(next, "model_provider")) {
+     next = setRootTomlStringKey(next, "model_provider", provider);
+   }
+-  next = ensureCodexProviderDefaults(next, provider);
++  next = ensureCodexProviderDefaults(next, provider, requiresOpenAiAuth);
+   return setTomlSectionStringKey(next, `model_providers.${provider}`, key, value);
+ }
+
+@@ -6530,12 +6549,12 @@ function removeCodexExperimentalBearerToken(contents: string): string {
+   return removeTomlSectionKey(contents, `model_providers.${provider}`, "experimental_bearer_token");
+ }
+
+-function ensureCodexProviderDefaults(contents: string, provider: string): string {
++function ensureCodexProviderDefaults(contents: string, provider: string, requiresOpenAiAuth = true): string {
+   let next = contents;
+   const section = `model_providers.${provider}`;
+   next = setTomlSectionStringKey(next, section, "name", provider);
+   next = setTomlSectionStringKey(next, section, "wire_api", "responses");
+-  return setTomlSectionBoolKey(next, section, "requires_openai_auth", true);
++  return setTomlSectionBoolKey(next, section, "requires_openai_auth", requiresOpenAiAuth);
+ }
+
+ function setTomlSectionBoolKey(contents: string, sectionName: string, key: string, value: boolean): string {
 diff --git a/crates/codex-plus-core/src/relay_config.rs b/crates/codex-plus-core/src/relay_config.rs
-index 6217661..cd08f7d 100644
+index 21076b5..9ed6674 100644
 --- a/crates/codex-plus-core/src/relay_config.rs
 +++ b/crates/codex-plus-core/src/relay_config.rs
 @@ -5,6 +5,7 @@ use std::collections::HashSet;
@@ -200,8 +209,8 @@ index 6217661..cd08f7d 100644
 +    let config_text = normalized_config_text.as_deref();
 
      let config_text = match config_text {
-         Some(config_text) => Some(
-@@ -1346,7 +1379,7 @@ fn validate_toml_config(config_text: &str, path: &Path) -> anyhow::Result<()> {
+         Some(config_text) => Some(preserve_live_marketplace_configs(home, config_text)?),
+@@ -1393,7 +1426,7 @@ fn validate_toml_config(config_text: &str, path: &Path) -> anyhow::Result<()> {
  }
 
  fn normalize_config_text_for_write(config_text: &str) -> String {
@@ -210,7 +219,7 @@ index 6217661..cd08f7d 100644
  }
 
  fn validate_auth_json(auth_bytes: &[u8], path: &Path) -> anyhow::Result<()> {
-@@ -2476,6 +2509,7 @@ fn upsert_model_provider_config(
+@@ -2523,6 +2556,7 @@ fn upsert_model_provider_config(
      contents: &str,
      base_url: &str,
      bearer_token: &str,
@@ -218,7 +227,7 @@ index 6217661..cd08f7d 100644
  ) -> anyhow::Result<String> {
      let mut doc = parse_toml_document(contents)?;
      let provider_id = active_or_default_provider_id(&doc);
-@@ -2490,7 +2524,7 @@ fn upsert_model_provider_config(
+@@ -2537,7 +2571,7 @@ fn upsert_model_provider_config(
      let provider = ensure_provider_table(&mut doc, &provider_id)?;
      provider["name"] = toml_edit::value(provider_id.as_str());
      provider["wire_api"] = toml_edit::value("responses");

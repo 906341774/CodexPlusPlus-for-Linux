@@ -1,28 +1,54 @@
+diff --git a/apps/codex-plus-manager/src/relay-config-contract.test.mjs b/apps/codex-plus-manager/src/relay-config-contract.test.mjs
+new file mode 100644
+index 0000000..3160e1a
+--- /dev/null
++++ b/apps/codex-plus-manager/src/relay-config-contract.test.mjs
+@@ -0,0 +1,20 @@
++import assert from "node:assert/strict";
++import fs from "node:fs";
++import test from "node:test";
++
++const source = fs.readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
++
++test("Pure API base URL edits preserve requires_openai_auth false", () => {
++  assert.match(
++    source,
++    /setCodexProviderStringKey\(next\.configContents, "base_url", baseUrlForConfig, next\.relayMode !== "pureApi"\)/,
++  );
++  assert.match(
++    source,
++    /function setCodexProviderStringKey\(contents: string, key: string, value: string, requiresOpenAiAuth = true\)/,
++  );
++  assert.match(
++    source,
++    /ensureCodexProviderDefaults\(next, provider, requiresOpenAiAuth\)/,
++  );
++});
 diff --git a/crates/codex-plus-core/tests/bridge_routes.rs b/crates/codex-plus-core/tests/bridge_routes.rs
-index 98d6e5c..3d723f7 100644
+index 98d6e5c..3251c2e 100644
 --- a/crates/codex-plus-core/tests/bridge_routes.rs
 +++ b/crates/codex-plus-core/tests/bridge_routes.rs
-@@ -119,7 +119,7 @@ async fn settings_get_includes_runtime_codex_app_version() {
- 
-     assert_eq!(result["codexAppVersion"], json!("26.601.21317"));
-     assert_eq!(result["codexAppPluginMarketplaceUnlock"], json!(true));
--    assert_eq!(result.get("codexAppForcePluginInstall"), None);
-+    assert_eq!(result["codexAppForcePluginInstall"], json!(true));
-     assert_eq!(result["codexAppThreadIdBadge"], json!(false));
- }
- 
-@@ -720,6 +720,31 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
+@@ -1,3 +1,5 @@
++use std::io::Write;
++use std::process::Command;
+ use std::sync::{Arc, Mutex};
+
+ use async_trait::async_trait;
+@@ -720,6 +722,78 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
      assert!(evaluated[0].contains("window.demo = true;"));
  }
- 
+
 +#[test]
-+fn user_script_bundle_wraps_scripts_with_linux_codex_location_alias() {
++fn user_script_bundle_aliases_only_linux_sandbox_location() {
 +    let temp = tempfile::tempdir().unwrap();
 +    let user_dir = temp.path().join("user");
 +    std::fs::create_dir_all(&user_dir).unwrap();
 +    std::fs::write(
-+        user_dir.join("market-codex-context-used-meter.js"),
-+        r#"window.__seenCodexLocation = new URL(location.href).href;"#,
++        user_dir.join("location-probe.js"),
++        r#"window.__locationProbe = {
++  scriptHref: location.href,
++  windowHref: window.location.href,
++};"#,
 +    )
 +    .unwrap();
 +    let manager = UserScriptManager::new(
@@ -30,31 +56,67 @@ index 98d6e5c..3d723f7 100644
 +        user_dir,
 +        temp.path().join("user_scripts.json"),
 +    );
++    let bundle_path = temp.path().join("user-scripts.cjs");
++    std::fs::write(&bundle_path, manager.build_enabled_bundle().unwrap()).unwrap();
 +
-+    let bundle = manager.build_enabled_bundle().unwrap();
++    let run_probe = |url: &str| {
++        let harness_path = temp.path().join(format!(
++            "probe-{}.cjs",
++            if url.contains("mcpAppSandboxDevtools") {
++                "sandbox"
++            } else {
++                "regular"
++            }
++        ));
++        let mut harness = std::fs::File::create(&harness_path).unwrap();
++        writeln!(
++            harness,
++            r#"globalThis.window = globalThis;
++globalThis.location = new URL({url});
++window.location = globalThis.location;
++require({bundle});
++process.stdout.write(JSON.stringify(window.__locationProbe));"#,
++            url = serde_json::to_string(url).unwrap(),
++            bundle = serde_json::to_string(&bundle_path.to_string_lossy()).unwrap(),
++        )
++        .unwrap();
++        drop(harness);
++        let output = Command::new("node").arg(&harness_path).output().unwrap();
++        assert!(
++            output.status.success(),
++            "node location probe failed: {}",
++            String::from_utf8_lossy(&output.stderr)
++        );
++        serde_json::from_slice::<Value>(&output.stdout).unwrap()
++    };
 +
-+    assert!(bundle.contains("codexPlusLinuxUserScriptLocation"));
-+    assert!(bundle.contains("mcpAppSandboxDevtools"));
-+    assert!(bundle.contains("app://-/index.html"));
-+    assert!(bundle.contains("((location) => {"));
-+    assert!(bundle.contains("window.__seenCodexLocation = new URL(location.href).href;"));
++    let sandbox = run_probe(
++        "http://127.0.0.1:5176/conversation?thread_id=t1&mcpAppSandboxDevtools=1#composer",
++    );
++    assert_eq!(
++        sandbox["scriptHref"],
++        "app://-/index.html?thread_id=t1&mcpAppSandboxDevtools=1#composer"
++    );
++    assert_eq!(
++        sandbox["windowHref"],
++        "http://127.0.0.1:5176/conversation?thread_id=t1&mcpAppSandboxDevtools=1#composer"
++    );
++
++    let regular = run_probe("http://127.0.0.1:5176/conversation?thread_id=t2");
++    assert_eq!(
++        regular["scriptHref"],
++        "http://127.0.0.1:5176/conversation?thread_id=t2"
++    );
++    assert_eq!(regular["windowHref"], regular["scriptHref"]);
 +}
 +
  #[tokio::test]
  async fn core_runtime_open_devtools_uses_inspector_url_opener() {
      let opened = Arc::new(Mutex::new(Vec::<String>::new()));
-@@ -1025,6 +1050,7 @@ impl BridgeSettingsService for FakeSettings {
-         }
-         for key in [
-             "codexAppPluginMarketplaceUnlock",
-+            "codexAppForcePluginInstall",
-             "codexAppModelWhitelistUnlock",
-             "codexAppSessionDelete",
-             "codexAppMarkdownExport",
-@@ -1384,7 +1410,11 @@ impl LaunchHooks for ContextHooks {
+@@ -1384,7 +1458,11 @@ impl LaunchHooks for ContextHooks {
          Ok(())
      }
- 
+
 -    async fn start_helper(&self, _helper_port: u16) -> anyhow::Result<()> {
 +    async fn start_helper(
 +        &self,
@@ -63,345 +125,184 @@ index 98d6e5c..3d723f7 100644
 +    ) -> anyhow::Result<()> {
          Ok(())
      }
- 
+
 diff --git a/crates/codex-plus-core/tests/cdp_bridge.rs b/crates/codex-plus-core/tests/cdp_bridge.rs
-index 96d7e22..cabd5d5 100644
+index 418f04c..e08c8e0 100644
 --- a/crates/codex-plus-core/tests/cdp_bridge.rs
 +++ b/crates/codex-plus-core/tests/cdp_bridge.rs
-@@ -127,6 +127,18 @@ fn injection_script_times_out_backend_bridge_calls_and_falls_back_to_helper() {
-     assert!(script.contains("backend_status_bridge_and_http_failed"));
+@@ -601,6 +601,7 @@ fn injection_script_exposes_fast_service_tier_control() {
+     assert!(script.contains("codexServiceTierSupportedFastModels"));
+     assert!(script.contains("\"gpt-5.4\""));
+     assert!(script.contains("\"gpt-5.5\""));
++    assert!(script.contains("\"gpt-5.6\""));
+     assert!(script.contains("codexServiceTierFastSupportedForModel"));
+     assert!(script.contains("codexServiceTierModelForRequest"));
+     assert!(script.contains("codexServiceTierMaybeLoadModelCatalog"));
+@@ -659,6 +660,26 @@ fn injection_script_exposes_fast_service_tier_control() {
+     assert!(script.contains("fast"));
  }
- 
+
 +#[test]
-+fn injection_script_falls_back_to_helper_for_bridge_routes_when_binding_is_missing() {
++fn injection_script_keeps_official_fast_controls_outside_codex_plus_cleanup() {
 +    let script = assets::injection_script(57321);
++    let start = script
++        .find("function removeCodexServiceTierBadges()")
++        .expect("Codex++ badge cleanup should exist");
++    let body = &script[start..];
++    let end = body
++        .find("\n  function ")
++        .expect("badge cleanup should remain a focused function");
++    let cleanup = &body[..end];
 +
-+    assert!(script.contains("helperBridgeFallbackRoutes"));
-+    assert!(script.contains("\"/settings/get\""));
-+    assert!(script.contains("\"/user-scripts/list\""));
-+    assert!(script.contains("fetchJsonFromHelper(path, payload)"));
-+    assert!(script.contains("bridge_missing_http_fallback_ok"));
-+    assert!(script.contains("bridge_call_failed_http_fallback_ok"));
++    assert!(
++        cleanup.contains("document.querySelectorAll(`[data-codex-service-tier-badge=\"true\"]`)")
++    );
++    assert!(!cleanup.contains("button"));
++    assert!(!cleanup.contains("default-service-tier"));
++    assert!(!cleanup.contains("data-testid"));
 +}
 +
  #[test]
- fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
+ fn injection_script_prompts_for_markdown_export_path_when_supported() {
      let script = assets::injection_script(57321);
-@@ -135,14 +147,13 @@ fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
- }
- 
- #[test]
--fn injection_script_menu_exposes_marketplace_plugin_switch_only() {
-+fn injection_script_menu_exposes_marketplace_switch_without_force_install_plugin_switch() {
-     let script = assets::injection_script(57321);
- 
-     assert!(script.contains("插件市场解锁"));
-     assert!(script.contains("data-codex-plus-setting=\"pluginMarketplaceUnlock\""));
-     assert!(!script.contains("特殊插件强制安装"));
-     assert!(!script.contains("data-codex-plus-setting=\"forcePluginInstall\""));
--    assert!(!script.contains("forcePluginInstall"));
-     assert!(!script.contains("强制解锁入口"));
-     assert!(!script.contains("data-codex-plus-setting=\"pluginEntryUnlock\""));
- }
-@@ -254,7 +265,7 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
-     let script = assets::injection_script(57321);
- 
-     assert!(script.contains("function pluginPatchDisabledInRelayMode()"));
--    assert!(script.contains("!codexPlusBackendSettingsLoaded"));
-+    assert!(script.contains("codexPlusBackendSettings.launchMode === \"relay\""));
-     assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
-     assert!(script.contains("clearPluginPatchArtifacts()"));
- }
-@@ -285,23 +296,31 @@ fn injection_script_gates_legacy_and_modern_plugin_unlock_by_codex_version() {
-     let script = assets::injection_script(57321);
- 
-     assert!(script.contains("const pluginUnlockStrategy = codexPluginUnlockStrategy()"));
-+    assert!(script.contains("if ((pluginUnlockStrategy === \"legacy\" || pluginUnlockStrategy === \"unknown\") && settings.pluginMarketplaceUnlock)"));
-+    assert!(script.contains("enablePluginEntry();"));
-+    assert!(script.contains("refreshPluginEntryUnlockLoop();"));
-     assert!(script.contains("if ((pluginUnlockStrategy === \"modern\" || pluginUnlockStrategy === \"unknown\") && settings.pluginMarketplaceUnlock)"));
-     assert!(script.contains("plugin_unlock_strategy_selected"));
-     assert!(script.contains("window.__codexPluginUnlockStrategyLogged"));
- }
- 
- #[test]
--fn injection_script_removes_legacy_plugin_sidebar_entry_unlock() {
-+fn injection_script_keeps_linux_plugin_sidebar_entry_unlock_without_debug_suffix() {
-     let script = assets::injection_script(57321);
- 
--    assert!(!script.contains("pluginEntryUnlock"));
-     assert!(!script.contains("codexAppPluginEntryUnlock"));
--    assert!(!script.contains("function spoofChatGPTAuthMethod(element)"));
--    assert!(!script.contains("auth.setAuthMethod(\"chatgpt\")"));
--    assert!(!script.contains("function pluginEntryButton()"));
--    assert!(!script.contains("function enablePluginEntry()"));
--    assert!(!script.contains("插件 - 已解锁"));
--    assert!(!script.contains("Plugins - Unlocked"));
-+    assert!(!script.contains("data-codex-plus-setting=\"pluginEntryUnlock\""));
-+    assert!(script.contains("function spoofChatGPTAuthMethod(element)"));
-+    assert!(script.contains("auth.setAuthMethod(\"chatgpt\")"));
-+    assert!(script.contains("function pluginEntryButton()"));
-+    assert!(script.contains("function enablePluginEntry()"));
-+    assert!(script.contains("if (!codexPlusSettings().pluginMarketplaceUnlock) return"));
-+    assert!(script.contains("installPluginEntryGuard(pluginButton);"));
-+    assert!(script.contains("function clearPluginEntryUnlockLabel(button)"));
-+    assert!(script.contains(
-+        "function labelUnlockedPluginEntry(button) {\n    clearPluginEntryUnlockLabel(button);\n  }"
-+    ));
-+    assert!(!script.contains("\"Plugins - Unlocked\" : \"插件 - 已解锁\""));
- }
- 
- #[test]
-@@ -340,9 +359,8 @@ fn injection_script_does_not_unlock_disabled_plugin_install_buttons() {
-     assert!(script.contains("button[aria-disabled=\"true\"]"));
-     assert!(script.contains("[role=\"button\"][data-disabled]"));
-     assert!(!script.contains("installButtonUnlockNodes"));
--    assert!(!script.contains("patchReactDisabledProps"));
-     assert!(!script.contains("props[\"data-disabled\"] = undefined"));
--    assert!(!script.contains("button.querySelectorAll?.(\"button, [role='button'], [disabled], [aria-disabled], [data-disabled]"));
-+    assert!(!script.contains("installPluginButtonGuard"));
-     assert!(!script.contains("button.dataset.codexForceInstallUnlocked"));
- }
- 
-@@ -455,13 +473,12 @@ fn injection_script_logs_marketplace_grouping_diagnostics() {
- }
- 
- #[test]
--fn injection_script_omits_force_install_unlock_loop() {
-+fn injection_script_does_not_keep_force_install_unlock_visual_state_sticky() {
-     let script = assets::injection_script(57321);
- 
-     assert!(!script.contains("codex-force-install-unlocked"));
-     assert!(!script.contains("codexForcePluginInstallRefreshIntervalMs"));
-     assert!(!script.contains("refreshForcePluginInstallUnlockLoop"));
--    assert!(!script.contains("__codexForcePluginInstallRefreshTimer"));
- }
- 
- #[test]
-@@ -512,6 +529,18 @@ fn injection_script_exposes_sidebar_thread_id_badge_control() {
-     assert!(script.contains("refreshThreadIdBadges();"));
- }
- 
-+#[test]
-+fn injection_script_groups_derived_workspace_projects_in_sidebar_projection() {
-+    let script = assets::injection_script(57321);
-+
-+    assert!(script.contains("function workspaceLooksLikeDerivedProject"));
-+    assert!(script.contains("function sameWorkspaceProjectFamily"));
-+    assert!(script.contains("candidateName.startsWith(`${baseName}-`)"));
-+    assert!(script.contains("sameWorkspaceProjectFamily(projectPath, targetPath(target))"));
-+    assert!(script.contains("sameWorkspaceProjectFamily(project.path, targetPath(target))"));
-+    assert!(script.contains("dev|worktree|branch|feature|fix|ga|exp|experiment|deepfeatures"));
-+}
-+
- #[test]
- fn injection_script_keeps_session_action_buttons_in_pr_style() {
-     let script = assets::injection_script(57321);
-@@ -644,7 +673,9 @@ fn injection_script_exposes_fast_service_tier_control() {
-     assert!(script.contains("codexServiceTierBadgeFooterGroup"));
-     assert!(script.contains("codexServiceTierFindComposerEl"));
-     assert!(script.contains("codexServiceTierVisibleComposerFooters"));
-+    assert!(script.contains("codexServiceTierLinuxComposerFooters"));
-     assert!(script.contains("codexServiceTierBestComposerFooter"));
-+    assert!(script.contains("codexServiceTierBestLinuxComposerFooter"));
-     assert!(script.contains("codexServiceTierComposerCandidates"));
-     assert!(script.contains("codexServiceTierComposerScore"));
-     assert!(script.contains("data-codex-service-tier-badge"));
-@@ -660,41 +691,105 @@ fn injection_script_exposes_fast_service_tier_control() {
- }
- 
- #[test]
--fn injection_script_prompts_for_markdown_export_path_when_supported() {
-+fn linux_renderer_asset_loader_can_find_renamed_dynamic_chunks() {
-     let script = assets::injection_script(57321);
- 
--    assert!(script.contains("showSaveFilePicker"));
--    assert!(script.contains("suggestedName: filename"));
--    assert!(script.contains("createWritable()"));
--    assert!(script.contains("await writable.write(markdown)"));
--    assert!(script.contains("status: \"cancelled\""));
--    assert!(script.contains("导出已取消"));
-+    assert!(script.contains("function codexAppAssetUrlFromScriptText"));
-+    assert!(script.contains("new RegExp(`"));
-+    assert!(script.contains("return new URL(match[1], src).href;"));
-+}
-+
-+#[test]
-+fn linux_renderer_asset_loader_skips_linux_app_scheme_dynamic_chunks() {
-+    let script = assets::injection_script(57321);
-+
-+    assert!(script.contains("function codexAppAssetImportableUrl"));
-+    assert!(script.contains("url.startsWith(\"app://-/assets/\")"));
-+    assert!(script.contains("return codexAppAssetImportableUrl(url);"));
-+}
-+
-+#[test]
-+fn linux_renderer_asset_loader_can_find_merged_codex_chunks_by_features() {
-+    let script = assets::injection_script(57321);
-+
-+    assert!(script.contains("codexAppAssetFeatureFallbacks"));
-+    assert!(script.contains("\"setting-storage-\""));
-+    assert!(script.contains("\"default-service-tier\""));
-+    assert!(script.contains("\"pending-worktree-create\""));
-+    assert!(script.contains("\"app-server-manager-signals-\""));
-+    assert!(script.contains("\"list-plugins\""));
-+    assert!(script.contains("\"install-plugin\""));
-+    assert!(script.contains("codexAppAssetUrlFromLoadedResourceText"));
- }
- 
- #[test]
--fn injection_script_discovers_vscode_api_asset_without_hardcoded_hash() {
-+fn linux_renderer_service_tier_patch_finds_dispatcher_without_minified_export_name() {
-     let script = assets::injection_script(57321);
- 
--    assert!(script.contains("loadCodexAppModule(\"vscode-api-\""));
--    assert!(script.contains("codexAppAssetUrlFromScriptText"));
+@@ -677,7 +698,8 @@ fn injection_script_discovers_vscode_api_asset_without_hardcoded_hash() {
+
+     assert!(script.contains("loadCodexAppModule(\"vscode-api-\""));
+     assert!(script.contains("codexAppAssetUrlFromScriptText"));
 -    assert!(script.contains("fetch(src"));
--    assert!(!script.contains("vscode-api-Dc9pX2Bc.js"));
--    assert!(!script.contains("import(\"./assets/vscode-api-"));
-+    assert!(script.contains("function findCodexDispatcherClass(module)"));
-+    assert!(script.contains("Object.values(module || {})"));
-+    assert!(script.contains("String(value).includes(\"dispatchMessage\")"));
-+    assert!(!script.contains(
-+        "typeof module.v === \"function\" && String(module.v).includes(\"dispatchMessage\")"
-+    ));
++    assert!(script.contains("codexAppAssetText(src)"));
++    assert!(script.contains("fetch(url)"));
+     assert!(!script.contains("vscode-api-Dc9pX2Bc.js"));
+     assert!(!script.contains("import(\"./assets/vscode-api-"));
  }
- 
- #[test]
--fn injection_script_clears_project_state_when_moving_to_projectless() {
-+fn linux_renderer_dispatcher_patches_skip_hotkey_window_route() {
-     let script = assets::injection_script(57321);
- 
--    assert!(script.contains("async function clearThreadWorkspaceHints"));
--    assert!(script.contains("async function clearThreadWritableRoots"));
--    assert!(script.contains("async function clearThreadProjectlessOutputDirectories"));
--    assert!(script.contains("thread-workspace-root-hints"));
--    assert!(script.contains("thread-writable-roots"));
--    assert!(script.contains("thread-projectless-output-directories"));
--    assert!(script.contains("await clearThreadWorkspaceHints(ref)"));
--    assert!(script.contains("await clearThreadWritableRoots(ref)"));
--    assert!(script.contains("await clearThreadProjectlessOutputDirectories(ref)"));
-+    assert!(script.contains("function isCodexHotkeyWindowRoute()"));
-+    assert!(
-+        script
-+            .matches("if (isCodexHotkeyWindowRoute()) return;")
-+            .count()
-+            >= 2
-+    );
-+}
-+
-+#[test]
-+fn linux_renderer_patch_places_fast_badge_in_current_linux_composer_footer() {
-+    let script = assets::injection_script(57321);
-+
-+    assert!(script.contains("function codexServiceTierLinuxComposerFooters"));
-+    assert!(script.contains("function codexServiceTierComposerFromIntelligenceTrigger"));
-+    assert!(script.contains("function codexServiceTierComposerFromEditable"));
-+    assert!(script.contains("function codexServiceTierBadgeInsertionPoint"));
-+    assert!(script.contains("style.display"));
-+    assert!(script.contains("\"contents\""));
-+    assert!(script.contains("[data-codex-intelligence-trigger=\"true\"]"));
-+    assert!(script.contains("[data-codex-composer=\"true\"]"));
-+    assert!(script.contains("_footer_"));
-+    assert!(
-+        script.contains(
-+            "const linuxTriggerFooter = codexServiceTierComposerFromIntelligenceTrigger();"
-+        )
-+    );
-+}
-+
-+#[test]
-+fn linux_renderer_patch_keeps_fast_badge_clickable_during_backend_checking() {
-+    let script = assets::injection_script(57321);
-+
-+    assert!(script.contains("function codexServiceTierBackendBlocksLocalOverride()"));
-+    assert!(script.contains("status !== \"ok\" && status !== \"checking\""));
-+    assert!(script.contains("if (codexServiceTierBackendBlocksLocalOverride())"));
-+    assert!(script.contains("codexPlusBackendStatus.status === \"checking\" && codexServiceTierState.status === \"loading\""));
-+    assert!(script.contains(
-+        "codexServiceTierState.status === \"loading\" && badge.dataset.tier === \"loading\""
-+    ));
-+}
-+
-+#[test]
-+fn injection_script_prompts_for_markdown_export_path_when_supported() {
-+    let script = assets::injection_script(57321);
-+
-+    assert!(script.contains("showSaveFilePicker"));
-+    assert!(script.contains("suggestedName: filename"));
-+    assert!(script.contains("createWritable()"));
-+    assert!(script.contains("await writable.write(markdown)"));
-+    assert!(script.contains("status: \"cancelled\""));
-+    assert!(script.contains("导出已取消"));
- }
- 
- #[test]
-@@ -726,6 +821,9 @@ fn injection_script_applies_fast_service_tier_contract() {
+@@ -726,6 +748,16 @@ fn injection_script_applies_fast_service_tier_contract() {
      );
- 
+
      assert_eq!(cases["startConversation"]["serviceTier"], "priority");
 +
-+    assert_eq!(cases["composerFallbackFast"]["serviceTier"], "priority");
-+    assert_eq!(cases["composerFallbackFastDiagnosticModel"], "gpt-5.5");
++    assert_eq!(cases["gpt56Fast"]["serviceTier"], "priority");
++    assert_eq!(cases["gpt56Fast"]["service_tier"], "priority");
++    assert_eq!(cases["gpt56SuffixedFast"]["serviceTier"], "priority");
++    assert_eq!(cases["gpt56LabelFast"]["serviceTier"], "priority");
++    assert_eq!(cases["gpt56FooterFast"]["serviceTier"], "priority");
++    assert_eq!(cases["gpt56FooterDiagnosticModel"], "gpt-5.6");
++
++    assert_eq!(cases["backendCheckingBlocksLocalOverride"], false);
++    assert_eq!(cases["backendCheckingBadgeDisabled"], false);
  }
- 
+
  fn run_service_tier_contract_harness() -> serde_json::Value {
-@@ -761,8 +859,18 @@ function node() {{
-     innerHTML: "",
-   }};
- }}
-+function footerNode(text) {{
-+  const el = node();
-+  el.textContent = text;
-+  el.className = "_footer_test_1";
-+  el.getBoundingClientRect = () => ({{ width: 320, height: 40, top: 600, bottom: 640, left: 0, right: 320 }});
-+  return el;
+@@ -741,8 +773,37 @@ fn run_service_tier_contract_harness() -> serde_json::Value {
+ const scriptPath = {script_path};
+ const store = new Map();
+ store.set("codexPlusSettings", JSON.stringify({{ serviceTierControls: true }}));
++class MockHTMLElement {{
++  constructor(textContent = "") {{
++    this.textContent = textContent;
++    this.innerHTML = "";
++    this.className = "";
++    this.children = [];
++    this.dataset = {{}};
++    this.style = {{}};
++    this.isConnected = true;
++    this.parentElement = null;
++  }}
++  appendChild() {{}}
++  prepend() {{}}
++  remove() {{ this.isConnected = false; }}
++  setAttribute() {{}}
++  getAttribute() {{ return null; }}
++  removeAttribute() {{}}
++  addEventListener() {{}}
++  querySelector() {{ return null; }}
++  querySelectorAll() {{ return []; }}
++  closest() {{ return null; }}
++  matches() {{ return false; }}
++  getBoundingClientRect() {{ return {{ left: 0, top: 0, right: 400, bottom: 40, width: 400, height: 40 }}; }}
 +}}
-+const composerFooter = footerNode("5.5 超高");
++MockHTMLElement.prototype.classList = {{ add() {{}}, remove() {{}}, toggle() {{}}, contains() {{ return false; }} }};
++globalThis.HTMLElement = MockHTMLElement;
++globalThis.getComputedStyle = () => ({{ display: "flex", visibility: "visible" }});
++const linuxFooter = new MockHTMLElement("GPT-5.6 超高");
++linuxFooter.className = "_footer_current_123";
+ function node() {{
+-  return {{
++  return Object.assign(new MockHTMLElement(), {{
+     appendChild() {{}},
+     prepend() {{}},
+     remove() {{}},
+@@ -759,7 +820,7 @@ function node() {{
+     isConnected: true,
+     textContent: "",
+     innerHTML: "",
+-  }};
++  }});
+ }}
  globalThis.window = globalThis;
  window.__CODEX_PLUS_TEST_SERVICE_TIER__ = true;
-+globalThis.HTMLElement = Object;
-+globalThis.getComputedStyle = () => ({{ display: "block", visibility: "visible" }});
- globalThis.document = {{
-   scripts: [],
-   documentElement: node(),
-@@ -770,7 +878,7 @@ globalThis.document = {{
+@@ -770,7 +831,7 @@ globalThis.document = {{
    createElement: () => node(),
    getElementById: () => null,
    querySelector: () => null,
 -  querySelectorAll: () => [],
-+  querySelectorAll: (selector) => selector === "div" ? [composerFooter] : [],
++  querySelectorAll: (selector) => selector === "div" ? [linuxFooter] : [],
    addEventListener() {{}},
    removeEventListener() {{}},
  }};
-@@ -823,6 +931,14 @@ const startConversation = api.requestOverride({{
+@@ -823,6 +884,35 @@ const startConversation = api.requestOverride({{
    model: "gpt-5.5",
  }});
- 
-+api.setModelCatalog({{ status: "ok", model: "", default_model: "", models: [] }});
-+api.setThreadState({{ mode: "global-fast", defaultMode: "fast", entries: {{}} }});
-+const composerFallbackFast = api.applyServiceTierOverride("turn/start", {{
+
++api.setModelCatalog({{ status: "ok", model: "gpt-5.6", default_model: "gpt-5.6", models: ["gpt-5.6"] }});
++const gpt56Fast = api.applyServiceTierOverride("turn/start", {{
++  threadId: "thread-12345678",
++  model: "gpt-5.6",
++  service_tier: null,
++}});
++const gpt56SuffixedFast = api.applyServiceTierOverride("turn/start", {{
++  threadId: "thread-12345678",
++  model: "gpt-5.6[1M]",
++  service_tier: null,
++}});
++const gpt56LabelFast = api.applyServiceTierOverride("turn/start", {{
++  threadId: "thread-12345678",
++  selectedModel: "GPT-5.6 超高",
++  service_tier: null,
++}});
++
++api.setModelCatalog({{ status: "checking", model: "", default_model: "", models: ["gpt-5.6"] }});
++const gpt56FooterFast = api.applyServiceTierOverride("turn/start", {{
 +  threadId: "thread-12345678",
 +  service_tier: null,
 +}});
-+const composerFallbackFastDiagnosticModel = api.diagnostics().at(-1)?.detail?.model;
++const gpt56FooterDiagnosticModel = api.diagnostics().at(-1)?.detail?.model;
++
++api.setServiceTierState({{ status: "ok", serviceTier: null, effectiveMode: "standard" }});
++api.setBackendStatus({{ status: "checking", message: "正在检查后端…" }});
++const backendCheckingBlocksLocalOverride = api.backendBlocksLocalOverride();
++const backendCheckingBadgeDisabled = !!api.badgeState().disabled;
 +
  process.stdout.write(JSON.stringify({{
    supportedFast,
    unsupportedModel,
-@@ -830,6 +946,8 @@ process.stdout.write(JSON.stringify({{
+@@ -830,6 +920,13 @@ process.stdout.write(JSON.stringify({{
    turnWithoutModelDiagnosticModel,
    customInheritUnsupported,
    startConversation,
-+  composerFallbackFast,
-+  composerFallbackFastDiagnosticModel,
++  gpt56Fast,
++  gpt56SuffixedFast,
++  gpt56LabelFast,
++  gpt56FooterFast,
++  gpt56FooterDiagnosticModel,
++  backendCheckingBlocksLocalOverride,
++  backendCheckingBadgeDisabled,
  }}));
  "#,
          script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
-@@ -1148,6 +1266,31 @@ fn pick_injectable_codex_page_target_rejects_non_codex_pages() {
-     );
+@@ -1180,6 +1277,31 @@ fn pick_injectable_codex_page_target_accepts_chatgpt_desktop_error_page() {
+     assert_eq!(picked.id, "chatgpt-error");
  }
- 
+
 +#[test]
 +fn pick_injectable_codex_page_target_accepts_linux_local_app_route() {
 +    let targets = vec![
@@ -430,75 +331,54 @@ index 96d7e22..cabd5d5 100644
  #[test]
  fn pick_injectable_codex_page_target_requires_websocket() {
      let targets = vec![target("codex", "page", "Codex", "https://codex.test", None)];
-@@ -1741,3 +1884,59 @@ fn noop_handler() -> bridge::BridgeHandler {
-             as Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send>>
-     })
+diff --git a/crates/codex-plus-core/tests/codex_sqlite.rs b/crates/codex-plus-core/tests/codex_sqlite.rs
+index d7640ab..3b019cf 100644
+--- a/crates/codex-plus-core/tests/codex_sqlite.rs
++++ b/crates/codex-plus-core/tests/codex_sqlite.rs
+@@ -1,4 +1,6 @@
+-use codex_plus_core::codex_sqlite::sanitize_historical_model_suffixes;
++use codex_plus_core::codex_sqlite::{
++    codex_session_db_paths_from_home, sanitize_historical_model_suffixes,
++};
+ use rusqlite::Connection;
+
+ fn create_threads_table(conn: &Connection) {
+@@ -161,3 +163,27 @@ fn sanitize_cleans_suffix_from_logs() {
+     );
+     assert!(body.contains("deepseek-v4-flash"));
  }
 +
 +#[test]
-+fn linux_renderer_patch_keeps_plugin_label_native_and_normalizes_detail_payloads() {
-+    let script = assets::injection_script(57321);
++fn session_db_discovery_includes_local_catalog_only_database() {
++    let temp = tempfile::tempdir().unwrap();
++    let home = temp.path().join(".codex");
++    let sqlite_dir = home.join("sqlite");
++    std::fs::create_dir_all(&sqlite_dir).unwrap();
++    let catalog_path = sqlite_dir.join("codex-dev.db");
++    let db = Connection::open(&catalog_path).unwrap();
++    db.execute(
++        "CREATE TABLE local_thread_catalog (
++            host_id TEXT NOT NULL,
++            thread_id TEXT NOT NULL,
++            PRIMARY KEY (host_id, thread_id)
++        )",
++        [],
++    )
++    .unwrap();
++    drop(db);
 +
-+    assert!(script.contains(
-+        "function labelUnlockedPluginEntry(button) {\n    clearPluginEntryUnlockLabel(button);\n  }"
-+    ));
-+    assert!(!script.contains("\"Plugins - Unlocked\" : \"插件 - 已解锁\""));
-+    assert!(script.contains("function normalizeCodexPlusPluginDetail(plugin)"));
-+    assert!(script.contains("function ensureCodexPlusArrayProperty(target, property)"));
-+    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"apps\")"));
-+    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"skills\")"));
-+    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"mcpServers\")"));
-+    assert!(script.contains("ensureCodexPlusArrayProperty(plugin, \"hooks\")"));
-+    assert!(script.contains("function patchMcpPluginReadResponseData(data)"));
-+    assert!(script.contains("plugin_read_detail_compat_applied"));
-+}
++    let paths = codex_session_db_paths_from_home(&home);
 +
-+#[test]
-+fn linux_renderer_patch_handles_pure_api_account_read_without_secrets() {
-+    let script = assets::injection_script(57321);
-+
-+    assert!(script.contains("codexPlusAccountReadRequestIds"));
-+    assert!(script.contains("message.request.method === \"account/read\""));
-+    assert!(script.contains("function codexPlusSyntheticAccountReadResult()"));
-+    assert!(script.contains("account_read_pure_api_compat_applied"));
-+    assert!(script.contains("codexplusplus@local"));
-+    let compat_block = script
-+        .split("function codexPlusSyntheticAccountReadResult()")
-+        .nth(1)
-+        .and_then(|block| block.split("function patchMcpModelResponseData").next())
-+        .expect("account-read compatibility block should be present");
-+    assert!(!compat_block.contains("sk-"));
-+}
-+
-+#[test]
-+fn linux_renderer_patch_avoids_floating_menu_native_control_overlap() {
-+    let script = assets::injection_script(57321);
-+
-+    assert!(script.contains("function rectsOverlap(first, second, padding = 0)"));
-+    assert!(script.contains("function floatingMenuNativeControlRects(menuRect)"));
-+    assert!(script.contains("function avoidFloatingCodexPlusMenuNativeControlOverlap(menu)"));
-+    assert!(script.contains("rectsOverlap(menuRect, rect, 8)"));
-+    assert!(script.contains(
-+        "updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));"
-+    ));
-+}
-+
-+#[test]
-+fn linux_renderer_patch_observes_delete_button_attribute_changes_without_reload() {
-+    let script = assets::injection_script(57321);
-+
-+    assert!(!script.contains("window.location.reload()"));
-+    assert!(script.contains("attributeFilter: [\"class\", \"disabled\", \"aria-disabled\", \"data-disabled\", \"aria-current\"]"));
++    assert!(paths.contains(&catalog_path));
 +}
 diff --git a/crates/codex-plus-core/tests/installers.rs b/crates/codex-plus-core/tests/installers.rs
-index 7cd4e79..0626153 100644
+index 7cd4e79..5bc586d 100644
 --- a/crates/codex-plus-core/tests/installers.rs
 +++ b/crates/codex-plus-core/tests/installers.rs
-@@ -191,3 +191,122 @@ fn windows_default_install_root_uses_known_folder_before_userprofile_desktop() {
-         assert_eq!(strategy, "user-dirs-desktop");
-     }
- }
-+
+@@ -4,6 +4,39 @@ use codex_plus_core::install::{
+     shortcut_names,
+ };
+
 +#[cfg(target_os = "linux")]
 +fn linux_install_env_lock() -> &'static std::sync::Mutex<()> {
 +    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
@@ -532,22 +412,38 @@ index 7cd4e79..0626153 100644
 +    }
 +}
 +
+ #[test]
+ fn windows_entrypoint_plan_contains_silent_and_manager_entrypoints() {
+     let options = InstallOptions {
+@@ -191,3 +224,94 @@ fn windows_default_install_root_uses_known_folder_before_userprofile_desktop() {
+         assert_eq!(strategy, "user-dirs-desktop");
+     }
+ }
++
++#[cfg(target_os = "linux")]
++#[test]
++fn linux_adapter_entrypoint_health_contract_accepts_codex_app_root() {
++    let source = include_str!("../src/install/mod.rs");
++
++    assert!(source.contains("pub fn inspect_entrypoints_for_app"));
++    assert!(source.contains(".codex-plusplus"));
++    assert!(source.contains("launch-codex-plus-plus"));
++    assert!(source.contains("linuxAdapterInstallRoot"));
++}
++
 +#[cfg(target_os = "linux")]
 +#[test]
 +fn linux_adapter_entrypoint_detection_uses_codex_app_install_dir() {
-+    let _guard = linux_install_env_lock().lock().unwrap();
++    let _guard = linux_install_env_lock()
++        .lock()
++        .unwrap_or_else(std::sync::PoisonError::into_inner);
 +    let temp = tempfile::tempdir().unwrap();
 +    let xdg_data_home = temp.path().join("empty-xdg-data");
 +    let _restore = set_xdg_data_home_for_test(&xdg_data_home);
 +    let app_dir = temp.path().join("codex-app");
-+    let install_dir = app_dir.join(".codex-plusplus").join("install");
++    let install_dir = app_dir.join(".codex-plusplus/install");
 +    std::fs::create_dir_all(&install_dir).unwrap();
-+    std::fs::write(
-+        install_dir.join("launch-codex-plus-plus"),
-+        "#!/bin/sh
-+",
-+    )
-+    .unwrap();
++    std::fs::write(install_dir.join("launch-codex-plus-plus"), "#!/bin/sh\n").unwrap();
 +    std::fs::write(install_dir.join("codex-plus-plus-manager"), "").unwrap();
 +
 +    let state = codex_plus_core::install::inspect_entrypoints_for_app(Some(&app_dir));
@@ -575,30 +471,27 @@ index 7cd4e79..0626153 100644
 +#[cfg(target_os = "linux")]
 +#[test]
 +fn linux_adapter_entrypoint_detection_uses_synced_state_install_root() {
-+    let _guard = linux_install_env_lock().lock().unwrap();
++    let _guard = linux_install_env_lock()
++        .lock()
++        .unwrap_or_else(std::sync::PoisonError::into_inner);
 +    let temp = tempfile::tempdir().unwrap();
 +    let data_home = temp.path().join("xdg-data");
 +    let install_root = temp.path().join("external-codexpp");
 +    let install_dir = install_root.join("install");
 +    std::fs::create_dir_all(data_home.join("codex-plusplus")).unwrap();
 +    std::fs::create_dir_all(&install_dir).unwrap();
-+    std::fs::write(
-+        install_dir.join("launch-codex-plus-plus"),
-+        "#!/bin/sh
-+",
-+    )
-+    .unwrap();
++    std::fs::write(install_dir.join("launch-codex-plus-plus"), "#!/bin/sh\n").unwrap();
 +    std::fs::write(install_dir.join("codex-plus-plus-manager"), "").unwrap();
 +    std::fs::write(
-+        data_home.join("codex-plusplus").join("state.json"),
++        data_home.join("codex-plusplus/state.json"),
 +        format!(
 +            r#"{{"linuxAdapterInstallRoot":"{}","appRoot":"/stale/codex-app"}}"#,
 +            install_root.display()
 +        ),
 +    )
 +    .unwrap();
-+
 +    let _restore = set_xdg_data_home_for_test(&data_home);
++
 +    let state = codex_plus_core::install::inspect_entrypoints_for_app(None);
 +
 +    assert!(state.silent_shortcut.installed);
@@ -618,21 +511,13 @@ index 7cd4e79..0626153 100644
 +    );
 +}
 diff --git a/crates/codex-plus-core/tests/launcher.rs b/crates/codex-plus-core/tests/launcher.rs
-index c6a0a4a..c39a2b5 100644
+index 7f9d625..27db770 100644
 --- a/crates/codex-plus-core/tests/launcher.rs
 +++ b/crates/codex-plus-core/tests/launcher.rs
-@@ -14,6 +14,7 @@ use codex_plus_core::launcher::{
-     build_codex_command_with_native_menu_inspector, build_macos_cleanup_command,
-     build_macos_open_command, build_macos_open_command_with_native_menu_inspector,
-     build_packaged_activation, build_packaged_activation_with_native_menu_inspector,
-+    codex_process_environment_for_app_from, codex_process_environment_from,
-     launch_and_inject_with_hooks,
- };
- #[cfg(windows)]
-@@ -24,6 +25,39 @@ use codex_plus_core::ports::{
+@@ -24,6 +24,39 @@ use codex_plus_core::ports::{
  use codex_plus_core::settings::{BackendSettings, RelayProfile, RelayProtocol};
  use codex_plus_core::status::StatusStore;
- 
+
 +#[cfg(target_os = "linux")]
 +fn linux_app_paths_env_lock() -> &'static Mutex<()> {
 +    static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
@@ -669,14 +554,29 @@ index c6a0a4a..c39a2b5 100644
  #[test]
  fn app_paths_find_latest_windows_package_prefers_highest_version_app_dir() {
      let temp = tempfile::tempdir().unwrap();
-@@ -194,6 +228,104 @@ fn app_paths_saved_path_is_used_when_no_explicit_path_is_provided() {
+@@ -325,6 +358,103 @@ fn app_paths_saved_path_is_used_when_no_explicit_path_is_provided() {
      );
  }
- 
+
++#[cfg(target_os = "linux")]
++#[test]
++fn app_paths_linux_prefers_start_script_and_version_file() {
++    let temp = tempfile::tempdir().unwrap();
++    let app_root = temp.path().join("CodexDesktop");
++    std::fs::create_dir_all(&app_root).unwrap();
++    std::fs::write(app_root.join("start.sh"), "#!/bin/sh\n").unwrap();
++    std::fs::write(app_root.join("version"), "42.1.0\n").unwrap();
++
++    assert_eq!(build_codex_executable(&app_root), app_root.join("start.sh"));
++    assert_eq!(codex_app_version(&app_root).as_deref(), Some("42.1.0"));
++}
++
 +#[cfg(target_os = "linux")]
 +#[test]
 +fn app_paths_linux_falls_back_to_adapter_state_when_saved_path_is_stale() {
-+    let _guard = linux_app_paths_env_lock().lock().unwrap();
++    let _guard = linux_app_paths_env_lock()
++        .lock()
++        .unwrap_or_else(std::sync::PoisonError::into_inner);
 +    let temp = tempfile::tempdir().unwrap();
 +    let data_home = temp.path().join("xdg-data");
 +    let app_root = temp.path().join("CodexDesktop");
@@ -686,18 +586,14 @@ index c6a0a4a..c39a2b5 100644
 +    std::fs::write(app_root.join("start.sh"), "#!/bin/sh\n").unwrap();
 +    std::fs::write(app_root.join("version"), "42.1.0\n").unwrap();
 +    std::fs::write(
-+        data_home.join("codex-plusplus").join("state.json"),
++        data_home.join("codex-plusplus/state.json"),
 +        format!(
-+            r#"{{
-+  "appRoot": "{}",
-+  "linuxCodexStartScript": "{}"
-+}}"#,
++            r#"{{"appRoot":"{}","linuxCodexStartScript":"{}"}}"#,
 +            app_root.display(),
 +            app_root.join("start.sh").display()
 +        ),
 +    )
 +    .unwrap();
-+
 +    let _restore = set_xdg_data_home_for_test(&data_home);
 +
 +    assert_eq!(
@@ -710,14 +606,16 @@ index c6a0a4a..c39a2b5 100644
 +#[cfg(target_os = "linux")]
 +#[test]
 +fn app_paths_linux_recovers_from_stale_state_using_adapter_desktop_entry() {
-+    let _guard = linux_app_paths_env_lock().lock().unwrap();
++    let _guard = linux_app_paths_env_lock()
++        .lock()
++        .unwrap_or_else(std::sync::PoisonError::into_inner);
 +    let temp = tempfile::tempdir().unwrap();
 +    let data_home = temp.path().join("xdg-data");
 +    let applications = data_home.join("applications");
 +    let app_root = temp.path().join("CodexDesktop");
 +    let stale_app_root = app_root.join("codex-app");
 +    let install_root = app_root.join(".codex-plusplus");
-+    let wrapper = install_root.join("install").join("launch-codex-plus-plus");
++    let wrapper = install_root.join("install/launch-codex-plus-plus");
 +    let desktop_entry = applications.join("codex-plus-plus.desktop");
 +
 +    std::fs::create_dir_all(data_home.join("codex-plusplus")).unwrap();
@@ -725,44 +623,30 @@ index c6a0a4a..c39a2b5 100644
 +    std::fs::create_dir_all(&app_root).unwrap();
 +    std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
 +    std::fs::write(app_root.join("start.sh"), "#!/bin/sh\n").unwrap();
-+    std::fs::write(app_root.join("version"), "42.1.0\n").unwrap();
 +    std::fs::write(
 +        &wrapper,
 +        format!(
 +            "#!/bin/sh\nexec '{}' --app-path '{}' \"$@\"\n",
-+            install_root
-+                .join("install")
-+                .join("codex-plus-plus")
-+                .display(),
++            install_root.join("install/codex-plus-plus").display(),
 +            app_root.display()
 +        ),
 +    )
 +    .unwrap();
 +    std::fs::write(
 +        &desktop_entry,
-+        format!(
-+            "[Desktop Entry]\nType=Application\nName=Codex++\nExec=\"{}\"\n",
-+            wrapper.display()
-+        ),
++        format!("[Desktop Entry]\nExec=\"{}\"\n", wrapper.display()),
 +    )
 +    .unwrap();
 +    std::fs::write(
-+        data_home.join("codex-plusplus").join("state.json"),
++        data_home.join("codex-plusplus/state.json"),
 +        format!(
-+            r#"{{
-+  "appRoot": "{}",
-+  "linuxCodexStartScript": "{}",
-+  "linuxAdapterInstallRoot": "{}",
-+  "linuxAdapterDesktopEntryPath": "{}"
-+}}"#,
++            r#"{{"appRoot":"{}","linuxCodexStartScript":"{}","linuxAdapterDesktopEntryPath":"{}"}}"#,
 +            stale_app_root.display(),
 +            stale_app_root.join("start.sh").display(),
-+            stale_app_root.join(".codex-plusplus").display(),
 +            desktop_entry.display()
 +        ),
 +    )
 +    .unwrap();
-+
 +    let _restore = set_xdg_data_home_for_test(&data_home);
 +
 +    assert_eq!(
@@ -774,13 +658,13 @@ index c6a0a4a..c39a2b5 100644
  #[test]
  fn launcher_builds_debug_arguments_and_commands() {
      let app_dir = PathBuf::from(r"C:\Codex\app");
-@@ -320,6 +452,24 @@ fn launcher_native_menu_inspector_arguments_are_added_before_extra_args() {
+@@ -451,6 +581,36 @@ fn launcher_native_menu_inspector_arguments_are_added_before_extra_args() {
      assert_eq!(command[4], "--force_high_performance_gpu");
  }
- 
+
 +#[cfg(target_os = "linux")]
 +#[test]
-+fn launcher_linux_native_menu_inspector_preserves_start_sh_passthrough_separator() {
++fn launcher_linux_start_script_preserves_wrapper_argument_separator() {
 +    let temp = tempfile::tempdir().unwrap();
 +    let app_dir = temp.path().join("CodexDesktop");
 +    std::fs::create_dir_all(&app_dir).unwrap();
@@ -796,22 +680,34 @@ index c6a0a4a..c39a2b5 100644
 +    assert_eq!(command[5], "--inspect=127.0.0.1:9329");
 +}
 +
++#[cfg(target_os = "linux")]
++#[test]
++fn launcher_linux_environment_contract_removes_build_runtime_pollution() {
++    let source = include_str!("../src/launcher.rs");
++
++    assert!(source.contains("pub fn codex_process_environment_from"));
++    assert!(source.contains("ELECTRON_RUN_AS_NODE"));
++    assert!(source.contains("LD_LIBRARY_PATH"));
++    assert!(source.contains("CODEX_WEBVIEW_PORT"));
++    assert!(source.contains("5176-5185"));
++}
++
  #[test]
  fn launcher_constructs_windows_packaged_activation_without_real_app() {
      let app_dir = PathBuf::from(
-@@ -520,7 +670,7 @@ async fn default_helper_serves_backend_status_over_http() {
+@@ -659,7 +819,7 @@ async fn default_helper_serves_backend_status_over_http() {
      let port = listener.local_addr().unwrap().port();
      drop(listener);
- 
+
 -    hooks.start_helper(port).await.unwrap();
 +    hooks.start_helper(port, None).await.unwrap();
      let client = reqwest::Client::builder().no_proxy().build().unwrap();
      let response = client
          .post(format!("http://127.0.0.1:{port}/backend/status"))
-@@ -544,6 +694,76 @@ async fn default_helper_serves_backend_status_over_http() {
+@@ -683,6 +843,78 @@ async fn default_helper_serves_backend_status_over_http() {
      hooks.shutdown_helper(port).await;
  }
- 
+
 +#[tokio::test]
 +async fn default_helper_serves_settings_bridge_routes_over_http() {
 +    let temp = tempfile::tempdir().unwrap();
@@ -857,8 +753,10 @@ index c6a0a4a..c39a2b5 100644
 +    drop(listener);
 +
 +    hooks.start_helper(port, None).await.unwrap();
-+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
-+    let response = client
++    let response = reqwest::Client::builder()
++        .no_proxy()
++        .build()
++        .unwrap()
 +        .request(
 +            reqwest::Method::OPTIONS,
 +            format!("http://127.0.0.1:{port}/backend/status"),
@@ -885,144 +783,19 @@ index c6a0a4a..c39a2b5 100644
  #[tokio::test]
  async fn default_helper_accepts_diagnostic_log_events_over_http() {
      let temp = tempfile::tempdir().unwrap();
-@@ -554,7 +774,7 @@ async fn default_helper_accepts_diagnostic_log_events_over_http() {
+@@ -693,7 +925,7 @@ async fn default_helper_accepts_diagnostic_log_events_over_http() {
      let port = listener.local_addr().unwrap().port();
      drop(listener);
- 
+
 -    hooks.start_helper(port).await.unwrap();
 +    hooks.start_helper(port, None).await.unwrap();
      let response = reqwest::Client::builder()
          .no_proxy()
          .build()
-@@ -648,6 +868,23 @@ async fn launch_lifecycle_runs_enabled_maintenance_without_applying_relay_profil
-     );
- }
- 
-+#[test]
-+fn launch_lifecycle_does_not_scan_large_logs_database_on_startup() {
-+    let source = include_str!("../src/launcher.rs");
-+    let start = source
-+        .find("pub async fn launch_and_inject_with_hooks")
-+        .expect("launch flow should exist");
-+    let end = source[start..]
-+        .find("fn relay_protocol_proxy_enabled")
-+        .map(|offset| start + offset)
-+        .expect("launch flow should end before relay helper");
-+    let body = &source[start..end];
-+
-+    assert!(body.contains("sanitize_thread_model_suffixes"));
-+    assert!(!body.contains("sanitize_historical_model_suffixes"));
-+    assert!(!body.contains("sanitize_logs_model_suffixes"));
-+}
-+
- #[tokio::test]
- async fn launch_lifecycle_passes_configured_extra_args_to_codex_launch() {
-     let temp = tempfile::tempdir().unwrap();
-@@ -1289,6 +1526,100 @@ async fn default_launch_hooks_provider_sync_enabled_returns_explicit_error() {
-     );
- }
- 
-+#[test]
-+fn linux_start_script_command_uses_new_instance_separator() {
-+    let temp = tempfile::tempdir().unwrap();
-+    let start = temp.path().join("start.sh");
-+    std::fs::write(
-+        &start,
-+        "#!/bin/sh
-+",
-+    )
-+    .unwrap();
-+
-+    let command = build_codex_command(temp.path(), 9229, &[]);
-+
-+    if cfg!(target_os = "linux") {
-+        assert_eq!(
-+            command,
-+            vec![
-+                start.to_string_lossy().to_string(),
-+                "--new-instance".to_string(),
-+                "--".to_string(),
-+                "--remote-debugging-port=9229".to_string(),
-+                "--remote-allow-origins=http://127.0.0.1:9229".to_string(),
-+            ]
-+        );
-+    }
-+}
-+
-+#[test]
-+fn linux_process_environment_strips_electron_node_pollution_and_preserves_proxy() {
-+    let env = std::collections::HashMap::from([
-+        ("DISPLAY".to_string(), ":0".to_string()),
-+        (
-+            "HTTPS_PROXY".to_string(),
-+            "http://env-proxy.example.test:8080".to_string(),
-+        ),
-+        ("CONDA_PREFIX".to_string(), "/tmp/conda".to_string()),
-+        (
-+            "GI_TYPELIB_PATH".to_string(),
-+            "/tmp/girepository".to_string(),
-+        ),
-+        ("LD_LIBRARY_PATH".to_string(), "/tmp/lib".to_string()),
-+        ("PIXI_PROJECT_ROOT".to_string(), "/tmp/pixi".to_string()),
-+        ("ELECTRON_RUN_AS_NODE".to_string(), "1".to_string()),
-+        ("ELECTRON_NO_ATTACH_CONSOLE".to_string(), "1".to_string()),
-+    ]);
-+
-+    let process_env = codex_process_environment_from(&env, || {
-+        panic!("system proxy detection should not run when env already has proxy")
-+    });
-+
-+    assert_eq!(
-+        process_env.get("HTTPS_PROXY").map(String::as_str),
-+        Some("http://env-proxy.example.test:8080")
-+    );
-+    if cfg!(target_os = "linux") {
-+        assert!(!process_env.contains_key("ELECTRON_RUN_AS_NODE"));
-+        assert!(!process_env.contains_key("ELECTRON_NO_ATTACH_CONSOLE"));
-+        assert!(!process_env.contains_key("CONDA_PREFIX"));
-+        assert!(!process_env.contains_key("GI_TYPELIB_PATH"));
-+        assert!(!process_env.contains_key("LD_LIBRARY_PATH"));
-+        assert!(!process_env.contains_key("PIXI_PROJECT_ROOT"));
-+    }
-+}
-+
-+#[test]
-+fn linux_start_script_environment_uses_codex_plusplus_webview_range() {
-+    let temp = tempfile::tempdir().unwrap();
-+    std::fs::write(
-+        temp.path().join("start.sh"),
-+        "#!/bin/sh
-+",
-+    )
-+    .unwrap();
-+
-+    let process_env = codex_process_environment_for_app_from(
-+        temp.path(),
-+        &std::collections::HashMap::new(),
-+        || None,
-+    );
-+
-+    if cfg!(target_os = "linux") {
-+        assert_eq!(
-+            process_env.get("CODEX_WEBVIEW_PORT").map(String::as_str),
-+            Some("5176")
-+        );
-+        assert_eq!(
-+            process_env
-+                .get("CODEX_MULTI_LAUNCH_PORT_RANGE")
-+                .map(String::as_str),
-+            Some("5176-5185")
-+        );
-+    }
-+}
-+
- #[derive(Clone)]
- struct FakeHooks {
-     events: Arc<Mutex<Vec<String>>>,
-@@ -1411,7 +1742,11 @@ impl LaunchHooks for FakeHooks {
+@@ -1550,7 +1782,11 @@ impl LaunchHooks for FakeHooks {
          Ok(())
      }
- 
+
 -    async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
 +    async fn start_helper(
 +        &self,
@@ -1032,10 +805,10 @@ index c6a0a4a..c39a2b5 100644
          self.event(format!("start-helper:{helper_port}"));
          Ok(())
      }
-@@ -1448,7 +1783,13 @@ impl LaunchHooks for FakeHooks {
+@@ -1587,7 +1823,13 @@ impl LaunchHooks for FakeHooks {
          Ok(())
      }
- 
+
 -    async fn ensure_injection(&self, debug_port: u16, helper_port: u16, _app_dir: &Path) -> bool {
 +    async fn ensure_injection(
 +        &self,
@@ -1048,10 +821,10 @@ index c6a0a4a..c39a2b5 100644
          self.inject_error.is_none()
      }
 diff --git a/crates/codex-plus-core/tests/relay_config.rs b/crates/codex-plus-core/tests/relay_config.rs
-index c5e61c0..1ffd9d0 100644
+index 045e990..f80c2af 100644
 --- a/crates/codex-plus-core/tests/relay_config.rs
 +++ b/crates/codex-plus-core/tests/relay_config.rs
-@@ -514,7 +514,7 @@ fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
+@@ -514,11 +514,46 @@ fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
      assert!(config.contains("[model_providers.custom]"));
      assert!(config.contains(r#"name = "custom""#));
      assert!(config.contains(r#"wire_api = "responses""#));
@@ -1060,50 +833,19 @@ index c5e61c0..1ffd9d0 100644
      assert!(config.contains(r#"base_url = "http://192.168.188.245:3001/v1""#));
      assert!(config.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
  }
-@@ -1377,25 +1377,6 @@ fn apply_relay_config_file_switches_config_without_touching_auth_json() {
-     );
- }
- 
--#[test]
--fn apply_relay_config_file_accepts_utf8_bom_config() {
--    let temp = tempfile::tempdir().unwrap();
--    let home = temp.path();
--    std::fs::write(home.join("config.toml"), "\u{feff}model = \"old\"\n").unwrap();
--    std::fs::write(home.join("auth.json"), "{\"auth_mode\":\"chatgpt\"}\n").unwrap();
--
--    let result = apply_relay_config_file_to_home(
--        home,
--        "\u{feff}model_provider = \"custom\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"http://127.0.0.1:57321/v1\"\nexperimental_bearer_token = \"sk-new\"\n",
--    )
--    .unwrap();
--
--    let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
--    assert!(result.configured);
--    assert!(config.contains(r#"model_provider = "custom""#));
--    assert!(config.contains("http://127.0.0.1:57321/v1"));
--}
--
- #[test]
- fn apply_relay_config_does_not_carry_profiles_from_live_config() {
-     let temp = tempfile::tempdir().unwrap();
-@@ -2367,6 +2348,69 @@ requires_openai_auth = true
-     assert!(!config.contains("[model_providers.custom]"));
- }
- 
+
 +#[test]
-+fn pure_api_config_is_configured_without_openai_auth_requirement() {
++fn pure_api_config_reports_configured_without_openai_auth_requirement() {
 +    let temp = tempfile::tempdir().unwrap();
 +
 +    apply_pure_api_config_to_home(temp.path(), "https://wemx.cc", "sk-test-redacted").unwrap();
 +
 +    let status = relay_config_status_from_home(temp.path());
 +    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-+
 +    assert!(status.configured);
 +    assert!(!status.requires_openai_auth);
 +    assert!(status.has_bearer_token);
 +    assert!(config.contains("requires_openai_auth = false"));
-+    assert!(config.contains(r#"base_url = "https://wemx.cc""#));
 +}
 +
 +#[test]
@@ -1127,201 +869,70 @@ index c5e61c0..1ffd9d0 100644
 +    assert!(config.contains(r#"base_url = "https://wemx.cc""#));
 +}
 +
-+#[test]
-+fn apply_relay_files_normalizes_duplicate_config_before_validation() {
-+    let temp = tempfile::tempdir().unwrap();
-+    let duplicate_config = r#"
-+model_provider = "custom"
-+model_provider = "custom"
-+
-+[model_providers.custom]
-+name = "custom"
-+wire_api = "responses"
-+requires_openai_auth = false
-+base_url = "https://example.test"
-+
-+[model_providers.custom]
-+base_url = "https://duplicate.example.test"
-+"#;
-+
-+    apply_relay_config_file_to_home(temp.path(), duplicate_config).unwrap();
-+
-+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-+    assert_eq!(config.matches("model_provider =").count(), 1);
-+    assert_eq!(config.matches("[model_providers.custom]").count(), 1);
-+    assert!(config.contains(r#"base_url = "https://example.test""#));
-+    assert!(config.ends_with('\n'));
-+}
-+
- #[cfg(windows)]
  #[test]
- fn apply_relay_profile_to_home_with_switch_rules_does_not_preserve_computer_use_guard_config_by_default()
+ fn apply_relay_files_switches_complete_config_and_auth_json() {
+     let temp = tempfile::tempdir().unwrap();
 diff --git a/crates/codex-plus-core/tests/watcher.rs b/crates/codex-plus-core/tests/watcher.rs
-index 84fa2da..8b4a74d 100644
+index c2ad8f5..39c44e3 100644
 --- a/crates/codex-plus-core/tests/watcher.rs
 +++ b/crates/codex-plus-core/tests/watcher.rs
-@@ -1,7 +1,8 @@
- use codex_plus_core::watcher::{
-     build_spawn_launcher_command, build_watcher_install_plan, cdp_listening, codex_process_ids,
-     disable_watcher_at, enable_watcher_at, filter_killable_launcher_processes,
--    process_ids_still_running, should_recover_stale_launcher, watcher_disabled_flag,
-+    filter_killable_unix_launcher_processes, process_ids_still_running,
-+    should_recover_stale_launcher, watcher_disabled_flag,
- };
- 
- #[cfg(windows)]
-@@ -99,6 +100,43 @@ fn launcher_process_filter_protects_current_process_ancestry() {
+@@ -123,6 +123,16 @@ fn launcher_process_filter_protects_current_process_ancestry() {
      assert_eq!(filter_killable_launcher_processes(processes, 30), vec![40]);
  }
- 
+
++#[cfg(not(windows))]
 +#[test]
-+fn unix_launcher_process_filter_kills_stale_silent_launcher_only() {
-+    let processes = [
-+        (
-+            10,
-+            0,
-+            "/home/deck/opt/CodexDesktop/.codex-plusplus/install/codex-plus-plus",
-+        ),
-+        (
-+            20,
-+            10,
-+            "/home/deck/opt/CodexDesktop/.codex-plusplus/install/codex-plus-plus",
-+        ),
-+        (30, 20, "/usr/bin/cargo"),
-+        (
-+            40,
-+            10,
-+            "/home/deck/opt/CodexDesktop/.codex-plusplus/install/codex-plus-plus",
-+        ),
-+        (
-+            50,
-+            10,
-+            "/home/deck/opt/CodexDesktop/.codex-plusplus/install/codex-plus-plus-manager",
-+        ),
-+        (
-+            60,
-+            10,
-+            "/home/deck/opt/CodexDesktop/.codex-plusplus/install/launch-codex-plus-plus",
-+        ),
-+    ];
++fn unix_launcher_cleanup_contract_filters_only_adapter_launchers() {
++    let source = include_str!("../src/watcher.rs");
 +
-+    assert_eq!(
-+        filter_killable_unix_launcher_processes(processes, 30),
-+        vec![40, 60]
-+    );
++    assert!(source.contains("filter_killable_unix_launcher_processes"));
++    assert!(source.contains("launch-codex-plus-plus"));
++    assert!(source.contains("terminate_unix_processes_and_wait"));
 +}
 +
  #[test]
  fn stale_launcher_recovery_only_runs_when_codex_and_cdp_are_absent() {
      assert!(should_recover_stale_launcher(false, false));
 diff --git a/crates/codex-plus-data/tests/provider_sync.rs b/crates/codex-plus-data/tests/provider_sync.rs
-index 2584939..913f2fe 100644
+index 2584939..6373660 100644
 --- a/crates/codex-plus-data/tests/provider_sync.rs
 +++ b/crates/codex-plus-data/tests/provider_sync.rs
-@@ -74,6 +74,148 @@ fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
+@@ -74,6 +74,75 @@ fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
      }
  }
- 
-+fn create_legacy_state_db_for_catalog(path: &Path) {
+
++fn create_state_db_for_local_catalog(path: &Path) {
 +    let db = Connection::open(path).unwrap();
-+    db.execute(
++    db.execute_batch(
 +        "CREATE TABLE threads (
 +            id TEXT PRIMARY KEY,
 +            rollout_path TEXT NOT NULL,
 +            created_at INTEGER NOT NULL,
 +            updated_at INTEGER NOT NULL,
-+            source TEXT NOT NULL,
 +            model_provider TEXT NOT NULL,
 +            cwd TEXT NOT NULL,
 +            title TEXT NOT NULL,
-+            sandbox_policy TEXT NOT NULL,
-+            approval_mode TEXT NOT NULL,
 +            has_user_event INTEGER NOT NULL DEFAULT 0,
 +            archived INTEGER NOT NULL DEFAULT 0,
-+            git_branch TEXT,
-+            created_at_ms INTEGER,
-+            updated_at_ms INTEGER,
-+            recency_at INTEGER NOT NULL DEFAULT 0,
-+            recency_at_ms INTEGER NOT NULL DEFAULT 0
-+        )",
-+        [],
-+    )
-+    .unwrap();
-+    db.execute(
-+        "INSERT INTO threads (
-+            id,
-+            rollout_path,
-+            created_at,
-+            updated_at,
-+            source,
-+            model_provider,
-+            cwd,
-+            title,
-+            sandbox_policy,
-+            approval_mode,
-+            has_user_event,
-+            archived,
-+            git_branch,
-+            created_at_ms,
-+            updated_at_ms,
-+            recency_at,
-+            recency_at_ms
-+        ) VALUES (
++            git_branch TEXT
++        );
++        INSERT INTO threads VALUES (
 +            'thread-visible',
 +            '/tmp/rollout-thread-visible.jsonl',
 +            1700000000,
 +            1700000060,
-+            'local',
 +            'old-provider',
-+            '/home/deck/workspace',
-+            'Visible legacy thread',
-+            'workspace-write',
-+            'on-request',
++            '/home/test/workspace',
++            'Visible local conversation',
 +            1,
 +            0,
-+            'main',
-+            1700000000000,
-+            1700000060000,
-+            1700000060,
-+            1700000060000
-+        )",
-+        [],
-+    )
-+    .unwrap();
-+    db.execute(
-+        "INSERT INTO threads (
-+            id,
-+            rollout_path,
-+            created_at,
-+            updated_at,
-+            source,
-+            model_provider,
-+            cwd,
-+            title,
-+            sandbox_policy,
-+            approval_mode,
-+            has_user_event,
-+            archived
-+        ) VALUES (
-+            'thread-archived',
-+            '/tmp/rollout-thread-archived.jsonl',
-+            1700000000,
-+            1700000060,
-+            'local',
-+            'old-provider',
-+            '/home/deck/workspace',
-+            'Archived legacy thread',
-+            'workspace-write',
-+            'on-request',
-+            1,
-+            1
-+        )",
-+        [],
++            'main'
++        );",
 +    )
 +    .unwrap();
 +}
 +
-+fn create_local_thread_catalog_db(path: &Path) {
++fn create_local_catalog_db(path: &Path) {
 +    let db = Connection::open(path).unwrap();
 +    db.execute_batch(
 +        "CREATE TABLE local_thread_catalog (
@@ -1336,7 +947,7 @@ index 2584939..913f2fe 100644
 +            model_provider TEXT NOT NULL,
 +            git_branch TEXT,
 +            observation_sequence INTEGER NOT NULL,
-+            missing_candidate INTEGER NOT NULL DEFAULT 0 CHECK (missing_candidate IN (0, 1)),
++            missing_candidate INTEGER NOT NULL DEFAULT 0,
 +            PRIMARY KEY (host_id, thread_id)
 +        );
 +        CREATE TABLE local_thread_catalog_sync_state (
@@ -1347,19 +958,14 @@ index 2584939..913f2fe 100644
 +        );
 +        CREATE TABLE local_thread_catalog_hosts (
 +            host_id TEXT PRIMARY KEY,
-+            host_kind TEXT NOT NULL CHECK (host_kind IN ('local', 'ssh', 'wsl', 'remote-control'))
++            host_kind TEXT NOT NULL
 +        );
 +        CREATE TABLE local_thread_catalog_metadata (
-+            id INTEGER PRIMARY KEY CHECK (id = 1),
++            id INTEGER PRIMARY KEY,
 +            catalog_revision INTEGER NOT NULL DEFAULT 0
 +        );
-+        INSERT INTO local_thread_catalog_sync_state (
-+            host_id,
-+            watermark_updated_at,
-+            initial_build_complete,
-+            observation_sequence
-+        ) VALUES ('local', NULL, 0, 33);
-+        INSERT INTO local_thread_catalog_metadata (id, catalog_revision) VALUES (1, 0);",
++        INSERT INTO local_thread_catalog_sync_state VALUES ('local', NULL, 0, 9);
++        INSERT INTO local_thread_catalog_metadata VALUES (1, 0);",
 +    )
 +    .unwrap();
 +}
@@ -1367,58 +973,49 @@ index 2584939..913f2fe 100644
  #[test]
  fn provider_sync_targets_merge_config_rollout_sqlite_and_sort_current_first() {
      let tmp = tempdir().unwrap();
-@@ -350,6 +492,562 @@ fn provider_sync_updates_new_codex_sqlite_directory_db() {
+@@ -350,6 +419,100 @@ fn provider_sync_updates_new_codex_sqlite_directory_db() {
      assert!(backup_dir.join("db/sqlite/codex-dev.db").exists());
  }
- 
+
 +#[test]
-+fn provider_sync_backfills_local_thread_catalog_from_legacy_state_db() {
++fn provider_sync_backfills_local_catalog_with_nonempty_source_title() {
 +    let tmp = tempdir().unwrap();
 +    let home = tmp.path().join(".codex");
 +    let sqlite_dir = home.join("sqlite");
 +    fs::create_dir_all(&sqlite_dir).unwrap();
 +    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
-+    create_legacy_state_db_for_catalog(&home.join("state_5.sqlite"));
++    create_state_db_for_local_catalog(&home.join("state_5.sqlite"));
 +    let catalog_path = sqlite_dir.join("codex-dev.db");
-+    create_local_thread_catalog_db(&catalog_path);
++    create_local_catalog_db(&catalog_path);
 +
 +    let result = run_provider_sync(Some(&home));
 +
 +    assert_eq!(result.status, ProviderSyncStatus::Synced);
-+    assert!(result.sqlite_rows_updated >= 2);
-+    let db = Connection::open(&catalog_path).unwrap();
-+    let count: i64 = db
-+        .query_row("SELECT COUNT(*) FROM local_thread_catalog", [], |row| {
-+            row.get(0)
-+        })
-+        .unwrap();
-+    assert_eq!(count, 1);
++    let db = Connection::open(catalog_path).unwrap();
 +    let row = db
 +        .query_row(
-+            "SELECT display_title, source_created_at, source_updated_at, cwd, source_kind, source_detail, model_provider, git_branch, missing_candidate FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = 'thread-visible'",
++            "SELECT display_title, cwd, source_kind, source_detail, model_provider, git_branch, missing_candidate
++             FROM local_thread_catalog
++             WHERE host_id = 'local' AND thread_id = 'thread-visible'",
 +            [],
 +            |row| {
 +                Ok((
 +                    row.get::<_, String>(0)?,
-+                    row.get::<_, f64>(1)?,
-+                    row.get::<_, f64>(2)?,
-+                    row.get::<_, String>(3)?,
++                    row.get::<_, String>(1)?,
++                    row.get::<_, String>(2)?,
++                    row.get::<_, Option<String>>(3)?,
 +                    row.get::<_, String>(4)?,
 +                    row.get::<_, Option<String>>(5)?,
-+                    row.get::<_, String>(6)?,
-+                    row.get::<_, Option<String>>(7)?,
-+                    row.get::<_, i64>(8)?,
++                    row.get::<_, i64>(6)?,
 +                ))
 +            },
 +        )
-+        .unwrap();
++        .expect("visible state thread should be copied into the desktop local catalog");
 +    assert_eq!(
 +        row,
 +        (
-+            "Visible legacy thread".to_string(),
-+            1700000000.0,
-+            1700000060.0,
-+            "/home/deck/workspace".to_string(),
++            "Visible local conversation".to_string(),
++            "/home/test/workspace".to_string(),
 +            "rollout".to_string(),
 +            Some("/tmp/rollout-thread-visible.jsonl".to_string()),
 +            "custom".to_string(),
@@ -1426,607 +1023,89 @@ index 2584939..913f2fe 100644
 +            0,
 +        )
 +    );
-+    let sync_state = db
-+        .query_row(
-+            "SELECT initial_build_complete, observation_sequence, watermark_updated_at FROM local_thread_catalog_sync_state WHERE host_id = 'local'",
-+            [],
-+            |row| {
-+                Ok((
-+                    row.get::<_, i64>(0)?,
-+                    row.get::<_, i64>(1)?,
-+                    row.get::<_, Option<f64>>(2)?,
-+                ))
-+            },
-+        )
-+        .unwrap();
-+    assert_eq!(sync_state, (1, 34, Some(1700000060.0)));
 +}
 +
 +#[test]
-+fn provider_sync_restores_local_thread_catalog_rows_marked_missing() {
++fn provider_sync_local_catalog_is_idempotent_when_source_is_unchanged() {
 +    let tmp = tempdir().unwrap();
 +    let home = tmp.path().join(".codex");
 +    let sqlite_dir = home.join("sqlite");
 +    fs::create_dir_all(&sqlite_dir).unwrap();
 +    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
-+    create_legacy_state_db_for_catalog(&home.join("state_5.sqlite"));
++    create_state_db_for_local_catalog(&home.join("state_5.sqlite"));
 +    let catalog_path = sqlite_dir.join("codex-dev.db");
-+    create_local_thread_catalog_db(&catalog_path);
++    create_local_catalog_db(&catalog_path);
++
++    let first = run_provider_sync(Some(&home));
++    assert_eq!(first.status, ProviderSyncStatus::Synced);
 +    let db = Connection::open(&catalog_path).unwrap();
-+    db.execute(
-+        "INSERT INTO local_thread_catalog (
-+            host_id,
-+            thread_id,
-+            display_title,
-+            source_created_at,
-+            source_updated_at,
-+            cwd,
-+            source_kind,
-+            source_detail,
-+            model_provider,
-+            git_branch,
-+            observation_sequence,
-+            missing_candidate
-+        ) VALUES (
-+            'local',
-+            'thread-visible',
-+            'Visible legacy thread',
-+            1700000000,
-+            1700000060,
-+            '/home/deck/workspace',
-+            'rollout',
-+            '/tmp/rollout-thread-visible.jsonl',
-+            'custom',
-+            'main',
-+            33,
-+            1
-+        )",
-+        [],
-+    )
-+    .unwrap();
++    let before = db
++        .query_row(
++            "SELECT m.catalog_revision, s.observation_sequence
++             FROM local_thread_catalog_metadata m
++             JOIN local_thread_catalog_sync_state s ON s.host_id = 'local'
++             WHERE m.id = 1",
++            [],
++            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
++        )
++        .unwrap();
 +    drop(db);
 +
-+    let result = run_provider_sync(Some(&home));
++    let second = run_provider_sync(Some(&home));
 +
-+    assert_eq!(result.status, ProviderSyncStatus::Synced);
-+    let db = Connection::open(&catalog_path).unwrap();
-+    let missing_candidate: i64 = db
++    assert_eq!(second.status, ProviderSyncStatus::Synced);
++    assert_eq!(second.message, "Provider sync already up to date");
++    assert_eq!(second.sqlite_rows_updated, 0);
++    assert!(second.backup_dir.is_none());
++    let db = Connection::open(catalog_path).unwrap();
++    let after = db
 +        .query_row(
-+            "SELECT missing_candidate FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = 'thread-visible'",
++            "SELECT m.catalog_revision, s.observation_sequence
++             FROM local_thread_catalog_metadata m
++             JOIN local_thread_catalog_sync_state s ON s.host_id = 'local'
++             WHERE m.id = 1",
 +            [],
-+            |row| row.get(0),
++            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
 +        )
 +        .unwrap();
-+    assert_eq!(missing_candidate, 0);
-+}
-+
-+#[test]
-+fn provider_sync_replaces_vscode_catalog_rows_with_rollout_source_details() {
-+    let tmp = tempdir().unwrap();
-+    let home = tmp.path().join(".codex");
-+    let sqlite_dir = home.join("sqlite");
-+    fs::create_dir_all(&sqlite_dir).unwrap();
-+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
-+    create_legacy_state_db_for_catalog(&home.join("state_5.sqlite"));
-+    let catalog_path = sqlite_dir.join("codex-dev.db");
-+    create_local_thread_catalog_db(&catalog_path);
-+    let db = Connection::open(&catalog_path).unwrap();
-+    db.execute(
-+        "INSERT INTO local_thread_catalog (
-+            host_id,
-+            thread_id,
-+            display_title,
-+            source_created_at,
-+            source_updated_at,
-+            cwd,
-+            source_kind,
-+            source_detail,
-+            model_provider,
-+            git_branch,
-+            observation_sequence,
-+            missing_candidate
-+        ) VALUES (
-+            'local',
-+            'thread-visible',
-+            'Visible legacy thread',
-+            1700000000,
-+            1700000060,
-+            '/home/deck/workspace',
-+            'vscode',
-+            NULL,
-+            'custom',
-+            'main',
-+            33,
-+            0
-+        )",
-+        [],
-+    )
-+    .unwrap();
-+    drop(db);
-+
-+    let result = run_provider_sync(Some(&home));
-+
-+    assert_eq!(result.status, ProviderSyncStatus::Synced);
-+    let db = Connection::open(&catalog_path).unwrap();
-+    let row = db
-+        .query_row(
-+            "SELECT source_kind, source_detail, missing_candidate FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = 'thread-visible'",
-+            [],
-+            |row| {
-+                Ok((
-+                    row.get::<_, String>(0)?,
-+                    row.get::<_, Option<String>>(1)?,
-+                    row.get::<_, i64>(2)?,
-+                ))
-+            },
-+        )
-+        .unwrap();
-+    assert_eq!(
-+        row,
-+        (
-+            "rollout".to_string(),
-+            Some("/tmp/rollout-thread-visible.jsonl".to_string()),
-+            0,
-+        )
-+    );
-+}
-+
-+#[test]
-+fn provider_sync_marks_catalog_rows_without_openable_source_missing() {
-+    let tmp = tempdir().unwrap();
-+    let home = tmp.path().join(".codex");
-+    let sqlite_dir = home.join("sqlite");
-+    fs::create_dir_all(&sqlite_dir).unwrap();
-+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
-+    create_legacy_state_db_for_catalog(&home.join("state_5.sqlite"));
-+    let catalog_path = sqlite_dir.join("codex-dev.db");
-+    create_local_thread_catalog_db(&catalog_path);
-+    let db = Connection::open(&catalog_path).unwrap();
-+    db.execute(
-+        "INSERT INTO local_thread_catalog (
-+            host_id,
-+            thread_id,
-+            display_title,
-+            source_created_at,
-+            source_updated_at,
-+            cwd,
-+            source_kind,
-+            source_detail,
-+            model_provider,
-+            git_branch,
-+            observation_sequence,
-+            missing_candidate
-+        ) VALUES (
-+            'local',
-+            'orphan-vscode-thread',
-+            'Orphan vscode thread',
-+            1700000000,
-+            1700000060,
-+            '/home/deck/workspace',
-+            'vscode',
-+            NULL,
-+            'custom',
-+            NULL,
-+            33,
-+            0
-+        )",
-+        [],
-+    )
-+    .unwrap();
-+    drop(db);
-+
-+    let result = run_provider_sync(Some(&home));
-+
-+    assert_eq!(result.status, ProviderSyncStatus::Synced);
-+    let db = Connection::open(&catalog_path).unwrap();
-+    let missing_candidate: i64 = db
-+        .query_row(
-+            "SELECT missing_candidate FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = 'orphan-vscode-thread'",
-+            [],
-+            |row| row.get(0),
-+        )
-+        .unwrap();
-+    assert_eq!(missing_candidate, 1);
-+}
-+
-+#[test]
-+fn provider_sync_marks_remote_catalog_rows_without_openable_source_missing() {
-+    let tmp = tempdir().unwrap();
-+    let home = tmp.path().join(".codex");
-+    let sqlite_dir = home.join("sqlite");
-+    fs::create_dir_all(&sqlite_dir).unwrap();
-+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
-+    create_legacy_state_db_for_catalog(&home.join("state_5.sqlite"));
-+    let catalog_path = sqlite_dir.join("codex-dev.db");
-+    create_local_thread_catalog_db(&catalog_path);
-+    let db = Connection::open(&catalog_path).unwrap();
-+    db.execute(
-+        "INSERT INTO local_thread_catalog_hosts (host_id, host_kind) VALUES (
-+            'remote-ssh-discovered:test-host',
-+            'ssh'
-+        )",
-+        [],
-+    )
-+    .unwrap();
-+    db.execute(
-+        "INSERT INTO local_thread_catalog (
-+            host_id,
-+            thread_id,
-+            display_title,
-+            source_created_at,
-+            source_updated_at,
-+            cwd,
-+            source_kind,
-+            source_detail,
-+            model_provider,
-+            git_branch,
-+            observation_sequence,
-+            missing_candidate
-+        ) VALUES (
-+            'remote-ssh-discovered:test-host',
-+            'remote-thread',
-+            'Remote thread',
-+            1700000000,
-+            1700000060,
-+            '/home/deck/remote-workspace',
-+            'vscode',
-+            NULL,
-+            'custom',
-+            NULL,
-+            33,
-+            0
-+        )",
-+        [],
-+    )
-+    .unwrap();
-+    drop(db);
-+
-+    let result = run_provider_sync(Some(&home));
-+
-+    assert_eq!(result.status, ProviderSyncStatus::Synced);
-+    let db = Connection::open(&catalog_path).unwrap();
-+    let missing_candidate: i64 = db
-+        .query_row(
-+            "SELECT missing_candidate FROM local_thread_catalog WHERE host_id = 'remote-ssh-discovered:test-host' AND thread_id = 'remote-thread'",
-+            [],
-+            |row| row.get(0),
-+        )
-+        .unwrap();
-+    assert_eq!(missing_candidate, 1);
-+}
-+
-+#[test]
-+fn provider_sync_marks_catalog_rows_with_legacy_thread_but_no_rollout_path_missing() {
-+    let tmp = tempdir().unwrap();
-+    let home = tmp.path().join(".codex");
-+    let sqlite_dir = home.join("sqlite");
-+    fs::create_dir_all(&sqlite_dir).unwrap();
-+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
-+    let state_path = home.join("state_5.sqlite");
-+    let state_db = Connection::open(&state_path).unwrap();
-+    state_db
-+        .execute(
-+            "CREATE TABLE threads (
-+                id TEXT PRIMARY KEY,
-+                created_at INTEGER NOT NULL,
-+                updated_at INTEGER NOT NULL,
-+                source TEXT NOT NULL,
-+                model_provider TEXT NOT NULL,
-+                cwd TEXT NOT NULL,
-+                title TEXT NOT NULL,
-+                sandbox_policy TEXT NOT NULL,
-+                approval_mode TEXT NOT NULL,
-+                has_user_event INTEGER NOT NULL DEFAULT 0,
-+                archived INTEGER NOT NULL DEFAULT 0
-+            )",
-+            [],
-+        )
-+        .unwrap();
-+    state_db
-+        .execute(
-+            "INSERT INTO threads VALUES (
-+                'legacy-without-rollout',
-+                1700000000,
-+                1700000060,
-+                'local',
-+                'old-provider',
-+                '/home/deck/workspace',
-+                'Legacy without rollout',
-+                'workspace-write',
-+                'on-request',
-+                1,
-+                0
-+            )",
-+            [],
-+        )
-+        .unwrap();
-+    drop(state_db);
-+    let catalog_path = sqlite_dir.join("codex-dev.db");
-+    create_local_thread_catalog_db(&catalog_path);
-+    let catalog_db = Connection::open(&catalog_path).unwrap();
-+    catalog_db
-+        .execute(
-+            "INSERT INTO local_thread_catalog (
-+                host_id,
-+                thread_id,
-+                display_title,
-+                source_created_at,
-+                source_updated_at,
-+                cwd,
-+                source_kind,
-+                source_detail,
-+                model_provider,
-+                git_branch,
-+                observation_sequence,
-+                missing_candidate
-+            ) VALUES (
-+                'local',
-+                'legacy-without-rollout',
-+                'Legacy without rollout',
-+                1700000000,
-+                1700000060,
-+                '/home/deck/workspace',
-+                'vscode',
-+                NULL,
-+                'custom',
-+                NULL,
-+                33,
-+                0
-+            )",
-+            [],
-+        )
-+        .unwrap();
-+    drop(catalog_db);
-+
-+    let result = run_provider_sync(Some(&home));
-+
-+    assert_eq!(result.status, ProviderSyncStatus::Synced);
-+    let catalog_db = Connection::open(&catalog_path).unwrap();
-+    let missing_candidate: i64 = catalog_db
-+        .query_row(
-+            "SELECT missing_candidate FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = 'legacy-without-rollout'",
-+            [],
-+            |row| row.get(0),
-+        )
-+        .unwrap();
-+    assert_eq!(missing_candidate, 1);
-+}
-+
-+#[test]
-+fn provider_sync_does_not_keep_catalog_rows_from_current_threads_without_rollout_path() {
-+    let tmp = tempdir().unwrap();
-+    let home = tmp.path().join(".codex");
-+    let sqlite_dir = home.join("sqlite");
-+    fs::create_dir_all(&sqlite_dir).unwrap();
-+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
-+    let catalog_path = sqlite_dir.join("codex-dev.db");
-+    create_local_thread_catalog_db(&catalog_path);
-+    let db = Connection::open(&catalog_path).unwrap();
-+    db.execute(
-+        "CREATE TABLE threads (
-+            id TEXT PRIMARY KEY,
-+            created_at INTEGER NOT NULL,
-+            updated_at INTEGER NOT NULL,
-+            source TEXT NOT NULL,
-+            model_provider TEXT NOT NULL,
-+            cwd TEXT NOT NULL,
-+            title TEXT NOT NULL,
-+            sandbox_policy TEXT NOT NULL,
-+            approval_mode TEXT NOT NULL,
-+            has_user_event INTEGER NOT NULL DEFAULT 0,
-+            archived INTEGER NOT NULL DEFAULT 0
-+        )",
-+        [],
-+    )
-+    .unwrap();
-+    db.execute(
-+        "INSERT INTO threads VALUES (
-+            'current-without-rollout',
-+            1700000000,
-+            1700000060,
-+            'local',
-+            'old-provider',
-+            '/home/deck/workspace',
-+            'Current without rollout',
-+            'workspace-write',
-+            'on-request',
-+            1,
-+            0
-+        )",
-+        [],
-+    )
-+    .unwrap();
-+    db.execute(
-+        "INSERT INTO local_thread_catalog (
-+            host_id,
-+            thread_id,
-+            display_title,
-+            source_created_at,
-+            source_updated_at,
-+            cwd,
-+            source_kind,
-+            source_detail,
-+            model_provider,
-+            git_branch,
-+            observation_sequence,
-+            missing_candidate
-+        ) VALUES (
-+            'local',
-+            'current-without-rollout',
-+            'Current without rollout',
-+            1700000000,
-+            1700000060,
-+            '/home/deck/workspace',
-+            'vscode',
-+            NULL,
-+            'custom',
-+            NULL,
-+            33,
-+            0
-+        )",
-+        [],
-+    )
-+    .unwrap();
-+    drop(db);
-+
-+    let result = run_provider_sync(Some(&home));
-+
-+    assert_eq!(result.status, ProviderSyncStatus::Synced);
-+    let db = Connection::open(&catalog_path).unwrap();
-+    let missing_candidate: i64 = db
-+        .query_row(
-+            "SELECT missing_candidate FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = 'current-without-rollout'",
-+            [],
-+            |row| row.get(0),
-+        )
-+        .unwrap();
-+    assert_eq!(missing_candidate, 1);
-+}
-+
-+#[test]
-+fn provider_sync_backfills_catalog_rows_that_become_visible_from_rollout_events() {
-+    let tmp = tempdir().unwrap();
-+    let home = tmp.path().join(".codex");
-+    let sqlite_dir = home.join("sqlite");
-+    fs::create_dir_all(&sqlite_dir).unwrap();
-+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
-+    write_rollout(
-+        &home.join("sessions/2026/rollout-visible-from-rollout.jsonl"),
-+        "openai",
-+        "thread-1",
-+        "C:/workspace",
-+    );
-+    create_state_db(&home.join("state_5.sqlite"));
-+    let catalog_path = sqlite_dir.join("codex-dev.db");
-+    create_local_thread_catalog_db(&catalog_path);
-+
-+    let result = run_provider_sync(Some(&home));
-+
-+    assert_eq!(result.status, ProviderSyncStatus::Synced);
-+    let db = Connection::open(&catalog_path).unwrap();
-+    let row = db
-+        .query_row(
-+            "SELECT cwd, display_title, model_provider FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = 'thread-1'",
-+            [],
-+            |row| {
-+                Ok((
-+                    row.get::<_, String>(0)?,
-+                    row.get::<_, String>(1)?,
-+                    row.get::<_, String>(2)?,
-+                ))
-+            },
-+        )
-+        .unwrap();
-+    assert_eq!(
-+        row,
-+        (
-+            "C:/workspace".to_string(),
-+            "thread-1".to_string(),
-+            "custom".to_string(),
-+        )
-+    );
++    assert_eq!(after, before);
 +}
 +
  #[test]
  fn provider_sync_backup_metadata_contains_reference_fields_and_managed_marker() {
      let tmp = tempdir().unwrap();
-@@ -497,41 +1195,6 @@ fn provider_sync_repairs_sqlite_when_rollout_provider_matches_and_normalizes_pat
-     );
- }
- 
--#[test]
--fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
--    let tmp = tempdir().unwrap();
--    let home = tmp.path().join(".codex");
+@@ -501,7 +664,8 @@ fn provider_sync_repairs_sqlite_when_rollout_provider_matches_and_normalizes_pat
+ fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
+     let tmp = tempdir().unwrap();
+     let home = tmp.path().join(".codex");
 -    fs::create_dir(&home).unwrap();
--    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
--    write_rollout(
--        &home.join("sessions/rollout-projectless.jsonl"),
--        "apigather",
--        "thread-1",
--        "C:/old/project",
--    );
--    create_state_db(&home.join("state_5.sqlite"));
--    fs::write(
--        home.join(".codex-global-state.json"),
--        json!({
--            "projectless-thread-ids": ["thread-1"]
--        })
--        .to_string(),
--    )
--    .unwrap();
--
--    let result = run_provider_sync(Some(&home));
--
--    assert_eq!(result.status, ProviderSyncStatus::Synced);
--    assert_eq!(result.sqlite_cwd_rows_updated, 0);
--    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
--    let row: String = db
--        .query_row("SELECT cwd FROM threads WHERE id = 'thread-1'", [], |row| {
--            row.get(0)
--        })
--        .unwrap();
--    assert_eq!(row, "C:/old");
--}
--
- #[test]
- fn provider_sync_normalizes_open_in_target_preferences_per_path() {
-     let tmp = tempdir().unwrap();
-@@ -744,6 +1407,57 @@ fn provider_sync_skips_when_home_missing_or_lock_exists_and_prunes_backups() {
-     assert_eq!(backups, 5);
++    let sqlite_dir = home.join("sqlite");
++    fs::create_dir_all(&sqlite_dir).unwrap();
+     fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+     write_rollout(
+         &home.join("sessions/rollout-projectless.jsonl"),
+@@ -510,6 +674,8 @@ fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
+         "C:/old/project",
+     );
+     create_state_db(&home.join("state_5.sqlite"));
++    let catalog_path = sqlite_dir.join("codex-dev.db");
++    create_local_catalog_db(&catalog_path);
+     fs::write(
+         home.join(".codex-global-state.json"),
+         json!({
+@@ -530,6 +696,15 @@ fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
+         })
+         .unwrap();
+     assert_eq!(row, "C:/old");
++    let catalog = Connection::open(catalog_path).unwrap();
++    let catalog_rows: i64 = catalog
++        .query_row(
++            "SELECT COUNT(*) FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = 'thread-1'",
++            [],
++            |row| row.get(0),
++        )
++        .unwrap();
++    assert_eq!(catalog_rows, 0);
  }
- 
-+#[test]
-+fn provider_sync_removes_stale_lock_and_runs() {
-+    let tmp = tempdir().unwrap();
-+    let home = tmp.path().join(".codex");
-+    fs::create_dir(&home).unwrap();
-+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
-+    write_rollout(
-+        &home.join("sessions/rollout-new.jsonl"),
-+        "openai",
-+        "thread-1",
-+        "C:/workspace",
-+    );
-+    let lock_dir = home.join("tmp/provider-sync.lock");
-+    fs::create_dir_all(&lock_dir).unwrap();
-+    fs::write(
-+        lock_dir.join("owner.json"),
-+        json!({
-+            "pid": 999_999_999_u64,
-+            "startedAt": 1_u64
-+        })
-+        .to_string(),
-+    )
-+    .unwrap();
-+
-+    let result = run_provider_sync(Some(&home));
-+
-+    assert_eq!(result.status, ProviderSyncStatus::Synced);
-+    assert_eq!(result.changed_session_files, 1);
-+    assert!(!lock_dir.exists());
-+}
-+
-+#[test]
-+fn provider_sync_releases_lock_after_successful_run() {
-+    let tmp = tempdir().unwrap();
-+    let home = tmp.path().join(".codex");
-+    fs::create_dir(&home).unwrap();
-+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
-+    write_rollout(
-+        &home.join("sessions/rollout-new.jsonl"),
-+        "openai",
-+        "thread-1",
-+        "C:/workspace",
-+    );
-+    let lock_dir = home.join("tmp/provider-sync.lock");
-+
-+    let result = run_provider_sync(Some(&home));
-+
-+    assert_eq!(result.status, ProviderSyncStatus::Synced);
-+    assert!(!lock_dir.exists());
-+}
-+
+
  #[test]
- fn provider_sync_preserves_rollout_mtime() {
-     let tmp = tempdir().unwrap();

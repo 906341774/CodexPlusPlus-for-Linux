@@ -22,7 +22,7 @@ $HOME/opt/codex-desktop-linux/codex-app/.codex-plusplus/
 
 == 主要输出
 
-* `scripts/Installer-and-Manager.ps1`：双语 PowerShell 管理器，用于安装、更新、卸载和应用片段。
+* `scripts/developer/Installer-and-Manager.ps1`：双语 PowerShell 管理器，用于安装、更新、卸载和应用片段。
 * xref:snippets.adoc[]：结构化文档和片段清单。
 * xref:adapter-workflow_zh-CN.adoc[]：定期上游同步、验证和 fork 推送工作流。
 * xref:attachment$feature-matrix.json[`feature-matrix.json`]：可机器检查的功能覆盖矩阵。

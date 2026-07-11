@@ -38,13 +38,13 @@ HOME=/tmp/codexpp-workflow-home \
 XDG_DATA_HOME=/tmp/codexpp-workflow-data \
 XDG_CONFIG_HOME=/tmp/codexpp-workflow-config \
 XDG_CACHE_HOME=/tmp/codexpp-workflow-cache \
-pwsh -NoLogo -NoProfile -File scripts/Test-AdapterWorkflow.ps1
+pwsh -NoLogo -NoProfile -File scripts/developer/Test-AdapterWorkflow.ps1
 ----
 . 常见的本地冒烟检查可直接运行合并入口。
 +
 [source,bash]
 ----
-./scripts/run-adapter-regression.sh
+./scripts/developer/run-adapter-regression.sh
 ----
 . 运行安装脚本自检。
 +
@@ -54,7 +54,7 @@ HOME=/tmp/codexpp-installer-home \
 XDG_DATA_HOME=/tmp/codexpp-installer-data \
 XDG_CONFIG_HOME=/tmp/codexpp-installer-config \
 XDG_CACHE_HOME=/tmp/codexpp-installer-cache \
-pwsh -NoLogo -NoProfile -File scripts/Installer-and-Manager.ps1 selftest -NonInteractive -NoTui
+pwsh -NoLogo -NoProfile -File scripts/developer/Installer-and-Manager.ps1 selftest -NonInteractive -NoTui
 ----
 . 将所有生产片段和回归测试片段应用到干净的上游源码树。
   每个 patch 在实际应用前都必须通过 `git apply --check`。
@@ -78,9 +78,9 @@ sudo mount -o loop,rw "$HOME/.local/share/podman-loop-storage/containers-storage
 +
 [source,powershell]
 ----
-pwsh ./scripts/Installer-and-Manager.ps1 -Action install -CodexDesktopRootPath "$HOME/opt/CodexDesktop" -NonInteractive
-pwsh ./scripts/Installer-and-Manager.ps1 -Action update -CodexDesktopRootPath "$HOME/opt/CodexDesktop" -NonInteractive
-pwsh ./scripts/Installer-and-Manager.ps1 -Action uninstall -CodexDesktopRootPath "$HOME/opt/CodexDesktop" -NonInteractive
+pwsh ./scripts/developer/Installer-and-Manager.ps1 -Action install -CodexDesktopRootPath "$HOME/opt/CodexDesktop" -NonInteractive
+pwsh ./scripts/developer/Installer-and-Manager.ps1 -Action update -CodexDesktopRootPath "$HOME/opt/CodexDesktop" -NonInteractive
+pwsh ./scripts/developer/Installer-and-Manager.ps1 -Action uninstall -CodexDesktopRootPath "$HOME/opt/CodexDesktop" -NonInteractive
 ----
 . 运行 GUI 验证。
   通过新安装的 Codex++ Manager 启动 Codex Desktop，再用 Computer Use 截图和 CDP DOM 断言验证功能矩阵中的黑盒检查项。

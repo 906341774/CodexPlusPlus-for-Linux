@@ -78,7 +78,7 @@ jobs:
           git commit \
             -m "fix(nix): refresh upstream Nix pins${CODEX_VERSION:+ for $CODEX_VERSION}" \
             -m "Refreshed Codex.dmg SRI hash to $CODEX_DMG_HASH and synced codexVersion / electronVersion / native-module pins to the current upstream DMG." \
-            -m "Verified all Codex Desktop Nix package outputs against the refreshed DMG." \
+            -m "Verified all ChatGPT Desktop Nix package outputs against the refreshed DMG." \
             -m "[skip ci]"
           git push --force origin "$REFRESH_BRANCH"
 
@@ -91,7 +91,7 @@ jobs:
           $APPCAST_NOTE
 
           ## Validation
-          - this workflow verified all Codex Desktop Nix package outputs before opening the PR
+          - this workflow verified all ChatGPT Desktop Nix package outputs before opening the PR
           - refreshed Codex.dmg SRI hash: \`$CODEX_DMG_HASH\`
           EOF
 

@@ -201,13 +201,16 @@ pub fn run_provider_sync_with_target(
             .filter(|change| change.has_user_event)
             .filter_map(|change| change.thread_id.clone())
             .collect::<HashSet<_>>();
-        let projectless_thread_ids = collected
-            .changes
-            .iter()
-            .filter(|change| change.has_user_event)
-            .filter(|change| change.cwd.is_none())
-            .filter_map(|change| change.thread_id.clone())
-            .collect::<HashSet<_>>();
+        let mut projectless_thread_ids =
+            load_projectless_thread_ids(&home.join(".codex-global-state.json"))?;
+        projectless_thread_ids.extend(
+            collected
+                .changes
+                .iter()
+                .filter(|change| change.has_user_event)
+                .filter(|change| change.cwd.is_none())
+                .filter_map(|change| change.thread_id.clone()),
+        );
         let cwd_by_thread_id = collected
             .changes
             .iter()
@@ -1283,7 +1286,8 @@ fn count_local_thread_catalog_updates(
     db: &Connection,
     threads: &[LocalCatalogThread],
 ) -> anyhow::Result<usize> {
-    let mut total = 0;
+    let mut total = usize::from(!local_catalog_host_exists(db)?);
+    total += usize::from(!local_catalog_metadata_exists(db)?);
     for thread in threads {
         let existing = local_thread_catalog_row(db, &thread.thread_id)?;
         if existing.as_ref() != Some(thread) {
@@ -1293,20 +1297,17 @@ fn count_local_thread_catalog_updates(
     total += count_unopenable_local_thread_catalog_rows(db, threads)?;
     let sync_state_needs_update = db
         .query_row(
-            "SELECT COALESCE(initial_build_complete, 0), COALESCE(observation_sequence, 0), watermark_updated_at FROM local_thread_catalog_sync_state WHERE host_id = 'local'",
+            "SELECT COALESCE(initial_build_complete, 0), watermark_updated_at FROM local_thread_catalog_sync_state WHERE host_id = 'local'",
             [],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<f64>>(2)?,
+                    row.get::<_, Option<f64>>(1)?,
                 ))
             },
         )
-        .map(|(complete, sequence, watermark)| {
-            let next_sequence = next_local_catalog_observation_sequence(db).unwrap_or(sequence);
-            let next_watermark = latest_local_catalog_updated_at(threads);
-            complete != 1 || sequence != next_sequence || watermark != next_watermark
+        .map(|(complete, watermark)| {
+            complete != 1 || watermark != latest_local_catalog_updated_at(threads)
         })
         .unwrap_or(true);
     if sync_state_needs_update {
@@ -1319,6 +1320,10 @@ fn apply_local_thread_catalog_update(
     tx: &rusqlite::Transaction<'_>,
     threads: &[LocalCatalogThread],
 ) -> anyhow::Result<usize> {
+    let pending_changes = count_local_thread_catalog_updates(tx, threads)?;
+    if pending_changes == 0 {
+        return Ok(0);
+    }
     tx.execute(
         "INSERT OR IGNORE INTO local_thread_catalog_hosts (host_id, host_kind) VALUES ('local', 'local')",
         [],
@@ -1328,13 +1333,11 @@ fn apply_local_thread_catalog_update(
         [],
     )?;
     let next_sequence = next_local_catalog_observation_sequence(tx)?;
-    let mut changed = 0;
     for thread in threads {
         let existing = local_thread_catalog_row(tx, &thread.thread_id)?;
         if existing.as_ref() == Some(thread) {
             continue;
         }
-        changed += 1;
         tx.execute(
             "INSERT INTO local_thread_catalog (
                 host_id,
@@ -1388,24 +1391,8 @@ fn apply_local_thread_catalog_update(
             ),
         )?;
     }
-    changed += mark_unopenable_local_thread_catalog_rows_missing(tx, threads, next_sequence)?;
+    mark_unopenable_local_thread_catalog_rows_missing(tx, threads, next_sequence)?;
     let latest_updated_at = latest_local_catalog_updated_at(threads);
-    let sync_state_changed = tx
-        .query_row(
-            "SELECT COALESCE(initial_build_complete, 0), COALESCE(observation_sequence, 0), watermark_updated_at FROM local_thread_catalog_sync_state WHERE host_id = 'local'",
-            [],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<f64>>(2)?,
-                ))
-            },
-        )
-        .map(|(complete, sequence, watermark)| {
-            complete != 1 || sequence != next_sequence || watermark != latest_updated_at
-        })
-        .unwrap_or(true);
     tx.execute(
         "INSERT INTO local_thread_catalog_sync_state (
             host_id,
@@ -1424,16 +1411,27 @@ fn apply_local_thread_catalog_update(
             observation_sequence = excluded.observation_sequence",
         (latest_updated_at, next_sequence),
     )?;
-    if sync_state_changed {
-        changed += 1;
-    }
-    if changed > 0 {
-        tx.execute(
-            "UPDATE local_thread_catalog_metadata SET catalog_revision = catalog_revision + 1 WHERE id = 1",
-            [],
-        )?;
-    }
-    Ok(changed)
+    tx.execute(
+        "UPDATE local_thread_catalog_metadata SET catalog_revision = catalog_revision + 1 WHERE id = 1",
+        [],
+    )?;
+    Ok(pending_changes)
+}
+
+fn local_catalog_host_exists(db: &Connection) -> anyhow::Result<bool> {
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM local_thread_catalog_hosts WHERE host_id = 'local')",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? != 0)
+}
+
+fn local_catalog_metadata_exists(db: &Connection) -> anyhow::Result<bool> {
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM local_thread_catalog_metadata WHERE id = 1)",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? != 0)
 }
 
 fn count_unopenable_local_thread_catalog_rows(
@@ -1517,6 +1515,20 @@ fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {
         .as_object()
         .cloned()
         .unwrap_or_default())
+}
+
+fn load_projectless_thread_ids(path: &Path) -> anyhow::Result<HashSet<String>> {
+    let state = load_global_state(path)?;
+    Ok(state
+        .get("projectless-thread-ids")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 fn normalized_global_state(state: &Map<String, Value>) -> Map<String, Value> {

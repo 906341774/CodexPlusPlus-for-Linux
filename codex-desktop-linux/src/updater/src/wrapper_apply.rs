@@ -110,7 +110,7 @@ pub async fn run_apply_wrapper_update(
             state.clear_wrapper_update_candidate();
             state.save(&paths.state_file)?;
             let _ = notify::send(
-                "Codex Desktop Linux updated",
+                "ChatGPT Desktop for Linux updated",
                 "The newer Linux wrapper build has been installed.",
             );
             Ok(())
@@ -358,9 +358,9 @@ async fn apply_packaged(
 ) -> Result<()> {
     if let Some(missing) = missing_build_dependency() {
         let body = format!(
-            "A newer Codex Desktop Linux build is available, but '{missing}' is needed to rebuild it. Install the build tools or update the package manually."
+            "A newer ChatGPT Desktop for Linux build is available, but '{missing}' is needed to rebuild it. Install the build tools or update the package manually."
         );
-        let _ = notify::send("Codex Desktop Linux update available", &body);
+        let _ = notify::send("ChatGPT Desktop for Linux update available", &body);
         println!("{body}");
         anyhow::bail!("missing build dependency for wrapper update: {missing}");
     }

@@ -68,7 +68,7 @@ printf '%s\n' "$$format"
 .PHONY: help check test build-updater maybe-build-updater update rebuild rebuild-install inspect-upstream inspect-upstream-intel inspect-upstream-intel-devcontainer build-app build-app-fresh setup-native bootstrap-native install-native update-native rebuild-next run-app build-dev-app run-dev-app deb rpm pacman appimage package install service-enable service-status clean-dist clean-state
 
 help:
-	@printf '\nCodex Desktop Linux Make Targets\n\n'
+	@printf '\nChatGPT Desktop for Linux Make Targets\n\n'
 	@printf '  %-18s %s\n' "make check" "Run cargo check for codex-update-manager"
 	@printf '  %-18s %s\n' "make test" "Run updater test suite"
 	@printf '  %-18s %s\n' "make build-updater" "Build codex-update-manager in release mode"
@@ -261,7 +261,7 @@ build-dev-app:
 	CODEX_INSTALL_DIR="$(DEV_APP_DIR)" \
 		./install.sh "$(DMG)"
 	@mkdir -p "$(CURDIR)/bin"
-	@ln -sfn "$(DEV_APP_DIR)/start.sh" "$(DEV_APP_BIN)"
+	@ln -sfn "$$(realpath --relative-to="$$(dirname "$(DEV_APP_BIN)")" "$(DEV_APP_DIR)/start.sh")" "$(DEV_APP_BIN)"
 	@echo "[make] Side-by-side launcher: $(DEV_APP_BIN)"
 
 run-dev-app:

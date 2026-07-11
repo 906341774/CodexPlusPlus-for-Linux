@@ -520,6 +520,41 @@ fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
 }
 
 #[test]
+fn pure_api_config_reports_configured_without_openai_auth_requirement() {
+    let temp = tempfile::tempdir().unwrap();
+
+    apply_pure_api_config_to_home(temp.path(), "https://wemx.cc", "sk-test-redacted").unwrap();
+
+    let status = relay_config_status_from_home(temp.path());
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(status.configured);
+    assert!(!status.requires_openai_auth);
+    assert!(status.has_bearer_token);
+    assert!(config.contains("requires_openai_auth = false"));
+}
+
+#[test]
+fn pure_api_config_preserves_direct_ip_and_explicit_http_port() {
+    let temp = tempfile::tempdir().unwrap();
+
+    apply_pure_api_config_to_home(temp.path(), "http://64.83.38.106:8080", "sk-test-redacted")
+        .unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains(r#"base_url = "http://64.83.38.106:8080""#));
+}
+
+#[test]
+fn pure_api_config_upgrades_plain_http_public_hostname_to_https() {
+    let temp = tempfile::tempdir().unwrap();
+
+    apply_pure_api_config_to_home(temp.path(), "http://wemx.cc", "sk-test-redacted").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains(r#"base_url = "https://wemx.cc""#));
+}
+
+#[test]
 fn apply_relay_files_switches_complete_config_and_auth_json() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(temp.path().join("config.toml"), r#"model = "old""#).unwrap();
@@ -1375,6 +1410,25 @@ fn apply_relay_config_file_switches_config_without_touching_auth_json() {
         std::fs::read_to_string(home.join("auth.json")).unwrap(),
         "{\"auth_mode\":\"chatgpt\"}\n"
     );
+}
+
+#[test]
+fn apply_relay_config_file_accepts_utf8_bom_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    std::fs::write(home.join("config.toml"), "\u{feff}model = \"old\"\n").unwrap();
+    std::fs::write(home.join("auth.json"), "{\"auth_mode\":\"chatgpt\"}\n").unwrap();
+
+    let result = apply_relay_config_file_to_home(
+        home,
+        "\u{feff}model_provider = \"custom\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"http://127.0.0.1:57321/v1\"\nexperimental_bearer_token = \"sk-new\"\n",
+    )
+    .unwrap();
+
+    let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(result.configured);
+    assert!(config.contains(r#"model_provider = "custom""#));
+    assert!(config.contains("http://127.0.0.1:57321/v1"));
 }
 
 #[test]
@@ -2348,69 +2402,6 @@ requires_openai_auth = true
     assert!(!config.contains("[model_providers.custom]"));
 }
 
-#[test]
-fn pure_api_config_is_configured_without_openai_auth_requirement() {
-    let temp = tempfile::tempdir().unwrap();
-
-    apply_pure_api_config_to_home(temp.path(), "https://wemx.cc", "sk-test-redacted").unwrap();
-
-    let status = relay_config_status_from_home(temp.path());
-    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-
-    assert!(status.configured);
-    assert!(!status.requires_openai_auth);
-    assert!(status.has_bearer_token);
-    assert!(config.contains("requires_openai_auth = false"));
-    assert!(config.contains(r#"base_url = "https://wemx.cc""#));
-}
-
-#[test]
-fn pure_api_config_preserves_direct_ip_and_explicit_http_port() {
-    let temp = tempfile::tempdir().unwrap();
-
-    apply_pure_api_config_to_home(temp.path(), "http://64.83.38.106:8080", "sk-test-redacted")
-        .unwrap();
-
-    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"base_url = "http://64.83.38.106:8080""#));
-}
-
-#[test]
-fn pure_api_config_upgrades_plain_http_public_hostname_to_https() {
-    let temp = tempfile::tempdir().unwrap();
-
-    apply_pure_api_config_to_home(temp.path(), "http://wemx.cc", "sk-test-redacted").unwrap();
-
-    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"base_url = "https://wemx.cc""#));
-}
-
-#[test]
-fn apply_relay_files_normalizes_duplicate_config_before_validation() {
-    let temp = tempfile::tempdir().unwrap();
-    let duplicate_config = r#"
-model_provider = "custom"
-model_provider = "custom"
-
-[model_providers.custom]
-name = "custom"
-wire_api = "responses"
-requires_openai_auth = false
-base_url = "https://example.test"
-
-[model_providers.custom]
-base_url = "https://duplicate.example.test"
-"#;
-
-    apply_relay_config_file_to_home(temp.path(), duplicate_config).unwrap();
-
-    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert_eq!(config.matches("model_provider =").count(), 1);
-    assert_eq!(config.matches("[model_providers.custom]").count(), 1);
-    assert!(config.contains(r#"base_url = "https://example.test""#));
-    assert!(config.ends_with('\n'));
-}
-
 #[cfg(windows)]
 #[test]
 fn apply_relay_profile_to_home_with_switch_rules_does_not_preserve_computer_use_guard_config_by_default()
@@ -2531,6 +2522,10 @@ command = "manual-command"
 
 [plugins.manual]
 enabled = true
+
+[marketplaces.role-specific-plugins]
+source_type = "local"
+source = 'C:\Users\me\.codex\.tmp\marketplaces\role-specific-plugins'
 "#,
     )
     .unwrap();
@@ -2562,6 +2557,9 @@ command = "managed-command"
     assert!(config.contains("[plugins.manual]"));
     assert!(config.contains("[mcp_servers.managed]"));
     assert!(config.contains(r#"command = "managed-command""#));
+    assert!(config.contains("[marketplaces.role-specific-plugins]"));
+    assert!(config.contains(r#"source_type = "local""#));
+    assert!(config.contains("role-specific-plugins"));
 }
 
 #[test]

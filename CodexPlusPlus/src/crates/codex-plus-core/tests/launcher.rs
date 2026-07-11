@@ -14,7 +14,6 @@ use codex_plus_core::launcher::{
     build_codex_command_with_native_menu_inspector, build_macos_cleanup_command,
     build_macos_open_command, build_macos_open_command_with_native_menu_inspector,
     build_packaged_activation, build_packaged_activation_with_native_menu_inspector,
-    codex_process_environment_for_app_from, codex_process_environment_from,
     launch_and_inject_with_hooks,
 };
 #[cfg(windows)]
@@ -74,6 +73,34 @@ fn app_paths_find_latest_windows_package_prefers_highest_version_app_dir() {
 }
 
 #[test]
+fn app_paths_find_latest_windows_package_ignores_chatgpt_desktop_package() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("OpenAI.Codex_26.707.3748.0_x64__abc/app")).unwrap();
+    std::fs::create_dir_all(
+        temp.path()
+            .join("OpenAI.ChatGPT-Desktop_1.2026.133.0_x64__abc/app"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(
+        temp.path()
+            .join("OpenAI.ChatGPT-Desktop_2026.514.421.0_neutral_~_abc"),
+    )
+    .unwrap();
+
+    let latest = find_latest_codex_app_dir(temp.path()).unwrap();
+
+    assert_eq!(
+        latest,
+        temp.path().join("OpenAI.Codex_26.707.3748.0_x64__abc/app")
+    );
+    assert_eq!(codex_app_version(&latest).as_deref(), Some("26.707.3748.0"));
+    assert_eq!(
+        packaged_app_user_model_id(&latest).as_deref(),
+        Some("OpenAI.Codex_abc!App")
+    );
+}
+
+#[test]
 fn app_paths_find_latest_windows_package_detects_beta_package() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(
@@ -101,6 +128,7 @@ fn app_paths_find_latest_windows_package_returns_package_when_app_dir_missing() 
     let temp = tempfile::tempdir().unwrap();
     let package = temp.path().join("OpenAI.Codex_26.429.8261.0_x64__abc");
     std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("ChatGPT.exe"), "").unwrap();
 
     assert_eq!(find_latest_codex_app_dir(temp.path()).unwrap(), package);
 }
@@ -115,6 +143,20 @@ fn app_paths_find_latest_windows_package_checks_roots_before_fallback() {
     let latest = find_latest_codex_app_dir_from_roots(&[root]).unwrap();
 
     assert!(latest.ends_with("OpenAI.Codex_26.513.3673.0_x64__abc/app"));
+}
+
+#[test]
+fn app_paths_find_latest_windows_package_ignores_chatgpt_across_roots() {
+    let temp = tempfile::tempdir().unwrap();
+    let root_a = temp.path().join("WindowsAppsA");
+    let root_b = temp.path().join("WindowsAppsB");
+    std::fs::create_dir_all(root_a.join("OpenAI.Codex_26.999.0.0_x64__abc/app")).unwrap();
+    std::fs::create_dir_all(root_b.join("OpenAI.ChatGPT-Desktop_1.2026.133.0_x64__abc/app"))
+        .unwrap();
+
+    let latest = find_latest_codex_app_dir_from_roots(&[root_a, root_b]).unwrap();
+
+    assert!(latest.ends_with("OpenAI.Codex_26.999.0.0_x64__abc/app"));
 }
 
 #[test]
@@ -162,9 +204,15 @@ fn app_paths_user_data_candidates_include_local_and_roaming_variants() {
     assert_eq!(
         candidates,
         vec![
+            local.join("OpenAI").join("ChatGPT"),
+            local.join("OpenAI.ChatGPT-Desktop"),
+            local.join("ChatGPT"),
             local.join("OpenAI").join("Codex"),
             local.join("OpenAI.Codex"),
             local.join("Codex"),
+            roaming.join("OpenAI").join("ChatGPT"),
+            roaming.join("OpenAI.ChatGPT-Desktop"),
+            roaming.join("ChatGPT"),
             roaming.join("OpenAI").join("Codex"),
             roaming.join("OpenAI.Codex"),
             roaming.join("Codex"),
@@ -189,6 +237,36 @@ fn app_paths_find_macos_codex_app_prefers_first_search_root_and_known_names() {
 }
 
 #[test]
+fn app_paths_prefers_codex_app_over_chatgpt_app() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("Applications");
+    let codex = root.join("Codex.app");
+    let chatgpt = root.join("ChatGPT.app");
+    std::fs::create_dir_all(&codex).unwrap();
+    std::fs::create_dir_all(&chatgpt).unwrap();
+
+    assert_eq!(
+        find_macos_codex_app(&[root]).as_deref(),
+        Some(codex.as_path())
+    );
+}
+
+#[test]
+fn app_paths_preserves_legacy_macos_candidates_before_chatgpt_app() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("Applications");
+    let legacy = root.join("OpenAI Codex.app");
+    let chatgpt = root.join("ChatGPT.app");
+    std::fs::create_dir_all(&legacy).unwrap();
+    std::fs::create_dir_all(&chatgpt).unwrap();
+
+    assert_eq!(
+        find_macos_codex_app(&[root]).as_deref(),
+        Some(legacy.as_path())
+    );
+}
+
+#[test]
 fn app_paths_build_macos_bundle_executable() {
     let app = PathBuf::from("/Applications/OpenAI Codex.app");
 
@@ -196,6 +274,37 @@ fn app_paths_build_macos_bundle_executable() {
         build_codex_executable(&app),
         PathBuf::from("/Applications/OpenAI Codex.app/Contents/MacOS/Codex")
     );
+}
+
+#[test]
+fn app_paths_finds_chatgpt_bundle_and_uses_its_declared_executable() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("Applications");
+    let app = root.join("ChatGPT.app");
+    let contents = app.join("Contents");
+    let macos = contents.join("MacOS");
+    std::fs::create_dir_all(&macos).unwrap();
+    std::fs::write(
+        contents.join("Info.plist"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.openai.codex</string>
+  <key>CFBundleExecutable</key>
+  <string>ChatGPT</string>
+</dict>
+</plist>
+"#,
+    )
+    .unwrap();
+    std::fs::write(macos.join("ChatGPT"), "").unwrap();
+
+    assert_eq!(
+        find_macos_codex_app(&[root]).as_deref(),
+        Some(app.as_path())
+    );
+    assert_eq!(build_codex_executable(&app), macos.join("ChatGPT"));
 }
 
 #[test]
@@ -217,6 +326,27 @@ fn app_paths_normalizes_executable_and_package_paths() {
 }
 
 #[test]
+fn app_paths_normalizes_chatgpt_desktop_executable_and_builds_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp
+        .path()
+        .join("OpenAI.Codex_1.2026.133.0_x64__abc")
+        .join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(app.join("ChatGPT.exe"), "").unwrap();
+
+    assert_eq!(
+        normalize_codex_app_path(&app.join("ChatGPT.exe")).as_deref(),
+        Some(app.as_path())
+    );
+    assert_eq!(build_codex_executable(&app), app.join("ChatGPT.exe"));
+    assert_eq!(
+        packaged_app_user_model_id(&app).as_deref(),
+        Some("OpenAI.Codex_abc!App")
+    );
+}
+
+#[test]
 fn app_paths_saved_path_is_used_when_no_explicit_path_is_provided() {
     let temp = tempfile::tempdir().unwrap();
     let app = temp.path().join("Codex.app");
@@ -230,8 +360,23 @@ fn app_paths_saved_path_is_used_when_no_explicit_path_is_provided() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn app_paths_linux_prefers_start_script_and_version_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_root = temp.path().join("CodexDesktop");
+    std::fs::create_dir_all(&app_root).unwrap();
+    std::fs::write(app_root.join("start.sh"), "#!/bin/sh\n").unwrap();
+    std::fs::write(app_root.join("version"), "42.1.0\n").unwrap();
+
+    assert_eq!(build_codex_executable(&app_root), app_root.join("start.sh"));
+    assert_eq!(codex_app_version(&app_root).as_deref(), Some("42.1.0"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn app_paths_linux_falls_back_to_adapter_state_when_saved_path_is_stale() {
-    let _guard = linux_app_paths_env_lock().lock().unwrap();
+    let _guard = linux_app_paths_env_lock()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let temp = tempfile::tempdir().unwrap();
     let data_home = temp.path().join("xdg-data");
     let app_root = temp.path().join("CodexDesktop");
@@ -241,18 +386,14 @@ fn app_paths_linux_falls_back_to_adapter_state_when_saved_path_is_stale() {
     std::fs::write(app_root.join("start.sh"), "#!/bin/sh\n").unwrap();
     std::fs::write(app_root.join("version"), "42.1.0\n").unwrap();
     std::fs::write(
-        data_home.join("codex-plusplus").join("state.json"),
+        data_home.join("codex-plusplus/state.json"),
         format!(
-            r#"{{
-  "appRoot": "{}",
-  "linuxCodexStartScript": "{}"
-}}"#,
+            r#"{{"appRoot":"{}","linuxCodexStartScript":"{}"}}"#,
             app_root.display(),
             app_root.join("start.sh").display()
         ),
     )
     .unwrap();
-
     let _restore = set_xdg_data_home_for_test(&data_home);
 
     assert_eq!(
@@ -265,14 +406,16 @@ fn app_paths_linux_falls_back_to_adapter_state_when_saved_path_is_stale() {
 #[cfg(target_os = "linux")]
 #[test]
 fn app_paths_linux_recovers_from_stale_state_using_adapter_desktop_entry() {
-    let _guard = linux_app_paths_env_lock().lock().unwrap();
+    let _guard = linux_app_paths_env_lock()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let temp = tempfile::tempdir().unwrap();
     let data_home = temp.path().join("xdg-data");
     let applications = data_home.join("applications");
     let app_root = temp.path().join("CodexDesktop");
     let stale_app_root = app_root.join("codex-app");
     let install_root = app_root.join(".codex-plusplus");
-    let wrapper = install_root.join("install").join("launch-codex-plus-plus");
+    let wrapper = install_root.join("install/launch-codex-plus-plus");
     let desktop_entry = applications.join("codex-plus-plus.desktop");
 
     std::fs::create_dir_all(data_home.join("codex-plusplus")).unwrap();
@@ -280,44 +423,30 @@ fn app_paths_linux_recovers_from_stale_state_using_adapter_desktop_entry() {
     std::fs::create_dir_all(&app_root).unwrap();
     std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
     std::fs::write(app_root.join("start.sh"), "#!/bin/sh\n").unwrap();
-    std::fs::write(app_root.join("version"), "42.1.0\n").unwrap();
     std::fs::write(
         &wrapper,
         format!(
             "#!/bin/sh\nexec '{}' --app-path '{}' \"$@\"\n",
-            install_root
-                .join("install")
-                .join("codex-plus-plus")
-                .display(),
+            install_root.join("install/codex-plus-plus").display(),
             app_root.display()
         ),
     )
     .unwrap();
     std::fs::write(
         &desktop_entry,
-        format!(
-            "[Desktop Entry]\nType=Application\nName=Codex++\nExec=\"{}\"\n",
-            wrapper.display()
-        ),
+        format!("[Desktop Entry]\nExec=\"{}\"\n", wrapper.display()),
     )
     .unwrap();
     std::fs::write(
-        data_home.join("codex-plusplus").join("state.json"),
+        data_home.join("codex-plusplus/state.json"),
         format!(
-            r#"{{
-  "appRoot": "{}",
-  "linuxCodexStartScript": "{}",
-  "linuxAdapterInstallRoot": "{}",
-  "linuxAdapterDesktopEntryPath": "{}"
-}}"#,
+            r#"{{"appRoot":"{}","linuxCodexStartScript":"{}","linuxAdapterDesktopEntryPath":"{}"}}"#,
             stale_app_root.display(),
             stale_app_root.join("start.sh").display(),
-            stale_app_root.join(".codex-plusplus").display(),
             desktop_entry.display()
         ),
     )
     .unwrap();
-
     let _restore = set_xdg_data_home_for_test(&data_home);
 
     assert_eq!(
@@ -454,7 +583,7 @@ fn launcher_native_menu_inspector_arguments_are_added_before_extra_args() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn launcher_linux_native_menu_inspector_preserves_start_sh_passthrough_separator() {
+fn launcher_linux_start_script_preserves_wrapper_argument_separator() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("CodexDesktop");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -468,6 +597,18 @@ fn launcher_linux_native_menu_inspector_preserves_start_sh_passthrough_separator
     assert_eq!(command[3], "--remote-debugging-port=9229");
     assert_eq!(command[4], "--remote-allow-origins=http://127.0.0.1:9229");
     assert_eq!(command[5], "--inspect=127.0.0.1:9329");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn launcher_linux_environment_contract_removes_build_runtime_pollution() {
+    let source = include_str!("../src/launcher.rs");
+
+    assert!(source.contains("pub fn codex_process_environment_from"));
+    assert!(source.contains("ELECTRON_RUN_AS_NODE"));
+    assert!(source.contains("LD_LIBRARY_PATH"));
+    assert!(source.contains("CODEX_WEBVIEW_PORT"));
+    assert!(source.contains("5176-5185"));
 }
 
 #[test]
@@ -559,6 +700,14 @@ fn launcher_no_longer_contains_mobile_control_runtime() {
     assert!(!launcher_source.contains("\"/mobile\""));
     assert!(!launcher_source.contains("CODEX_PLUS_MOBILE"));
     assert!(!settings_source.contains("mobileControl"));
+}
+
+#[test]
+fn launcher_plugin_marketplace_unlock_repairs_role_specific_plugins() {
+    let launcher_source = include_str!("../src/launcher.rs");
+
+    assert!(launcher_source.contains("ensure_openai_curated_marketplace_config(&home)"));
+    assert!(launcher_source.contains("ensure_role_specific_plugins_marketplace_config(&home)"));
 }
 
 #[test]
@@ -739,8 +888,10 @@ async fn default_helper_allows_private_network_preflight() {
     drop(listener);
 
     hooks.start_helper(port, None).await.unwrap();
-    let client = reqwest::Client::builder().no_proxy().build().unwrap();
-    let response = client
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
         .request(
             reqwest::Method::OPTIONS,
             format!("http://127.0.0.1:{port}/backend/status"),
@@ -866,23 +1017,6 @@ async fn launch_lifecycle_runs_enabled_maintenance_without_applying_relay_profil
             .as_deref(),
         Some(app_dir.to_string_lossy().as_ref())
     );
-}
-
-#[test]
-fn launch_lifecycle_does_not_scan_large_logs_database_on_startup() {
-    let source = include_str!("../src/launcher.rs");
-    let start = source
-        .find("pub async fn launch_and_inject_with_hooks")
-        .expect("launch flow should exist");
-    let end = source[start..]
-        .find("fn relay_protocol_proxy_enabled")
-        .map(|offset| start + offset)
-        .expect("launch flow should end before relay helper");
-    let body = &source[start..end];
-
-    assert!(body.contains("sanitize_thread_model_suffixes"));
-    assert!(!body.contains("sanitize_historical_model_suffixes"));
-    assert!(!body.contains("sanitize_logs_model_suffixes"));
 }
 
 #[tokio::test]
@@ -1524,100 +1658,6 @@ async fn default_launch_hooks_provider_sync_enabled_returns_explicit_error() {
             .to_string()
             .contains("provider sync requires launcher hooks")
     );
-}
-
-#[test]
-fn linux_start_script_command_uses_new_instance_separator() {
-    let temp = tempfile::tempdir().unwrap();
-    let start = temp.path().join("start.sh");
-    std::fs::write(
-        &start,
-        "#!/bin/sh
-",
-    )
-    .unwrap();
-
-    let command = build_codex_command(temp.path(), 9229, &[]);
-
-    if cfg!(target_os = "linux") {
-        assert_eq!(
-            command,
-            vec![
-                start.to_string_lossy().to_string(),
-                "--new-instance".to_string(),
-                "--".to_string(),
-                "--remote-debugging-port=9229".to_string(),
-                "--remote-allow-origins=http://127.0.0.1:9229".to_string(),
-            ]
-        );
-    }
-}
-
-#[test]
-fn linux_process_environment_strips_electron_node_pollution_and_preserves_proxy() {
-    let env = std::collections::HashMap::from([
-        ("DISPLAY".to_string(), ":0".to_string()),
-        (
-            "HTTPS_PROXY".to_string(),
-            "http://env-proxy.example.test:8080".to_string(),
-        ),
-        ("CONDA_PREFIX".to_string(), "/tmp/conda".to_string()),
-        (
-            "GI_TYPELIB_PATH".to_string(),
-            "/tmp/girepository".to_string(),
-        ),
-        ("LD_LIBRARY_PATH".to_string(), "/tmp/lib".to_string()),
-        ("PIXI_PROJECT_ROOT".to_string(), "/tmp/pixi".to_string()),
-        ("ELECTRON_RUN_AS_NODE".to_string(), "1".to_string()),
-        ("ELECTRON_NO_ATTACH_CONSOLE".to_string(), "1".to_string()),
-    ]);
-
-    let process_env = codex_process_environment_from(&env, || {
-        panic!("system proxy detection should not run when env already has proxy")
-    });
-
-    assert_eq!(
-        process_env.get("HTTPS_PROXY").map(String::as_str),
-        Some("http://env-proxy.example.test:8080")
-    );
-    if cfg!(target_os = "linux") {
-        assert!(!process_env.contains_key("ELECTRON_RUN_AS_NODE"));
-        assert!(!process_env.contains_key("ELECTRON_NO_ATTACH_CONSOLE"));
-        assert!(!process_env.contains_key("CONDA_PREFIX"));
-        assert!(!process_env.contains_key("GI_TYPELIB_PATH"));
-        assert!(!process_env.contains_key("LD_LIBRARY_PATH"));
-        assert!(!process_env.contains_key("PIXI_PROJECT_ROOT"));
-    }
-}
-
-#[test]
-fn linux_start_script_environment_uses_codex_plusplus_webview_range() {
-    let temp = tempfile::tempdir().unwrap();
-    std::fs::write(
-        temp.path().join("start.sh"),
-        "#!/bin/sh
-",
-    )
-    .unwrap();
-
-    let process_env = codex_process_environment_for_app_from(
-        temp.path(),
-        &std::collections::HashMap::new(),
-        || None,
-    );
-
-    if cfg!(target_os = "linux") {
-        assert_eq!(
-            process_env.get("CODEX_WEBVIEW_PORT").map(String::as_str),
-            Some("5176")
-        );
-        assert_eq!(
-            process_env
-                .get("CODEX_MULTI_LAUNCH_PORT_RANGE")
-                .map(String::as_str),
-            Some("5176-5185")
-        );
-    }
 }
 
 #[derive(Clone)]

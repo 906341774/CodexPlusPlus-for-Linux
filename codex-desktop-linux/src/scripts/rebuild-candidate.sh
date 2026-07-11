@@ -125,7 +125,7 @@ install_candidate() {
     [ "$NEXT_APP_DIR" != "$FINAL_APP_DIR" ] || error "Candidate and final app paths must differ"
 
     if pid="$(find_running_app_pid "$FINAL_APP_DIR/electron")"; then
-        error "Codex Desktop is running from $FINAL_APP_DIR (pid $pid). Close it before installing."
+        error "ChatGPT Desktop is running from $FINAL_APP_DIR (pid $pid). Close it before installing."
     fi
 
     if [ -e "$FINAL_APP_DIR" ]; then

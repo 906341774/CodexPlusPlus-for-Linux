@@ -1,8 +1,6 @@
 "use strict";
 
-const {
-  extractedAppPatch,
-} = require("../../../../descriptor.js");
+const { extractedAppPatch } = require("../../../../descriptor.js");
 const {
   patchLinuxLocalThreadCatalogBackfillAssets,
 } = require("../../../../impl/main-process/local-thread-catalog.js");

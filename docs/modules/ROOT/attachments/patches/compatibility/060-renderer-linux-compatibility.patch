@@ -1,20 +1,40 @@
+diff --git a/apps/codex-plus-manager/src/App.tsx b/apps/codex-plus-manager/src/App.tsx
+index a2dd7d2..397f669 100644
+--- a/apps/codex-plus-manager/src/App.tsx
++++ b/apps/codex-plus-manager/src/App.tsx
+@@ -2667,7 +2667,7 @@ function EnhanceScreen({
+               <FeatureToggle title={t("插件市场解锁")} detail={t("API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。")} checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
+               <FeatureToggle title={t("插件列表全量展示")} detail={t("进入插件页后自动连续展开“更多”，尽量一次显示完整插件列表。")} checked={form.codexAppPluginAutoExpand} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginAutoExpand", value)} />
+               <FeatureToggle title={t("模型白名单解锁")} detail={t("从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。")} checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
+-              <FeatureToggle title={t("Fast 按钮")} detail={t("显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。")} checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
++              <FeatureToggle title={t("Fast 按钮")} detail={t("显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5 / gpt-5.6，其他模型按 Standard 发送。")} checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
+               <div className="feature-action-row">
+                 <div>
+                   <strong>{t("官方远端插件缓存")}</strong>
+diff --git a/apps/codex-plus-manager/src/i18n-en.ts b/apps/codex-plus-manager/src/i18n-en.ts
+index d690dfa..df14a35 100644
+--- a/apps/codex-plus-manager/src/i18n-en.ts
++++ b/apps/codex-plus-manager/src/i18n-en.ts
+@@ -384,8 +384,8 @@ export const EN_PLAIN: Record<string, string> = {
+   "日志已复制。": "Logs copied.",
+   "时间": "Time",
+   "释放并注册内置缓存": "Extract and register embedded cache",
+-  "显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。":
+-    "Show the service-tier toggle button; Fast only supports gpt-5.4 / gpt-5.5, other models are sent as Standard.",
++  "显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5 / gpt-5.6，其他模型按 Standard 发送。":
++    "Show the service-tier toggle button; Fast only supports gpt-5.4 / gpt-5.5 / gpt-5.6; other models are sent as Standard.",
+   "普通推荐": "Regular recommendations",
+   "暂无": "None",
+   "暂无启动状态。": "No launch status yet.",
 diff --git a/assets/inject/renderer-inject.js b/assets/inject/renderer-inject.js
-index 4bd8a8e..bf91712 100644
+index af63557..c87747f 100644
 --- a/assets/inject/renderer-inject.js
 +++ b/assets/inject/renderer-inject.js
-@@ -343,6 +343,8 @@
-   const codexThreadScrollRouteHooksVersion = "dispatcher:2";
-   const codexThreadScrollListenerVersion = "4";
-   const codexThreadScrollUserIntentVersion = "dispatcher:2";
-+  const codexPluginEntryUnlockVersion = "2";
-+  const codexPluginEntryRefreshIntervalMs = 1000;
-   const codexPlusImageOverlayId = "codex-plus-image-overlay";
-   window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
-   const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
-@@ -1401,30 +1403,80 @@
+@@ -1401,30 +1401,80 @@
    const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
    const codexServiceTierFallbackFastValue = "priority";
    const codexServiceTierModulePromises = new Map();
+-  const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5"]);
 +  const codexAppAssetTextPromises = new Map();
 +  const codexAppAssetFeatureFallbacks = {
 +    "setting-storage-": [
@@ -27,10 +47,10 @@ index 4bd8a8e..bf91712 100644
 +      ["sendRequest", "list-plugins", "install-plugin"],
 +    ],
 +  };
-   const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5"]);
++  const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5", "gpt-5.6"]);
    const codexThreadServiceTierModes = new Set(["inherit", "standard", "fast"]);
    const codexServiceTierControlModes = new Set(["inherit", "global-standard", "global-fast", "custom"]);
- 
+
 -  function codexAppAssetUrl(namePart) {
 -    const urls = [
 +  function codexAppAssetCandidateUrls() {
@@ -67,7 +87,7 @@ index 4bd8a8e..bf91712 100644
 +    }
 +    return await codexAppAssetTextPromises.get(url);
    }
- 
+
    async function codexAppAssetUrlFromScriptText(namePart) {
      const scripts = Array.from(document.scripts || []).map((script) => script.src).filter(Boolean);
      for (const src of scripts) {
@@ -103,7 +123,7 @@ index 4bd8a8e..bf91712 100644
        }
      }
      return "";
-@@ -1433,7 +1485,9 @@
+@@ -1433,7 +1483,9 @@
    async function loadCodexAppModule(namePart) {
      if (!codexServiceTierModulePromises.has(namePart)) {
        const promise = Promise.resolve().then(async () => {
@@ -114,15 +134,15 @@ index 4bd8a8e..bf91712 100644
          if (!url) throw new Error(`未找到 Codex App asset: ${namePart}`);
          return await import(url);
        }).catch((error) => {
-@@ -1483,6 +1537,30 @@
+@@ -1483,6 +1535,30 @@
      return String(model || "").trim().toLowerCase();
    }
- 
+
 +  function codexServiceTierSupportedModelFromLabelText(text) {
 +    const normalized = String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
 +    if (!normalized || normalized.length > 160) return "";
 +    if (codexServiceTierSupportedFastModels.has(normalized)) return normalized;
-+    const explicit = normalized.match(/\bgpt[-_\s]?5[._-]([45])\b/);
++    const explicit = normalized.match(/\bgpt[-_\s]?5[._-]([456])\b/);
 +    if (explicit) return `gpt-5.${explicit[1]}`;
 +    if (!/(超高|high|ultra|reasoning|推理|model|模型|gpt)/i.test(normalized)) return "";
 +    for (const modelName of codexServiceTierSupportedFastModels) {
@@ -145,10 +165,10 @@ index 4bd8a8e..bf91712 100644
    function codexServiceTierModelFromValue(value, visited = new WeakSet(), depth = 0) {
      if (typeof value === "string") return value.trim();
      if (!value || typeof value !== "object" || visited.has(value) || depth > 3) return "";
-@@ -1498,16 +1576,74 @@
+@@ -1498,16 +1574,74 @@
      return "";
    }
- 
+
 +  function codexServiceTierModelFromElementText(element) {
 +    const values = [
 +      element?.textContent,
@@ -209,33 +229,33 @@ index 4bd8a8e..bf91712 100644
 +    if (catalogModel) return codexServiceTierCanonicalModelName(catalogModel) || catalogModel;
 +    return codexServiceTierModelFromComposerFooter();
    }
- 
+
    function codexServiceTierModelForRequest(params, modelHint = "") {
 -    return codexServiceTierModelFromValue(params) || codexServiceTierModelFromValue(modelHint) || codexServiceTierCurrentModelName();
 +    const modelName = codexServiceTierModelFromValue(params) || codexServiceTierModelFromValue(modelHint) || codexServiceTierCurrentModelName();
 +    return codexServiceTierCanonicalModelName(modelName) || modelName;
    }
- 
+
    function codexServiceTierFastSupportedForModel(modelName) {
 -    return codexServiceTierSupportedFastModels.has(normalizeCodexServiceTierModelName(modelName));
 +    return !!codexServiceTierCanonicalModelName(modelName)
 +      || codexServiceTierSupportedFastModels.has(normalizeCodexServiceTierModelName(modelName));
    }
- 
+
    function codexServiceTierFastUnsupportedMessage(modelName = codexServiceTierCurrentModelName()) {
-@@ -1715,7 +1851,7 @@
+@@ -1715,7 +1849,7 @@
    }
- 
+
    function setCodexServiceTierControlMode(mode) {
 -    if (codexPlusBackendStatus.status !== "ok") {
 +    if (codexServiceTierBackendBlocksLocalOverride()) {
        showToast("后端未连接，无法切换服务模式", null);
        refreshCodexServiceTierControls();
        return;
-@@ -1789,8 +1925,13 @@
+@@ -1789,9 +1923,14 @@
      };
    }
- 
+
 +  function codexServiceTierBackendBlocksLocalOverride() {
 +    const status = codexPlusBackendStatus.status;
 +    return !!status && status !== "ok" && status !== "checking";
@@ -243,32 +263,80 @@ index 4bd8a8e..bf91712 100644
 +
    function codexServiceTierBadgeState() {
 -    if (codexPlusBackendStatus.status === "checking") return { tier: "loading", label: "...", disabled: true, title: "服务模式：正在检查后端连接" };
+-    if (codexPlusBackendStatus.status && codexPlusBackendStatus.status !== "ok") return { tier: "failed", label: "未连接", disabled: true, title: "服务模式：后端未连接，无法切换" };
 +    if (codexPlusBackendStatus.status === "checking" && codexServiceTierState.status === "loading") return { tier: "loading", label: "...", disabled: true, title: "服务模式：正在检查后端连接" };
-     if (codexPlusBackendStatus.status && codexPlusBackendStatus.status !== "ok") return { tier: "failed", label: "未连接", disabled: true, title: "服务模式：后端未连接，无法切换" };
++    if (codexServiceTierBackendBlocksLocalOverride()) return { tier: "failed", label: "未连接", disabled: true, title: "服务模式：后端未连接，无法切换" };
      if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: "服务模式：正在读取" };
      if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: "服务模式：读取失败" };
-@@ -1909,7 +2050,7 @@
+     const fastAvailability = codexServiceTierFastAvailability();
+@@ -1827,9 +1966,10 @@
+     const featureEnabled = !!codexPlusSettings().serviceTierControls;
+     const backendConnected = codexPlusBackendStatus.status === "ok";
+     const backendChecking = codexPlusBackendStatus.status === "checking";
++    const backendAllowsLocalOverride = !codexServiceTierBackendBlocksLocalOverride();
+     if (featureEnabled && backendConnected) codexServiceTierMaybeLoadModelCatalog();
+     const fastAvailability = codexServiceTierFastAvailability();
+-    const fastDisabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading" || !fastAvailability.supported;
++    const fastDisabled = !featureEnabled || !backendAllowsLocalOverride || codexServiceTierState.status === "loading" || !fastAvailability.supported;
+     const fastTitle = fastAvailability.supported
+       ? "Fast：使用 service_tier=\"priority\""
+       : codexServiceTierFastUnsupportedMessage(fastAvailability.modelName);
+@@ -1844,11 +1984,11 @@
+         : "未启用";
+     });
+     document.querySelectorAll("[data-codex-service-tier-inherit]").forEach((button) => {
+-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
++      button.disabled = !featureEnabled || !backendAllowsLocalOverride || codexServiceTierState.status === "loading";
+       button.dataset.active = String(codexServiceTierState.controlMode === "inherit");
+     });
+     document.querySelectorAll("[data-codex-service-tier-standard]").forEach((button) => {
+-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
++      button.disabled = !featureEnabled || !backendAllowsLocalOverride || codexServiceTierState.status === "loading";
+       button.dataset.active = String(codexServiceTierState.controlMode === "global-standard");
+     });
+     document.querySelectorAll("[data-codex-service-tier-fast]").forEach((button) => {
+@@ -1857,16 +1997,16 @@
+       button.title = fastTitle;
+     });
+     document.querySelectorAll("[data-codex-service-tier-custom]").forEach((button) => {
+-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
++      button.disabled = !featureEnabled || !backendAllowsLocalOverride || codexServiceTierState.status === "loading";
+       button.dataset.active = String(codexServiceTierState.controlMode === "custom");
+     });
+     document.querySelectorAll("[data-codex-service-tier-thread-inherit]").forEach((button) => {
+-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
++      button.disabled = !featureEnabled || !backendAllowsLocalOverride || codexServiceTierState.status === "loading";
+       button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "inherit");
+       button.title = `当前 thread 不单独覆盖，继承自定义默认 ${codexServiceTierState.defaultMode || "inherit"}`;
+     });
+     document.querySelectorAll("[data-codex-service-tier-thread-standard]").forEach((button) => {
+-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
++      button.disabled = !featureEnabled || !backendAllowsLocalOverride || codexServiceTierState.status === "loading";
+       button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "standard");
+     });
+     document.querySelectorAll("[data-codex-service-tier-thread-fast]").forEach((button) => {
+@@ -1909,7 +2049,7 @@
    }
- 
+
    function setCodexThreadServiceTierMode(mode) {
 -    if (codexPlusBackendStatus.status !== "ok") {
 +    if (codexServiceTierBackendBlocksLocalOverride()) {
        showToast("后端未连接，无法切换服务模式", null);
        refreshCodexServiceTierControls();
        return;
-@@ -1932,7 +2073,7 @@
+@@ -1932,7 +2072,7 @@
    }
- 
+
    function toggleCodexServiceTierFromBadge() {
 -    if (codexPlusBackendStatus.status !== "ok") {
 +    if (codexServiceTierBackendBlocksLocalOverride()) {
        showToast("后端未连接，无法切换服务模式", null);
        refreshCodexServiceTierControls();
        return;
-@@ -2074,12 +2215,30 @@
+@@ -2074,12 +2214,30 @@
      return message;
    }
- 
+
 +  function findCodexDispatcherClass(module) {
 +    return Object.values(module || {}).find((value) => {
 +      if (typeof value !== "function" || typeof value.getInstance !== "function") return false;
@@ -297,10 +365,10 @@ index 4bd8a8e..bf91712 100644
          const dispatcher = dispatcherClass?.getInstance?.();
          if (!dispatcher || typeof dispatcher.dispatchMessage !== "function") throw new Error("Codex dispatcher unavailable");
          if (dispatcher.__codexServiceTierOriginalDispatchMessage) {
-@@ -2811,6 +2970,50 @@
+@@ -2811,6 +2969,50 @@
      return !!button.closest?.('[class*="ms-auto"][class*="shrink-0"][class*="items-center"]');
    }
- 
+
 +  function rectsOverlap(first, second, padding = 0) {
 +    return first.left < second.right + padding &&
 +      first.right > second.left - padding &&
@@ -348,23 +416,23 @@ index 4bd8a8e..bf91712 100644
    function updateFloatingCodexPlusMenuPosition(menu) {
      if (!menu?.classList?.contains(codexPlusMenuFloatingClass)) return;
      const header = document.querySelector(selectors.appHeader) || document.querySelector("header");
-@@ -2827,6 +3030,7 @@
+@@ -2827,6 +3029,7 @@
        setCssPropIfChanged(menu, "--codex-plus-menu-top", `${anchor.rect.top}px`);
        setCssPropIfChanged(menu, "--codex-plus-menu-height", `${anchor.rect.height}px`);
        setCssPropIfChanged(menu, "--codex-plus-menu-right", `${Math.max(0, window.innerWidth - anchor.rect.left + gap)}px`);
 +      avoidFloatingCodexPlusMenuNativeControlOverlap(menu);
        return;
      }
- 
-@@ -2836,6 +3040,7 @@
+
+@@ -2836,6 +3039,7 @@
        setCssPropIfChanged(menu, "--codex-plus-menu-height", `${headerRect.height}px`);
      }
      menu.style.removeProperty("--codex-plus-menu-right");
 +    avoidFloatingCodexPlusMenuNativeControlOverlap(menu);
    }
- 
+
    function installCodexPlusMenu() {
-@@ -3344,6 +3549,14 @@
+@@ -3344,6 +3548,14 @@
        };
      }
      if (message.type === "mcp-request" && message.request && typeof message.request === "object") {
@@ -379,7 +447,7 @@ index 4bd8a8e..bf91712 100644
        const requestMethod = appServerModelRequestMethod(String(message.request.method || ""), message.request.params);
        if (requestMethod !== "list-plugins" && requestMethod !== "install-plugin") return message;
        const requestParams = patchPluginMarketplaceRequestParams(
-@@ -3488,6 +3701,8 @@
+@@ -3488,6 +3700,8 @@
        window.addEventListener("message", (event) => {
          try {
            patchPluginMarketplaceResponseData(event?.data);
@@ -388,191 +456,9 @@ index 4bd8a8e..bf91712 100644
          } catch (error) {
            sendCodexPlusDiagnostic("plugin_marketplace_response_message_patch_failed", {
              errorName: error?.name || "",
-@@ -3539,11 +3754,180 @@
-     void patch();
+@@ -4382,18 +4596,80 @@
    }
- 
-+  function reactFiberFrom(element) {
-+    const fiberKey = Object.keys(element).find((key) => key.startsWith("__reactFiber"));
-+    return fiberKey ? element[fiberKey] : null;
-+  }
-+
-+  function authContextValueFrom(element) {
-+    for (let fiber = reactFiberFrom(element); fiber; fiber = fiber.return) {
-+      for (const value of [fiber.memoizedProps?.value, fiber.pendingProps?.value]) {
-+        if (value && typeof value === "object" && typeof value.setAuthMethod === "function" && "authMethod" in value) {
-+          return value;
-+        }
-+      }
-+    }
-+    return null;
-+  }
-+
-+  function spoofChatGPTAuthMethod(element) {
-+    const auth = authContextValueFrom(element);
-+    if (!auth || auth.authMethod === "chatgpt") return false;
-+    auth.setAuthMethod("chatgpt");
-+    return true;
-+  }
-+
-+  function normalizePluginEntryLabel(text) {
-+    return (text || "").replace(/\s+/g, " ").trim();
-+  }
-+
-+  function isPluginEntryLabel(text) {
-+    return /^(插件|Plugins)(\s+-\s+.*)?$/i.test(normalizePluginEntryLabel(text));
-+  }
-+
-+  function pluginEntryCandidates() {
-+    return Array.from(new Set([
-+      ...document.querySelectorAll(selectors.pluginNavButton),
-+      ...document.querySelectorAll('nav[role="navigation"] button, nav button'),
-+    ]));
-+  }
-+
-+  function pluginEntryButton() {
-+    const byIcon = document.querySelector(`${selectors.pluginNavButton} ${selectors.pluginSvgPath}`)?.closest("button");
-+    if (byIcon) return byIcon;
-+    return pluginEntryCandidates()
-+      .find((button) => isPluginEntryLabel(button.textContent || button.innerText)) || null;
-+  }
-+
-+  function clearPluginEntryUnlockLabel(button) {
-+    const labelTextNode = Array.from(button.querySelectorAll("span, div")).reverse()
-+      .flatMap((node) => Array.from(node.childNodes))
-+      .find((node) => node.nodeType === 3 && /^(插件 - 已解锁|Plugins - Unlocked)$/i.test((node.nodeValue || "").trim()));
-+    if (!labelTextNode) return;
-+    labelTextNode.nodeValue = /^Plugins/i.test((labelTextNode.nodeValue || "").trim()) ? "Plugins" : "插件";
-+  }
-+
-+  function labelUnlockedPluginEntry(button) {
-+    clearPluginEntryUnlockLabel(button);
-+  }
-+
-+  function pluginEntryUnlockNodes(button) {
-+    const nodes = [button];
-+    button.querySelectorAll?.("button, [role='button'], [disabled], [aria-disabled], [data-disabled], .cursor-not-allowed, .pointer-events-none")
-+      .forEach((node) => nodes.push(node));
-+    let parent = button.parentElement;
-+    for (let depth = 0; parent && depth < 3; depth += 1, parent = parent.parentElement) {
-+      if (parent.matches?.("[disabled], [aria-disabled], [data-disabled], .cursor-not-allowed, .pointer-events-none")) {
-+        nodes.push(parent);
-+      }
-+    }
-+    return Array.from(new Set(nodes));
-+  }
-+
-+  function clearPluginEntryDisabledState(element) {
-+    if (!(element instanceof HTMLElement)) return;
-+    if ("disabled" in element) element.disabled = false;
-+    element.removeAttribute("disabled");
-+    element.removeAttribute("aria-disabled");
-+    element.removeAttribute("data-disabled");
-+    element.removeAttribute("inert");
-+    element.classList.remove("disabled", "opacity-50", "cursor-not-allowed", "pointer-events-none");
-+    element.style.display = "";
-+    element.style.pointerEvents = "auto";
-+    element.style.opacity = "";
-+    element.style.cursor = "pointer";
-+    if (element.tagName === "BUTTON" || element.getAttribute("role") === "button") {
-+      element.tabIndex = 0;
-+    }
-+    patchReactDisabledProps(element);
-+  }
-+
-+  function pluginPageVisible(button) {
-+    if (button?.getAttribute("aria-current") === "page") return true;
-+    const text = document.body?.innerText || "";
-+    return /(^|\n)(搜索插件|Search plugins)(\n|$)/i.test(text) ||
-+      /(^|\n)(插件|Plugins)\n(技能|Skills)\n(管理|Manage)/i.test(text);
-+  }
-+
-+  function installPluginEntryGuard(button) {
-+    if (button.dataset.codexPluginEnabled === codexPluginEntryUnlockVersion) return;
-+    const keepUnlocked = () => {
-+      spoofChatGPTAuthMethod(button);
-+      pluginEntryUnlockNodes(button).forEach(clearPluginEntryDisabledState);
-+    };
-+    ["pointerdown", "mousedown", "mouseup", "focus", "keydown"].forEach((eventName) => {
-+      button.addEventListener(eventName, keepUnlocked, true);
-+    });
-+    button.addEventListener("click", () => {
-+      keepUnlocked();
-+      if (button.dataset.codexPluginSyntheticClick === "true") return;
-+      setTimeout(() => {
-+        if (!button.isConnected || pluginPageVisible(button)) return;
-+        button.dataset.codexPluginSyntheticClick = "true";
-+        try {
-+          button.click();
-+        } finally {
-+          setTimeout(() => {
-+            delete button.dataset.codexPluginSyntheticClick;
-+          }, 0);
-+        }
-+      }, 250);
-+    }, true);
-+  }
-+
-+  function enablePluginEntry() {
-+    if (pluginPatchDisabledInRelayMode()) return;
-+    if (!codexPlusSettings().pluginMarketplaceUnlock) return;
-+    const pluginButton = pluginEntryButton();
-+    if (!pluginButton) return;
-+    const spoofed = spoofChatGPTAuthMethod(pluginButton);
-+    pluginEntryUnlockNodes(pluginButton).forEach(clearPluginEntryDisabledState);
-+    labelUnlockedPluginEntry(pluginButton);
-+    installPluginEntryGuard(pluginButton);
-+    pluginButton.dataset.codexPluginEnabled = codexPluginEntryUnlockVersion;
-+    sendCodexPlusDiagnostic("plugin_entry_unlock_applied", { spoofed });
-+  }
-+
-+  function refreshPluginEntryUnlockLoop() {
-+    const shouldRun = !pluginPatchDisabledInRelayMode() && codexPlusSettings().pluginMarketplaceUnlock;
-+    if (!shouldRun) {
-+      clearInterval(window.__codexPluginEntryRefreshTimer);
-+      window.__codexPluginEntryRefreshTimer = null;
-+      return;
-+    }
-+    if (window.__codexPluginEntryRefreshTimer) return;
-+    window.__codexPluginEntryRefreshTimer = setInterval(() => {
-+      if (!codexPlusSettings().pluginMarketplaceUnlock || pluginPatchDisabledInRelayMode()) {
-+        clearInterval(window.__codexPluginEntryRefreshTimer);
-+        window.__codexPluginEntryRefreshTimer = null;
-+        return;
-+      }
-+      enablePluginEntry();
-+    }, codexPluginEntryRefreshIntervalMs);
-+  }
-   function pluginPatchDisabledInRelayMode() {
--    return !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.launchMode === "relay";
-+    return codexPlusBackendSettings.launchMode === "relay";
-+  }
-+
-+  function patchReactDisabledProps(element) {
-+    Object.keys(element)
-+      .filter((key) => key.startsWith("__reactProps"))
-+      .forEach((key) => {
-+        const props = element[key];
-+        if (!props || typeof props !== "object") return;
-+        props.disabled = false;
-+        props["aria-disabled"] = false;
-+      });
-   }
- 
-   function clearPluginPatchArtifacts() {
-+    clearInterval(window.__codexPluginEntryRefreshTimer);
-+    window.__codexPluginEntryRefreshTimer = null;
-+    const pluginButton = pluginEntryButton();
-+    if (pluginButton) {
-+      delete pluginButton.dataset.codexPluginEnabled;
-+      clearPluginEntryUnlockLabel(pluginButton);
-+    }
-   }
- 
-   let cachedSessionRows = [];
-@@ -4382,18 +4766,80 @@
-   }
- 
+
    async function postJson(path, payload) {
 +    const helperBridgeFallbackRoutes = new Set([
 +      "/settings/get",
@@ -661,7 +547,7 @@ index 4bd8a8e..bf91712 100644
        }
        sendCodexPlusDiagnostic("bridge_missing_for_route", { path });
        return { status: "failed", message: "桥接不可用，请重启启动器" };
-@@ -4405,16 +4851,7 @@
+@@ -4405,16 +4681,7 @@
        ]);
      }
      async function fetchBackendStatusFromHelper(path, payload) {
@@ -679,7 +565,7 @@ index 4bd8a8e..bf91712 100644
      }
      try {
        if (path === "/backend/status") {
-@@ -4461,6 +4898,9 @@
+@@ -4461,6 +4728,9 @@
          });
          return fallback;
        }
@@ -689,19 +575,31 @@ index 4bd8a8e..bf91712 100644
        throw error;
      }
    }
-@@ -4548,6 +4988,8 @@
+@@ -4548,6 +4818,8 @@
    let codexModelWhitelistRefreshTimer = 0;
    let codexModelWhitelistRefreshUntil = 0;
    const codexPlusModelListRequestIds = new Set();
 +  const codexPlusAccountReadRequestIds = new Set();
 +  const codexPlusPluginReadRequestIds = new Set();
- 
+
    if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) {
      window.__codexPlusServiceTierTest = {
-@@ -4925,6 +5367,91 @@
+@@ -4572,6 +4844,11 @@
+       setServiceTierState: (state = {}) => {
+         codexServiceTierState = { ...codexServiceTierState, ...state };
+       },
++      setBackendStatus: (state = {}) => {
++        codexPlusBackendStatus = { ...codexPlusBackendStatus, ...state };
++      },
++      backendBlocksLocalOverride: () => codexServiceTierBackendBlocksLocalOverride(),
++      badgeState: () => codexServiceTierBadgeState(),
+       setThreadState: (state = {}) => {
+         localStorage.setItem(codexThreadServiceTierKey, JSON.stringify({
+           version: codexThreadServiceTierVersion,
+@@ -4946,6 +5223,91 @@
      }, true);
    }
- 
+
 +  function ensureCodexPlusArrayProperty(target, property) {
 +    if (!target || typeof target !== "object") return false;
 +    if (Array.isArray(target[property])) return false;
@@ -790,10 +688,10 @@ index 4bd8a8e..bf91712 100644
    function patchMcpModelResponseData(data) {
      if (data?.type !== "mcp-response") return false;
      const message = data.message || data.response;
-@@ -5143,6 +5670,35 @@
+@@ -5193,6 +5555,35 @@
      return !!leftPath && !!rightPath && leftPath === rightPath;
    }
- 
+
 +  function workspaceParentPath(path) {
 +    const normalized = normalizeWorkspacePath(path);
 +    const index = normalized.lastIndexOf("/");
@@ -826,7 +724,7 @@ index 4bd8a8e..bf91712 100644
    function displayProjectName(path) {
      const trimmed = String(path || "").replace(/\/+$/, "");
      return trimmed.split(/[\\/]+/).filter(Boolean).pop() || trimmed || "未命名项目";
-@@ -5312,14 +5868,14 @@
+@@ -5362,14 +5753,14 @@
    function projectItemMatchesTarget(projectItem, target) {
      const projectRow = projectRowFromListItem(projectItem);
      const projectPath = projectRow?.getAttribute?.("data-app-action-sidebar-project-id") || "";
@@ -836,14 +734,14 @@ index 4bd8a8e..bf91712 100644
      const labels = uniqueValues([targetLabel(target), displayProjectName(targetPath(target))]).map(normalizeProjectLabel).filter(Boolean);
      return !!actual && labels.includes(actual);
    }
- 
+
    function findProjectListItem(target) {
 -    const nativeTarget = nativeProjectTargets().find((project) => sameWorkspacePath(project.path, targetPath(target)));
 +    const nativeTarget = nativeProjectTargets().find((project) => sameWorkspaceProjectFamily(project.path, targetPath(target)));
      if (nativeTarget?.listItem) return nativeTarget.listItem;
      const section = projectsSection();
      if (!section) return null;
-@@ -5882,6 +6438,8 @@
+@@ -5932,6 +6323,8 @@
      if (result.status !== "moved") throw new Error(result.message || "移动项目失败");
      await setProjectlessThreadIds(ref, "remove");
      await clearThreadWorkspaceHints(ref);
@@ -851,8 +749,8 @@ index 4bd8a8e..bf91712 100644
 +    await clearThreadProjectlessOutputDirectories(ref);
      return result;
    }
- 
-@@ -6673,8 +7231,9 @@
+
+@@ -6723,8 +7116,9 @@
      if (window.__codexUpstreamPendingWorktreeDispatcherPatch === patchVersion) return;
      const patch = async () => {
        try {
@@ -863,8 +761,8 @@ index 4bd8a8e..bf91712 100644
          const dispatcher = dispatcherClass?.getInstance?.();
          if (!dispatcher || typeof dispatcher.dispatchMessage !== "function") throw new Error("Codex dispatcher unavailable");
          if (!dispatcher.__codexUpstreamWorktreeOriginalDispatchMessage) {
-@@ -6921,16 +7480,21 @@
- 
+@@ -6971,16 +7365,21 @@
+
    function isCurrentSessionRow(row, ref) {
      if (row.getAttribute("aria-current") === "page" || row.getAttribute("aria-current") === "true") return true;
 +    const currentThreadId = locationThreadId();
@@ -886,9 +784,9 @@ index 4bd8a8e..bf91712 100644
 -    return !!ref.session_id && window.location.href.includes(ref.session_id);
 +    return true;
    }
- 
+
    function releaseDeleteFocus(row, button) {
-@@ -6945,7 +7509,7 @@
+@@ -6995,7 +7394,7 @@
      const shouldReload = isCurrentSessionRow(row, ref);
      row.remove();
      if (shouldReload) {
@@ -896,11 +794,11 @@ index 4bd8a8e..bf91712 100644
 +      showToast("当前会话已删除，请从左侧选择其他会话。", null);
      }
    }
- 
-@@ -7656,12 +8220,58 @@
+
+@@ -7706,12 +8105,58 @@
        });
    }
- 
+
 +  function codexServiceTierLinuxFooterClassMatch(element) {
 +    return /\b_footer_[A-Za-z0-9_-]*_\d+\b/.test(String(element?.className || ""));
 +  }
@@ -957,7 +855,7 @@ index 4bd8a8e..bf91712 100644
        .filter(codexServiceTierBadgeVisibleElement)
        .sort((left, right) => {
          const leftRect = left.getBoundingClientRect();
-@@ -7689,6 +8299,12 @@
+@@ -7739,6 +8184,12 @@
      const candidates = new Set();
      const threadComposer = conversationViewFindComposerEl();
      if (threadComposer && codexServiceTierBadgeVisibleElement(threadComposer)) candidates.add(threadComposer);
@@ -970,10 +868,10 @@ index 4bd8a8e..bf91712 100644
      codexServiceTierVisibleComposerFooters().forEach((footer) => {
        candidates.add(footer);
        let node = footer.parentElement;
-@@ -7723,6 +8339,14 @@
+@@ -7773,6 +8224,14 @@
      }) || null;
    }
- 
+
 +  function codexServiceTierDirectChildUnder(parent, node) {
 +    let child = node;
 +    while (child?.parentElement && child.parentElement !== parent) {
@@ -985,10 +883,10 @@ index 4bd8a8e..bf91712 100644
    function codexServiceTierComposerFooter(composer) {
      if (composer?.matches?.(".composer-footer")) return composer;
      return codexServiceTierBestComposerFooter(composer) || codexServiceTierBestComposerFooter() || null;
-@@ -7741,12 +8365,24 @@
+@@ -7791,12 +8250,24 @@
      return providerGroup || children[children.length - 1] || footer;
    }
- 
+
 +  function codexServiceTierBadgeInsertionPoint(composer, anchor, group) {
 +    if (anchor?.parentElement) {
 +      const parent = anchor.parentElement;
@@ -1011,9 +909,9 @@ index 4bd8a8e..bf91712 100644
 -    return null;
 +    return codexServiceTierBadgeInsertionPoint(composer, anchor, group);
    }
- 
+
    function wireCodexServiceTierBadge(badge) {
-@@ -7757,14 +8393,14 @@
+@@ -7807,14 +8278,14 @@
      badge.addEventListener("click", (event) => {
        event.preventDefault();
        event.stopPropagation();
@@ -1030,7 +928,7 @@ index 4bd8a8e..bf91712 100644
        toggleCodexServiceTierFromBadge();
      });
    }
-@@ -8001,6 +8637,7 @@
+@@ -8051,6 +8522,7 @@
      installCodexServiceTierDispatcherPatch();
      installCodexPlusMenu();
      localizeCodexMenus();
@@ -1038,23 +936,7 @@ index 4bd8a8e..bf91712 100644
      scheduleBackendHeartbeat();
      installDeleteButtonEventDelegation();
      updateThreadScrollHandlers();
-@@ -8603,10 +9240,15 @@
-   function scanDeferred() {
-     if (pluginPatchDisabledInRelayMode()) {
-       clearPluginPatchArtifacts();
-+      refreshPluginEntryUnlockLoop();
-     } else {
-       const pluginUnlockStrategy = codexPluginUnlockStrategy();
-       const settings = codexPlusSettings();
-       logCodexPluginUnlockStrategy(pluginUnlockStrategy);
-+      if ((pluginUnlockStrategy === "legacy" || pluginUnlockStrategy === "unknown") && settings.pluginMarketplaceUnlock) {
-+        enablePluginEntry();
-+      }
-+      refreshPluginEntryUnlockLoop();
-       if ((pluginUnlockStrategy === "modern" || pluginUnlockStrategy === "unknown") && settings.pluginMarketplaceUnlock) {
-         const marketplaceRequestPatchStrategy = codexPluginMarketplaceRequestPatchStrategy();
-         installPluginBuildFlavorFilterPatch();
-@@ -8665,6 +9307,12 @@
+@@ -8715,6 +9187,12 @@
        '[class*="user-message"]',
        '[class*="UserMessage"]',
        ".composer-footer",
@@ -1067,12 +949,12 @@ index 4bd8a8e..bf91712 100644
        selectors.appHeader,
        selectors.archiveNav,
        codexMenuLocalizationScopeSelector(),
-@@ -8749,7 +9397,7 @@
+@@ -8799,7 +9277,7 @@
    window.addEventListener("resize", window.__codexPlusResizeHandler);
    window.__codexSessionDeleteObserver?.disconnect();
    window.__codexSessionDeleteObserver = new MutationObserver(scheduleScan);
 -  window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, { childList: true, subtree: true });
 +  window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "disabled", "aria-disabled", "data-disabled", "aria-current"] });
  })();
- 
+
  // === 粘贴修复 (CodexPlusPlus 页面增强) ===

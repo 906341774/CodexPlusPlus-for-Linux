@@ -1,5 +1,5 @@
 {
-  description = "Codex Desktop for Linux installer";
+  description = "ChatGPT Desktop for Linux installer";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -63,6 +63,7 @@
             in
               !(pkgs.lib.hasSuffix "/.codex" pathStr || pkgs.lib.hasInfix "/.codex/" pathStr));
         };
+        nixLinuxFeatures = import ./nix/linux-features.nix { lib = pkgs.lib; };
         computerUseBuildSource = pkgs.runCommandLocal "codex-computer-use-linux-source" { } ''
           mkdir -p "$out"
           cp ${./Cargo.lock} "$out/Cargo.lock"
@@ -80,11 +81,11 @@
         '';
 
         codexDmg = pkgs.fetchurl {
-          url = "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg";
-          hash = "sha256-MKL+mR5Ibx7W1SUWeWOXM1aNIN7cDXHJieggC8cRxGw=";
+          url = "https://persistent.oaistatic.com/codex-app-prod/ChatGPT.dmg";
+          hash = "sha256-b2evfi+TQJOriv687BE3TUDI24+RAPtmIPJBVUAdgxk=";
         };
 
-        codexVersion = "26.623.141536";
+        codexVersion = "26.707.31428";
         electronVersion = "42.1.0";
         electronPlatform =
           {
@@ -391,7 +392,8 @@ PY
           });
 
         enabledFeatureIds = { enableComputerUseUi ? false, linuxFeatureIds ? [ ] }:
-          pkgs.lib.optionals enableComputerUseUi [ "computer-use-ui" ] ++ linuxFeatureIds;
+          pkgs.lib.optionals enableComputerUseUi [ "computer-use-ui" ]
+          ++ nixLinuxFeatures.normalize linuxFeatureIds;
 
         packageSuffix = args:
           let
@@ -482,11 +484,16 @@ PY
           '';
         };
 
-        mkCodexDesktop = { enableComputerUseUi ? false, linuxFeatureIds ? [ ] }:
+        buildCodexDesktop = { enableComputerUseUi ? false, linuxFeatureIds ? [ ] }:
         let
-          featureArgs = { inherit enableComputerUseUi linuxFeatureIds; };
+          normalizedLinuxFeatureIds = nixLinuxFeatures.normalize linuxFeatureIds;
+          featureArgs = {
+            inherit enableComputerUseUi;
+            linuxFeatureIds = normalizedLinuxFeatureIds;
+          };
           payload = mkCodexDesktopPayload {
-            inherit enableComputerUseUi linuxFeatureIds;
+            inherit enableComputerUseUi;
+            linuxFeatureIds = normalizedLinuxFeatureIds;
           };
         in
         pkgs.stdenv.mkDerivation {
@@ -556,9 +563,9 @@ PY
                 featureIds = enabledFeatureIds featureArgs;
               in
               if featureIds == [ ] then
-                "Codex Desktop for Linux"
+                "ChatGPT Desktop for Linux"
               else
-                "Codex Desktop for Linux with ${pkgs.lib.concatStringsSep ", " featureIds} enabled";
+                "ChatGPT Desktop for Linux with ${pkgs.lib.concatStringsSep ", " featureIds} enabled";
             homepage = "https://github.com/ilysenko/codex-desktop-linux";
             license = pkgs.lib.licenses.mit;
             platforms = pkgs.lib.platforms.linux;
@@ -566,19 +573,28 @@ PY
           };
         };
 
-        codexDesktop = mkCodexDesktop { };
+        codexDesktop = pkgs.lib.makeOverridable buildCodexDesktop { };
 
-        codexDesktopComputerUseUi = mkCodexDesktop {
+        codexDesktopComputerUseUi = codexDesktop.override {
           enableComputerUseUi = true;
         };
 
-        codexDesktopRemoteMobileControl = mkCodexDesktop {
+        codexDesktopRemoteMobileControl = codexDesktop.override {
           linuxFeatureIds = [ "remote-mobile-control" ];
         };
 
-        codexDesktopComputerUseUiRemoteMobileControl = mkCodexDesktop {
+        codexDesktopComputerUseUiRemoteMobileControl = codexDesktop.override {
           enableComputerUseUi = true;
           linuxFeatureIds = [ "remote-mobile-control" ];
+        };
+
+        codexDesktopNixFeatureCheck = codexDesktop.override {
+          linuxFeatureIds = [
+            "appshots"
+            "node-repl-reaper"
+            "open-target-discovery"
+            "persistent-status-panel"
+          ];
         };
 
         installer = pkgs.writeShellApplication {
@@ -630,6 +646,13 @@ PY
           codex-desktop-remote-mobile-control = codexDesktopRemoteMobileControl;
           codex-desktop-computer-use-ui-remote-mobile-control = codexDesktopComputerUseUiRemoteMobileControl;
           installer = installer;
+        };
+
+        checks = {
+          nix-linux-features-evaluation = import ./nix/linux-features-test.nix {
+            inherit pkgs self system;
+          };
+          nix-linux-features-multi-feature = codexDesktopNixFeatureCheck;
         };
 
         apps.default = {

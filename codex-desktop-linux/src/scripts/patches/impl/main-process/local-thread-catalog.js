@@ -48,13 +48,9 @@ function applyLinuxLocalThreadCatalogPreserveBackfillPatch(currentSource) {
 
   let patchedSource = currentSource;
   let replacements = 0;
-
   for (const separator of ["\n", "\\n"]) {
     for (const { needle, replacement } of pruningSqlPatchSpecs(separator)) {
-      if (
-        !patchedSource.includes(replacement) &&
-        patchedSource.includes(needle)
-      ) {
+      if (!patchedSource.includes(replacement) && patchedSource.includes(needle)) {
         patchedSource = patchedSource.replace(needle, replacement);
         replacements += 1;
       }
@@ -63,17 +59,15 @@ function applyLinuxLocalThreadCatalogPreserveBackfillPatch(currentSource) {
 
   if (replacements === 0) {
     console.warn(
-      "WARN: Could not find local thread catalog full-scan pruning SQL — provider-sync backfilled local sessions may be hidden",
+      "WARN: Could not find local thread catalog full-scan pruning SQL - provider-sync backfilled local sessions may be hidden",
     );
     return currentSource;
   }
-
   if (countPreserveBackfilledRolloutConditions(patchedSource) < 2) {
     console.warn(
-      "WARN: Only partially patched local thread catalog full-scan pruning SQL — provider-sync backfilled local sessions may still be hidden",
+      "WARN: Only partially patched local thread catalog full-scan pruning SQL - provider-sync backfilled local sessions may still be hidden",
     );
   }
-
   return patchedSource;
 }
 
@@ -87,7 +81,7 @@ function patchLinuxLocalThreadCatalogBackfillAssets(extractedDir) {
   const buildDir = path.join(extractedDir, ".vite", "build");
   if (!fs.existsSync(buildDir)) {
     console.warn(
-      `WARN: Could not find main-process build chunks in ${buildDir} — provider-sync backfilled local sessions may be hidden`,
+      `WARN: Could not find main-process build chunks in ${buildDir} - provider-sync backfilled local sessions may be hidden`,
     );
     return { matched: 0, changed: 0 };
   }
@@ -113,10 +107,9 @@ function patchLinuxLocalThreadCatalogBackfillAssets(extractedDir) {
 
   if (matched === 0) {
     console.warn(
-      `WARN: Could not find local thread catalog pruning chunk in ${buildDir} — provider-sync backfilled local sessions may be hidden`,
+      `WARN: Could not find local thread catalog pruning chunk in ${buildDir} - provider-sync backfilled local sessions may be hidden`,
     );
   }
-
   return { matched, changed };
 }
 

@@ -257,7 +257,7 @@ index 9bf871a..2d56b13 100644
 
  fn builtin_user_scripts_dir() -> PathBuf {
 diff --git a/crates/codex-plus-core/src/launcher.rs b/crates/codex-plus-core/src/launcher.rs
-index 75a851c..174cc40 100644
+index 0bba0fa..2717108 100644
 --- a/crates/codex-plus-core/src/launcher.rs
 +++ b/crates/codex-plus-core/src/launcher.rs
 @@ -1,3 +1,4 @@
@@ -353,7 +353,7 @@ index 75a851c..174cc40 100644
                  .await;
              if injection_ready {
                  keep_launched_on_error = false;
-@@ -586,13 +607,23 @@ impl LaunchHooks for DefaultLaunchHooks {
+@@ -607,13 +628,23 @@ impl LaunchHooks for DefaultLaunchHooks {
          Ok(())
      }
 
@@ -378,7 +378,7 @@ index 75a851c..174cc40 100644
          let _ = crate::diagnostic_log::append_diagnostic_log(
              "helper.listening",
              serde_json::json!({
-@@ -608,8 +639,9 @@ impl LaunchHooks for DefaultLaunchHooks {
+@@ -629,8 +660,9 @@ impl LaunchHooks for DefaultLaunchHooks {
                      _ = &mut shutdown_rx => break,
                      accepted = listener.accept() => {
                          if let Ok((stream, addr)) = accepted {
@@ -389,7 +389,7 @@ index 75a851c..174cc40 100644
                              });
                          }
                      }
-@@ -728,6 +760,11 @@ impl LaunchHooks for DefaultLaunchHooks {
+@@ -749,6 +781,11 @@ impl LaunchHooks for DefaultLaunchHooks {
              .args(&command[1..])
              .stdout(Stdio::null())
              .stderr(Stdio::null());
@@ -401,7 +401,7 @@ index 75a851c..174cc40 100644
          #[cfg(windows)]
          child_command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
          let child = child_command
-@@ -907,6 +944,7 @@ impl LaunchHooks for DefaultLaunchHooks {
+@@ -928,6 +965,7 @@ impl LaunchHooks for DefaultLaunchHooks {
  async fn handle_helper_connection(
      mut stream: tokio::net::TcpStream,
      remote_addr: Option<SocketAddr>,
@@ -409,7 +409,7 @@ index 75a851c..174cc40 100644
  ) -> anyhow::Result<()> {
      let request_bytes = read_http_request(&mut stream).await?;
      let request = String::from_utf8_lossy(&request_bytes);
-@@ -962,6 +1000,17 @@ async fn handle_helper_connection(
+@@ -983,6 +1021,17 @@ async fn handle_helper_connection(
          )
          .await;
      }
@@ -427,7 +427,7 @@ index 75a851c..174cc40 100644
 
      let (status, body, content_type, log_event) = if path == "/backend/status"
          && matches!(method, "GET" | "POST" | "OPTIONS")
-@@ -1036,11 +1085,11 @@ async fn handle_helper_connection(
+@@ -1057,11 +1106,11 @@ async fn handle_helper_connection(
      );
      let response = if method == "OPTIONS" {
          format!(
@@ -441,7 +441,7 @@ index 75a851c..174cc40 100644
              body.len()
          )
      };
-@@ -1052,6 +1101,89 @@ async fn handle_helper_connection(
+@@ -1073,6 +1122,89 @@ async fn handle_helper_connection(
      Ok(())
  }
 
@@ -531,7 +531,7 @@ index 75a851c..174cc40 100644
  fn overlay_image_response() -> (String, Vec<u8>, String, &'static str) {
      let not_found = || {
          (
-@@ -1417,7 +1549,7 @@ async fn write_http_response(
+@@ -1438,7 +1570,7 @@ async fn write_http_response(
      body: &[u8],
  ) -> anyhow::Result<()> {
      let response = format!(
@@ -540,7 +540,7 @@ index 75a851c..174cc40 100644
          body.len()
      );
      stream.write_all(response.as_bytes()).await?;
-@@ -1431,7 +1563,7 @@ async fn write_http_stream_headers(
+@@ -1452,7 +1584,7 @@ async fn write_http_stream_headers(
      content_type: &str,
  ) -> anyhow::Result<()> {
      let response = format!(
@@ -549,7 +549,7 @@ index 75a851c..174cc40 100644
      );
      stream.write_all(response.as_bytes()).await?;
      Ok(())
-@@ -1640,6 +1772,10 @@ pub fn build_codex_command(app_dir: &Path, debug_port: u16, extra_args: &[String
+@@ -1661,6 +1793,10 @@ pub fn build_codex_command(app_dir: &Path, debug_port: u16, extra_args: &[String
              .to_string_lossy()
              .to_string(),
      ];
@@ -560,7 +560,7 @@ index 75a851c..174cc40 100644
      command.extend(build_codex_arguments(debug_port, extra_args));
      command
  }
-@@ -1655,6 +1791,10 @@ pub fn build_codex_command_with_native_menu_inspector(
+@@ -1676,6 +1812,10 @@ pub fn build_codex_command_with_native_menu_inspector(
              .to_string_lossy()
              .to_string(),
      ];
@@ -571,7 +571,7 @@ index 75a851c..174cc40 100644
      command.extend(build_codex_arguments_with_native_menu_inspector(
          debug_port,
          inspector_port,
-@@ -1692,12 +1832,225 @@ pub fn build_packaged_activation_with_native_menu_inspector(
+@@ -1713,12 +1853,225 @@ pub fn build_packaged_activation_with_native_menu_inspector(
      })
  }
 
@@ -799,7 +799,7 @@ index 75a851c..174cc40 100644
                  tokio::time::sleep(std::time::Duration::from_millis(500)).await;
              }
 diff --git a/crates/codex-plus-core/src/watcher.rs b/crates/codex-plus-core/src/watcher.rs
-index ffe84f9..c6e6231 100644
+index 07c9444..4218dcd 100644
 --- a/crates/codex-plus-core/src/watcher.rs
 +++ b/crates/codex-plus-core/src/watcher.rs
 @@ -1,6 +1,8 @@
@@ -811,7 +811,19 @@ index ffe84f9..c6e6231 100644
  #[cfg(windows)]
  use std::process::{Command, Stdio};
  use std::time::Duration;
-@@ -126,6 +128,36 @@ pub fn filter_killable_launcher_processes<'a>(
+@@ -104,7 +106,10 @@ fn is_windowsapps_codex_app_process(executable: &str) -> bool {
+     let Some((package_name, after_package)) = after_windows_apps.split_once('\\') else {
+         return false;
+     };
+-    crate::app_paths::is_supported_windows_app_package_name(package_name)
++    (crate::app_paths::is_supported_windows_app_package_name(package_name)
++        || package_name
++            .to_ascii_lowercase()
++            .starts_with("openai.chatgpt-desktop_"))
+         && after_package.starts_with("app\\")
+         && !after_package.starts_with("app\\resources\\")
+         && after_package
+@@ -136,6 +141,36 @@ pub fn filter_killable_launcher_processes<'a>(
          .collect()
  }
 
@@ -848,7 +860,7 @@ index ffe84f9..c6e6231 100644
  pub fn should_recover_stale_launcher(has_codex_process: bool, cdp_listening: bool) -> bool {
      !has_codex_process && !cdp_listening
  }
-@@ -241,7 +273,11 @@ pub fn stop_launcher_processes() {
+@@ -253,7 +288,11 @@ pub fn stop_launcher_processes() {
  }
 
  #[cfg(not(windows))]
@@ -861,7 +873,7 @@ index ffe84f9..c6e6231 100644
 
  #[cfg(windows)]
  pub fn stop_launcher_processes_and_wait() {
-@@ -264,7 +300,15 @@ pub fn stop_launcher_processes_and_wait() {
+@@ -276,7 +315,15 @@ pub fn stop_launcher_processes_and_wait() {
  }
 
  #[cfg(not(windows))]
@@ -878,7 +890,7 @@ index ffe84f9..c6e6231 100644
 
  #[cfg(windows)]
  pub fn stop_codex_processes() {
-@@ -288,6 +332,82 @@ pub fn stop_codex_processes_and_wait() {
+@@ -300,6 +347,82 @@ pub fn stop_codex_processes_and_wait() {
  #[cfg(not(windows))]
  pub fn stop_codex_processes_and_wait() {}
 

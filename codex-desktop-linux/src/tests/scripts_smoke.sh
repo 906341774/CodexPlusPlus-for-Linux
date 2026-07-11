@@ -132,6 +132,42 @@ function lu(e){let t=globalThis.nodeRepl?.env[e];return typeof t=="string"?t:voi
 JS
 }
 
+make_fake_portable_plugins_upstream_app() {
+    local app_dir="$1"
+    local resources_dir="$app_dir/Contents/Resources"
+    local plugins_dir="$resources_dir/plugins/openai-bundled/plugins"
+
+    mkdir -p \
+        "$resources_dir/plugins/openai-bundled/.agents/plugins" \
+        "$plugins_dir/sites/.codex-plugin" \
+        "$plugins_dir/sites/scripts" \
+        "$plugins_dir/sites/mcp" \
+        "$plugins_dir/deep-research/.codex-plugin" \
+        "$plugins_dir/deep-research/skills/deep-research" \
+        "$plugins_dir/visualize/.codex-plugin" \
+        "$plugins_dir/visualize/skills/visualize/scripts" \
+        "$plugins_dir/latex/.codex-plugin" \
+        "$plugins_dir/latex/bin" \
+        "$plugins_dir/record-and-replay/.codex-plugin" \
+        "$plugins_dir/record-and-replay/Codex Computer Use.app"
+
+    cat > "$resources_dir/plugins/openai-bundled/.agents/plugins/marketplace.json" <<'JSON'
+{"plugins":[{"name":"sites","source":{"source":"local","path":"./plugins/sites"},"policy":{"installation":"AVAILABLE","authentication":"ON_INSTALL"},"category":"Productivity"},{"name":"record-and-replay","source":{"source":"local","path":"./plugins/record-and-replay"},"policy":{"installation":"AVAILABLE"}},{"name":"latex","source":{"source":"local","path":"./plugins/latex"},"policy":{"installation":"AVAILABLE"}},{"name":"deep-research","source":{"source":"local","path":"./plugins/deep-research"},"policy":{"installation":"AVAILABLE"},"category":"Research"},{"name":"visualize","source":{"source":"local","path":"./plugins/visualize"},"policy":{"installation":"AVAILABLE"},"category":"Productivity"}]}
+JSON
+    printf '%s\n' '{"name":"sites","version":"1.0.0","mcpServers":"./.mcp.json"}' > "$plugins_dir/sites/.codex-plugin/plugin.json"
+    printf '%s\n' '#!/bin/bash' 'set -euo pipefail' > "$plugins_dir/sites/scripts/init-site.sh"
+    chmod 0755 "$plugins_dir/sites/scripts/init-site.sh"
+    printf '%s\n' 'console.log("sites");' > "$plugins_dir/sites/mcp/server.mjs"
+    printf '%s\n' '{"name":"deep-research","version":"1.0.0"}' > "$plugins_dir/deep-research/.codex-plugin/plugin.json"
+    printf '%s\n' '# Deep Research' > "$plugins_dir/deep-research/skills/deep-research/SKILL.md"
+    printf '%s\n' '{"name":"visualize","version":"1.0.0"}' > "$plugins_dir/visualize/.codex-plugin/plugin.json"
+    printf '%s\n' 'print("visualize")' > "$plugins_dir/visualize/skills/visualize/scripts/render.py"
+    printf '%s\n' '{"name":"latex","version":"1.0.0"}' > "$plugins_dir/latex/.codex-plugin/plugin.json"
+    printf '\xcf\xfa\xed\xfe' > "$plugins_dir/latex/bin/tectonic"
+    chmod 0755 "$plugins_dir/latex/bin/tectonic"
+    printf '%s\n' '{"name":"record-and-replay","version":"1.0.0"}' > "$plugins_dir/record-and-replay/.codex-plugin/plugin.json"
+}
+
 make_fake_app() {
     local app_dir="$1"
     bash "$REPO_DIR/tests/fixtures/create-packaged-app-fixture.sh" "$app_dir"
@@ -178,6 +214,138 @@ test_extract_webview_replaces_linux_icon_assets() {
     assert_contains "$output_log" "Linux app icon applied to 2 webview asset(s)"
 }
 
+test_installer_prefers_compact_upstream_chatgpt_icon() {
+    info "Checking installer prefers the compact upstream ChatGPT icon"
+    local workspace="$TMP_DIR/chatgpt-icon-selection"
+    local work_dir="$workspace/work"
+    local app_dir="$workspace/ChatGPT.app"
+    local compact_icon="$work_dir/app-extracted/webview/assets/referral-modal-chatgpt-blossom-test.png"
+    local full_size_icon="$app_dir/Contents/Resources/icon-chatgpt.png"
+    local selection_file="$workspace/selection.txt"
+
+    mkdir -p "$(dirname "$compact_icon")" "$(dirname "$full_size_icon")"
+    cp "$REPO_DIR/assets/codex-linux.png" "$compact_icon"
+    printf '%s\n' full-size > "$full_size_icon"
+
+    (
+        export CODEX_INSTALLER_SOURCE_ONLY=1
+        # shellcheck disable=SC1091
+        source "$REPO_DIR/install.sh"
+        WORK_DIR="$work_dir"
+        LINUX_ICON_SOURCE=""
+        select_linux_icon_source
+        printf '%s\n' "$LINUX_ICON_SOURCE" > "$selection_file"
+    )
+
+    [ "$(cat "$selection_file")" = "$compact_icon" ] \
+        || fail "Expected compact upstream ChatGPT icon to win over the full-size resource icon"
+
+    rm -f "$compact_icon"
+    (
+        export CODEX_INSTALLER_SOURCE_ONLY=1
+        # shellcheck disable=SC1091
+        source "$REPO_DIR/install.sh"
+        WORK_DIR="$work_dir"
+        LINUX_ICON_SOURCE=""
+        select_linux_icon_source
+        printf '%s\n' "$LINUX_ICON_SOURCE" > "$selection_file"
+    )
+
+    [ "$(cat "$selection_file")" = "$REPO_DIR/assets/codex-linux.png" ] \
+        || fail "Expected a missing compact ChatGPT icon to avoid the oversized upstream app icon"
+
+    mkdir -p "$(dirname "$compact_icon")"
+    cp "$REPO_DIR/assets/codex-linux.png" "$compact_icon"
+    python3 - "$compact_icon" <<'PY'
+import struct
+import sys
+
+with open(sys.argv[1], "r+b") as icon_file:
+    icon_file.seek(16)
+    icon_file.write(struct.pack(">II", 2048, 2048))
+PY
+    (
+        export CODEX_INSTALLER_SOURCE_ONLY=1
+        # shellcheck disable=SC1091
+        source "$REPO_DIR/install.sh"
+        WORK_DIR="$work_dir"
+        LINUX_ICON_SOURCE=""
+        select_linux_icon_source
+        printf '%s\n' "$LINUX_ICON_SOURCE" > "$selection_file"
+    )
+
+    [ "$(cat "$selection_file")" = "$REPO_DIR/assets/codex-linux.png" ] \
+        || fail "Expected an oversized upstream ChatGPT icon to fall back safely"
+}
+
+test_user_local_icon_prefers_generated_app_icon() {
+    info "Checking user-local integration reuses the generated ChatGPT icon"
+    local workspace="$TMP_DIR/user-local-chatgpt-icon"
+    local home_dir="$workspace/home"
+    local generated_icon="$home_dir/.local/opt/codex-desktop-linux/codex-app/.codex-linux/codex-desktop.png"
+
+    mkdir -p "$(dirname "$generated_icon")"
+    printf '%s\n' 'generated-chatgpt-icon' > "$generated_icon"
+
+    (
+        HOME="$home_dir"
+        XDG_DATA_HOME="$home_dir/.local/share"
+        XDG_STATE_HOME="$home_dir/.local/state"
+        # shellcheck disable=SC1091
+        source "$REPO_DIR/contrib/user-local-install/files/.local/lib/codex-desktop-linux/common.sh"
+        extract_icon
+        cmp -s "$generated_icon" "$ICON_PATH"
+    ) || fail "Expected user-local integration to reuse the generated ChatGPT icon"
+}
+
+test_extract_webview_requires_entrypoint() {
+    info "Checking webview extraction rejects incomplete upstream assets"
+    local workspace="$TMP_DIR/webview-required-entrypoint"
+    local output_log="$workspace/output.log"
+
+    mkdir -p "$workspace/missing-dir/work/app-extracted" \
+        "$workspace/missing-dir/install" \
+        "$workspace/missing-index/work/app-extracted/webview/assets" \
+        "$workspace/missing-index/install"
+    printf '%s\n' 'asset' > "$workspace/missing-index/work/app-extracted/webview/assets/app-main.png"
+
+    set +e
+    (
+        SCRIPT_DIR="$REPO_DIR"
+        INSTALL_DIR="$workspace/missing-dir/install"
+        WORK_DIR="$workspace/missing-dir/work"
+        ICON_SOURCE="$workspace/icon.png"
+        CODEX_LINUX_ICON_SOURCE="$workspace/icon.png"
+        error() { echo "[ERROR] $*" >&2; exit 1; }
+        warn() { echo "[WARN] $*" >&2; }
+        # shellcheck disable=SC1091
+        source "$REPO_DIR/scripts/lib/webview-install.sh"
+        extract_webview "$workspace/Codex.app"
+    ) >"$output_log" 2>&1
+    local rc=$?
+    set -e
+    [ "$rc" -ne 0 ] || fail "extract_webview should fail when upstream webview directory is missing"
+    assert_contains "$output_log" "Webview directory not found"
+
+    set +e
+    (
+        SCRIPT_DIR="$REPO_DIR"
+        INSTALL_DIR="$workspace/missing-index/install"
+        WORK_DIR="$workspace/missing-index/work"
+        ICON_SOURCE="$workspace/icon.png"
+        CODEX_LINUX_ICON_SOURCE="$workspace/icon.png"
+        error() { echo "[ERROR] $*" >&2; exit 1; }
+        warn() { echo "[WARN] $*" >&2; }
+        # shellcheck disable=SC1091
+        source "$REPO_DIR/scripts/lib/webview-install.sh"
+        extract_webview "$workspace/Codex.app"
+    ) >"$output_log" 2>&1
+    rc=$?
+    set -e
+    [ "$rc" -ne 0 ] || fail "extract_webview should fail when upstream webview/index.html is missing"
+    assert_contains "$output_log" "Missing webview entrypoint"
+}
+
 test_common_helper_sourcing() {
     info "Checking shared packaging helpers"
     local probe_file="$TMP_DIR/probe.txt"
@@ -186,6 +354,54 @@ test_common_helper_sourcing() {
     # shellcheck disable=SC1091
     source "$REPO_DIR/scripts/lib/package-common.sh"
     ensure_file_exists "$probe_file" "probe file"
+}
+
+test_package_icon_source_resolution() {
+    info "Checking shared package icon source resolution"
+    local workspace="$TMP_DIR/package-icon-source"
+    local app_dir="$workspace/app"
+    local generated_icon="$app_dir/.codex-linux/codex-desktop.png"
+    local explicit_icon="$workspace/explicit.png"
+
+    mkdir -p "$(dirname "$generated_icon")"
+    printf '%s\n' 'generated-chatgpt-icon' > "$generated_icon"
+    printf '%s\n' 'explicit-chatgpt-icon' > "$explicit_icon"
+
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/scripts/lib/package-common.sh"
+    APP_DIR="$app_dir"
+    PACKAGE_NAME="side-by-side-chatgpt"
+    PACKAGE_ICON_SOURCE=""
+    [ "$(resolve_package_icon_source)" = "$generated_icon" ] \
+        || fail "Expected a unique generated app icon to survive a custom package name"
+
+    PACKAGE_ICON_SOURCE="$explicit_icon"
+    [ "$(resolve_package_icon_source)" = "$explicit_icon" ] \
+        || fail "Expected PACKAGE_ICON_SOURCE to take precedence"
+}
+
+test_package_layout_requires_webview_entrypoint() {
+    info "Checking package helpers reject an app without webview/index.html"
+    local workspace="$TMP_DIR/package-webview-entrypoint"
+    local app_dir="$workspace/app"
+    local output_log="$workspace/output.log"
+
+    mkdir -p "$app_dir/content/webview"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$app_dir/start.sh"
+    chmod +x "$app_dir/start.sh"
+
+    set +e
+    (
+        APP_DIR="$app_dir"
+        # shellcheck disable=SC1091
+        source "$REPO_DIR/scripts/lib/package-common.sh"
+        ensure_app_layout
+    ) >"$output_log" 2>&1
+    local rc=$?
+    set -e
+
+    [ "$rc" -ne 0 ] || fail "ensure_app_layout should fail when webview/index.html is missing"
+    assert_contains "$output_log" "Missing webview entrypoint"
 }
 
 test_package_payload_permission_normalization() {
@@ -372,6 +588,7 @@ SCRIPT
     assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/lib/package-common.sh"
     assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/lib/patch-chrome-plugin.js"
     assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/lib/node-runtime.sh"
+    assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/lib/upstream-dmg-intel.js"
     assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/lib/linux-update-bridge-patch.js"
     assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/lib/patch-report.js"
     assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/lib/rebuild-report.sh"
@@ -404,6 +621,9 @@ SCRIPT
     assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/plugins/openai-bundled/plugins/computer-use/.mcp.json"
     assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/plugins/openai-bundled/plugins/read-aloud/.mcp.json"
     assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/.codex-linux/source-info.json"
+    node "$pkg_root/opt/codex-desktop/update-builder/scripts/patch-linux-window-ui.js" --help \
+        >"$workspace/update-builder-patcher-help.txt"
+    assert_contains "$workspace/update-builder-patcher-help.txt" "Usage: patch-linux-window-ui.js"
     assert_file_exists "$pkg_root/opt/codex-desktop/.codex-linux/codex-packaged-runtime.sh"
     assert_contains "$pkg_root/opt/codex-desktop/.codex-linux/codex-packaged-runtime.sh" "is-enabled codex-update-manager.service"
     assert_not_contains "$pkg_root/opt/codex-desktop/.codex-linux/codex-packaged-runtime.sh" "enable --now codex-update-manager.service"
@@ -1193,11 +1413,16 @@ test_missing_input_failure() {
     local workspace="$TMP_DIR/missing"
     local bin_dir="$workspace/bin"
     local rpm_app_dir="$workspace/rpm-app"
+    local rpm_no_webview_app_dir="$workspace/rpm-no-webview-app"
     local rpm_log="$workspace/rpm-missing-runtime.log"
+    local rpm_no_webview_log="$workspace/rpm-missing-webview.log"
 
     mkdir -p "$workspace"
     make_stub_bin_dir "$bin_dir"
     make_fake_app "$rpm_app_dir"
+    mkdir -p "$rpm_no_webview_app_dir/content/webview"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$rpm_no_webview_app_dir/start.sh"
+    chmod +x "$rpm_no_webview_app_dir/start.sh"
     cat > "$bin_dir/dpkg" <<'SCRIPT'
 #!/usr/bin/env bash
 echo amd64
@@ -1211,6 +1436,11 @@ SCRIPT
     if PATH="$bin_dir:$PATH" APP_DIR_OVERRIDE="$workspace/does-not-exist" PKG_ROOT_OVERRIDE="$workspace/deb-root" bash "$REPO_DIR/scripts/build-deb.sh" >/dev/null 2>&1; then
         fail "build-deb.sh should fail when APP_DIR is missing"
     fi
+
+    if APP_DIR_OVERRIDE="$rpm_no_webview_app_dir" PACKAGE_WITH_UPDATER=0 bash "$REPO_DIR/scripts/build-rpm.sh" >"$rpm_no_webview_log" 2>&1; then
+        fail "build-rpm.sh should fail when webview/index.html is missing"
+    fi
+    assert_contains "$rpm_no_webview_log" "Missing webview entrypoint"
 
     if APP_DIR_OVERRIDE="$rpm_app_dir" PACKAGED_RUNTIME_SOURCE="$workspace/does-not-exist.sh" bash "$REPO_DIR/scripts/build-rpm.sh" >"$rpm_log" 2>&1; then
         fail "build-rpm.sh should fail when PACKAGED_RUNTIME_SOURCE is missing"
@@ -1319,11 +1549,44 @@ SCRIPT
     [ -z "$third_line" ] || fail "Expected make build-app-fresh default DMG argument to be empty, got: $(cat "$install_log")"
 }
 
+test_make_build_dev_app_writes_host_portable_launcher_symlink() {
+    info "Checking make build-dev-app writes a host-portable launcher symlink"
+    local workspace="$TMP_DIR/make-build-dev-app"
+    local install_log="$workspace/install-env.log"
+    local launcher="$workspace/bin/codex-cua-lab"
+    local target
+
+    mkdir -p "$workspace"
+
+    cat > "$workspace/install.sh" <<'SCRIPT'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$CODEX_APP_ID" > "$TEST_INSTALL_LOG"
+printf '%s\n' "$CODEX_APP_DISPLAY_NAME" >> "$TEST_INSTALL_LOG"
+printf '%s\n' "$CODEX_INSTALL_DIR" >> "$TEST_INSTALL_LOG"
+mkdir -p "$CODEX_INSTALL_DIR"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$CODEX_INSTALL_DIR/start.sh"
+chmod +x "$CODEX_INSTALL_DIR/start.sh"
+SCRIPT
+    chmod +x "$workspace/install.sh"
+
+    TEST_INSTALL_LOG="$install_log" make -f "$REPO_DIR/Makefile" -C "$workspace" build-dev-app >/dev/null
+
+    assert_file_exists "$launcher"
+    target="$(readlink "$launcher")"
+    [ "$target" = "../codex-cua-lab-app/start.sh" ] \
+        || fail "Expected dev app launcher to use a relative symlink, got: $target"
+    [ -x "$launcher" ] || fail "Expected dev app launcher symlink to resolve on the host"
+    assert_contains "$install_log" "codex-cua-lab"
+    assert_contains "$install_log" "Codex CUA Lab"
+    assert_contains "$install_log" "$workspace/codex-cua-lab-app"
+}
+
 test_installer_refreshes_stale_cached_dmg_metadata() {
     info "Checking installer DMG cache freshness metadata branches"
     local workspace="$TMP_DIR/dmg-cache-refresh"
     local bin_dir="$workspace/bin"
-    local url="https://persistent.oaistatic.com/codex-app-prod/Codex.dmg"
+    local url="https://persistent.oaistatic.com/codex-app-prod/ChatGPT.dmg"
     local url_sha256
 
     url_sha256="$(printf '%s' "$url" | sha256sum | awk '{print $1}')"
@@ -1372,6 +1635,12 @@ done
 printf '%s' "${TEST_DOWNLOAD_CONTENT:-new}" >"$out"
 SCRIPT
     chmod +x "$bin_dir/curl"
+
+    cat >"$bin_dir/aria2c" <<'SCRIPT'
+#!/usr/bin/env bash
+exit 127
+SCRIPT
+    chmod +x "$bin_dir/aria2c"
 
     run_dmg_cache_case() {
         local source_dir="$1"
@@ -1563,6 +1832,67 @@ EOF
     assert_not_contains "$secret_url/Codex.dmg.metadata" "topsecret"
     assert_not_contains "$secret_url/Codex.dmg.metadata" "fragsecret"
 
+    cat >"$bin_dir/aria2c" <<'SCRIPT'
+#!/usr/bin/env bash
+set -eu
+
+download_dir=""
+download_name=""
+for arg in "$@"; do
+    printf '%s\n' "$arg" >>"$TEST_ARIA2_LOG"
+    case "$arg" in
+        --dir=*)
+            download_dir="${arg#--dir=}"
+            ;;
+        --out=*)
+            download_name="${arg#--out=}"
+            ;;
+    esac
+done
+
+[ -n "$download_dir" ] || exit 2
+[ -n "$download_name" ] || exit 2
+
+if [ "${TEST_ARIA2_MODE:-success}" = "fail" ]; then
+    printf '%s' "partial" >"$download_dir/$download_name"
+    printf '%s' "control" >"$download_dir/$download_name.aria2"
+    exit 1
+fi
+
+printf '%s' "aria2-download" >"$download_dir/$download_name"
+SCRIPT
+    chmod +x "$bin_dir/aria2c"
+
+    local aria2_success="$workspace/aria2-success"
+    mkdir -p "$aria2_success"
+    : >"$aria2_success/aria2.log"
+    run_dmg_cache_case "$aria2_success" "$aria2_success/output.log" \
+        TEST_ARIA2_LOG="$aria2_success/aria2.log" \
+        TEST_ETAG=aria2-etag \
+        TEST_CONTENT_LENGTH=14
+    [ "$(cat "$aria2_success/Codex.dmg")" = "aria2-download" ] || fail "Expected aria2c to download the DMG"
+    assert_not_contains "$aria2_success/curl.log" "GET"
+    assert_contains "$aria2_success/aria2.log" "--max-connection-per-server=16"
+    assert_contains "$aria2_success/aria2.log" "--split=16"
+    assert_contains "$aria2_success/aria2.log" "--dir=$aria2_success"
+    assert_contains "$aria2_success/aria2.log" "--out=Codex.dmg.part"
+    assert_contains "$aria2_success/output.log" "Using aria2c for parallel DMG download"
+
+    local aria2_fallback="$workspace/aria2-fallback"
+    mkdir -p "$aria2_fallback"
+    : >"$aria2_fallback/aria2.log"
+    run_dmg_cache_case "$aria2_fallback" "$aria2_fallback/output.log" \
+        TEST_ARIA2_LOG="$aria2_fallback/aria2.log" \
+        TEST_ARIA2_MODE=fail \
+        TEST_ETAG=fallback-etag \
+        TEST_CONTENT_LENGTH=13 \
+        TEST_DOWNLOAD_CONTENT=curl-fallback
+    [ "$(cat "$aria2_fallback/Codex.dmg")" = "curl-fallback" ] || fail "Expected curl fallback after aria2c failure"
+    assert_contains "$aria2_fallback/curl.log" "GET"
+    assert_contains "$aria2_fallback/output.log" "aria2c download failed; falling back to curl"
+    assert_file_not_exists "$aria2_fallback/Codex.dmg.part"
+    assert_file_not_exists "$aria2_fallback/Codex.dmg.part.aria2"
+
     local invalid_url="$workspace/invalid-url"
     mkdir -p "$invalid_url"
     if run_dmg_cache_case "$invalid_url" "$invalid_url/output.log" \
@@ -1579,7 +1909,7 @@ test_extract_dmg_repairs_safe_7z_link_warnings() {
     local bin_dir="$workspace/bin"
     local work_dir="$workspace/work"
     local output_log="$workspace/output.log"
-    local app_dir="$work_dir/dmg-extract/Codex Installer/Codex.app"
+    local app_dir="$work_dir/dmg-extract/ChatGPT Installer/ChatGPT.app"
     local node_modules="$app_dir/Contents/Resources/cua_node/lib/node_modules"
     local actual
 
@@ -1600,7 +1930,7 @@ for arg in "$@"; do
 done
 [ -n "$out" ] || exit 2
 
-app="$out/Codex Installer/Codex.app"
+app="$out/ChatGPT Installer/ChatGPT.app"
 node_modules="$app/Contents/Resources/cua_node/lib/node_modules"
 mkdir -p \
     "$node_modules/.bin" \
@@ -1632,15 +1962,15 @@ printf '%s\n' "target" >"$node_modules/@oai/sky/bin/linux/sky_linux_x64"
 : >"$node_modules/sharp/node_modules/.bin/semver"
 
 cat <<'LOG'
-ERROR: Dangerous link path was ignored : Codex Installer/Codex.app/Contents/Resources/cua_node/lib/node_modules/.bin/opencollective-postinstall : ../opencollective-postinstall/index.js
-ERROR: Dangerous link path was ignored : Codex Installer/Codex.app/Contents/Resources/cua_node/lib/node_modules/.bin/pixelmatch : ../pixelmatch/bin/pixelmatch
-ERROR: Dangerous link path was ignored : Codex Installer/Codex.app/Contents/Resources/cua_node/lib/node_modules/.bin/playwright : ../playwright/cli.js
-ERROR: Dangerous link path was ignored : Codex Installer/Codex.app/Contents/Resources/cua_node/lib/node_modules/.bin/playwright-core : ../playwright-core/cli.js
-ERROR: Dangerous link path was ignored : Codex Installer/Codex.app/Contents/Resources/cua_node/lib/node_modules/.bin/semver : ../semver/bin/semver.js
-ERROR: Dangerous link path was ignored : Codex Installer/Codex.app/Contents/Resources/cua_node/lib/node_modules/.bin/sky_linux_arm64 : ../@oai/sky/bin/linux/sky_linux_arm64
-ERROR: Dangerous link path was ignored : Codex Installer/Codex.app/Contents/Resources/cua_node/lib/node_modules/.bin/sky_linux_x64 : ../@oai/sky/bin/linux/sky_linux_x64
-ERROR: Dangerous link path was ignored : Codex Installer/Codex.app/Contents/Resources/cua_node/lib/node_modules/tesseract.js/node_modules/.bin/opencollective-postinstall : ../../../opencollective-postinstall/index.js
-ERROR: Dangerous link path was ignored : Codex Installer/Codex.app/Contents/Resources/cua_node/lib/node_modules/sharp/node_modules/.bin/semver : ../../../semver/bin/semver.js
+ERROR: Dangerous link path was ignored : ChatGPT Installer/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/.bin/opencollective-postinstall : ../opencollective-postinstall/index.js
+ERROR: Dangerous link path was ignored : ChatGPT Installer/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/.bin/pixelmatch : ../pixelmatch/bin/pixelmatch
+ERROR: Dangerous link path was ignored : ChatGPT Installer/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/.bin/playwright : ../playwright/cli.js
+ERROR: Dangerous link path was ignored : ChatGPT Installer/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/.bin/playwright-core : ../playwright-core/cli.js
+ERROR: Dangerous link path was ignored : ChatGPT Installer/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/.bin/semver : ../semver/bin/semver.js
+ERROR: Dangerous link path was ignored : ChatGPT Installer/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/.bin/sky_linux_arm64 : ../@oai/sky/bin/linux/sky_linux_arm64
+ERROR: Dangerous link path was ignored : ChatGPT Installer/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/.bin/sky_linux_x64 : ../@oai/sky/bin/linux/sky_linux_x64
+ERROR: Dangerous link path was ignored : ChatGPT Installer/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/tesseract.js/node_modules/.bin/opencollective-postinstall : ../../../opencollective-postinstall/index.js
+ERROR: Dangerous link path was ignored : ChatGPT Installer/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/sharp/node_modules/.bin/semver : ../../../semver/bin/semver.js
 
 Sub items Errors: 9
 
@@ -1667,7 +1997,7 @@ error() { echo "[ERROR] $*" >&2; exit 1; }
 source "$REPO_DIR/scripts/lib/dmg.sh"
 
 app_dir="$(extract_dmg "$TEST_DMG_PATH")"
-[ "$(basename "$app_dir")" = "Codex.app" ]
+[ "$(basename "$app_dir")" = "ChatGPT.app" ]
 SCRIPT
 
     assert_contains "$output_log" "7z reported 9 safe package symlink warnings; repaired and continuing"
@@ -1768,7 +2098,7 @@ test_fresh_reuse_dmg_uses_cache_when_metadata_matches() {
     local bin_dir="$workspace/bin"
     local source_dir="$workspace/source"
     local output_log="$workspace/output.log"
-    local url="https://persistent.oaistatic.com/codex-app-prod/Codex.dmg"
+    local url="https://persistent.oaistatic.com/codex-app-prod/ChatGPT.dmg"
     local url_sha256
 
     url_sha256="$(printf '%s' "$url" | sha256sum | awk '{print $1}')"
@@ -2041,10 +2371,10 @@ SCRIPT
     assert_contains "$wizard_log" "Atomic host: yes"
 
     CODEX_LINUX_TARGET_ATOMIC=maybe \
-    PATH="$fake_bin:/usr/bin:/bin" \
+    PATH="$fake_bin" \
     OS_RELEASE_FILE="$os_release" \
     OSTREE_BOOTED_FILE="$ostree_booted" \
-    bash -c '
+    /bin/bash -c '
         # shellcheck disable=SC1091
         source "$1"
         OS_RELEASE_ID="$(os_release_field ID)"
@@ -2058,10 +2388,10 @@ SCRIPT
     assert_contains "$helper_output" "atomic=yes"
 
     CODEX_LINUX_TARGET_ATOMIC=0 \
-    PATH="$fake_bin:/usr/bin:/bin" \
+    PATH="$fake_bin" \
     OS_RELEASE_FILE="$os_release" \
     OSTREE_BOOTED_FILE="$ostree_booted" \
-    bash -c '
+    /bin/bash -c '
         # shellcheck disable=SC1091
         source "$1"
         OS_RELEASE_ID="$(os_release_field ID)"
@@ -2075,10 +2405,10 @@ SCRIPT
     assert_contains "$helper_output" "atomic=no"
 
     rm -f "$ostree_booted"
-    PATH="$fake_bin:/usr/bin:/bin" \
+    PATH="$fake_bin" \
     OS_RELEASE_FILE="$os_release" \
     OSTREE_BOOTED_FILE="$ostree_booted" \
-    bash -c '
+    /bin/bash -c '
         # shellcheck disable=SC1091
         source "$1"
         OS_RELEASE_ID="$(os_release_field ID)"
@@ -2785,24 +3115,6 @@ test_setup_native_wizard_cleanup_deletes_only_confirmed_paths() {
     assert_contains "$output_log" "Skipped $plugin_cache"
 }
 
-test_upstream_build_app_workflow_tracks_dmg_metadata() {
-    info "Checking upstream build-app workflow metadata and cache behavior"
-    local workflow="$REPO_DIR/.github/workflows/upstream-build-app.yml"
-
-    assert_file_exists "$workflow"
-    assert_contains "$workflow" 'name: Upstream Build App'
-    assert_contains "$workflow" 'UPSTREAM_DMG_URL: https://persistent.oaistatic.com/codex-app-prod/Codex.dmg'
-    assert_contains "$workflow" 'actions/cache@v4'
-    assert_contains "$workflow" 'path: /tmp/codex-upstream-ci/Codex.dmg'
-    assert_contains "$workflow" 'Last-Modified'
-    assert_contains "$workflow" 'sha256sum'
-    assert_contains "$workflow" 'CODEX_PATCH_REPORT_JSON="$GITHUB_WORKSPACE/patch-report.json"'
-    assert_contains "$workflow" 'node scripts/ci/validate-patch-report.js patch-report.json --profile upstream-build'
-    assert_contains "$workflow" 'make build-app DMG=/tmp/codex-upstream-ci/Codex.dmg'
-    assert_contains "$workflow" 'DMG Last-Modified'
-    assert_contains "$workflow" 'DMG SHA-256'
-}
-
 make_update_nix_hash_fixture() {
     local fixture="$1"
     local hash_a="sha256-VVQNu/E7Wuyxfsy93Gorknr0t7H7wy9kxMOiBZYOo/o="
@@ -2817,7 +3129,7 @@ make_update_nix_hash_fixture() {
   electronVersion = "42.1.0";
 
   codexDmg = pkgs.fetchurl {
-    url = "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg";
+    url = "https://persistent.oaistatic.com/codex-app-prod/ChatGPT.dmg";
     hash = "$hash_a";
   };
 
@@ -3421,6 +3733,12 @@ esac
 SCRIPT
     chmod +x "$fake_bin/npm"
 
+    cat > "$fake_bin/c++" <<'SCRIPT'
+#!/usr/bin/env bash
+exit 0
+SCRIPT
+    chmod +x "$fake_bin/c++"
+
     cat > "$fake_bin/npx" <<'SCRIPT'
 #!/usr/bin/env bash
 echo "npx should not be used for electron-rebuild" >&2
@@ -3508,12 +3826,15 @@ test_bundled_plugin_builders_accept_prebuilt_binaries() {
     local backend="$workspace/codex-computer-use-linux"
     local cosmic="$workspace/codex-computer-use-cosmic"
     local host="$workspace/codex-chrome-extension-host"
+    local chatgpt_icon="$workspace/chatgpt.png"
+    local staged_plugins="$workspace/plugins"
     local output_log="$workspace/output.log"
 
     mkdir -p "$workspace"
     printf '#!/usr/bin/env bash\n' > "$backend"
     printf '#!/usr/bin/env bash\n' > "$cosmic"
     printf '#!/usr/bin/env bash\n' > "$host"
+    printf '%s\n' 'chatgpt-icon' > "$chatgpt_icon"
     chmod +x "$backend" "$cosmic" "$host"
 
     (
@@ -3521,6 +3842,8 @@ test_bundled_plugin_builders_accept_prebuilt_binaries() {
         CODEX_LINUX_COMPUTER_USE_BACKEND_SOURCE="$backend"
         CODEX_LINUX_COMPUTER_USE_COSMIC_SOURCE="$cosmic"
         CODEX_CHROME_EXTENSION_HOST_SOURCE="$host"
+        LINUX_ICON_SOURCE="$chatgpt_icon"
+        ICON_SOURCE="$REPO_DIR/assets/codex.png"
         info() { echo "[INFO] $*" >&2; }
         warn() { echo "[WARN] $*" >&2; }
         error() { echo "[ERROR] $*" >&2; exit 1; }
@@ -3528,6 +3851,7 @@ test_bundled_plugin_builders_accept_prebuilt_binaries() {
         source "$REPO_DIR/scripts/lib/bundled-plugins.sh"
         build_linux_computer_use_backend
         build_chrome_extension_host
+        stage_linux_computer_use_plugin "$staged_plugins"
     ) > "$output_log" 2>&1
 
     assert_contains "$output_log" "Using prebuilt Linux Computer Use backend"
@@ -3535,6 +3859,346 @@ test_bundled_plugin_builders_accept_prebuilt_binaries() {
     assert_contains "$output_log" "$backend"
     assert_contains "$output_log" "$cosmic"
     assert_contains "$output_log" "$host"
+    cmp -s "$chatgpt_icon" "$staged_plugins/computer-use/assets/app-icon.png" \
+        || fail "Expected the bundled Computer Use plugin to use the selected ChatGPT icon"
+}
+
+test_launcher_managed_node_handles_unset_path() {
+    info "Checking managed Node PATH setup without an inherited PATH"
+    local workspace="$TMP_DIR/launcher-unset-path"
+    local probe="$workspace/probe.sh"
+    local managed_node_bin_dir="$workspace/managed-node/bin"
+
+    mkdir -p "$managed_node_bin_dir"
+    printf '#!/bin/sh\nexit 0\n' > "$managed_node_bin_dir/node"
+    chmod +x "$managed_node_bin_dir/node"
+
+    cat > "$probe" <<EOF
+#!/usr/bin/env bash
+set -u
+SCRIPT_DIR=$(printf '%q' "$workspace")
+MANAGED_NODE_BIN_DIR=$(printf '%q' "$managed_node_bin_dir")
+EOF
+    awk '
+        /^path_without_entry\(\) \{/ { capture = 1 }
+        capture { print }
+        capture && /^}/ { exit }
+    ' "$REPO_DIR/launcher/start.sh.template" >> "$probe"
+    awk '
+        /^prepend_managed_node_runtime_to_path\(\) \{/ { capture = 1 }
+        capture { print }
+        capture && /^}/ { exit }
+    ' "$REPO_DIR/launcher/start.sh.template" >> "$probe"
+    cat >> "$probe" <<'EOF'
+unset CODEX_LINUX_USER_PATH
+unset PATH
+prepend_managed_node_runtime_to_path
+[ "$PATH" = "$MANAGED_NODE_BIN_DIR" ] || exit 2
+[ "${CODEX_LINUX_USER_PATH+x}" = x ] || exit 3
+[ -z "$CODEX_LINUX_USER_PATH" ] || exit 4
+[ "$CODEX_MANAGED_NODE_RUNTIME_DIR" = "$SCRIPT_DIR/resources/node-runtime" ] || exit 5
+
+PATH="/tmp/untrusted:$MANAGED_NODE_BIN_DIR:/usr/bin"
+unset CODEX_LINUX_USER_PATH
+prepend_managed_node_runtime_to_path
+case "$PATH" in
+    "$MANAGED_NODE_BIN_DIR":*) ;;
+    *) exit 6 ;;
+esac
+[ "$CODEX_LINUX_USER_PATH" = "/tmp/untrusted:/usr/bin" ] || exit 7
+
+PATH="$MANAGED_NODE_BIN_DIR:/usr/bin"
+CODEX_LINUX_USER_PATH=":/tmp/tools::$MANAGED_NODE_BIN_DIR:/usr/bin:"
+prepend_managed_node_runtime_to_path
+[ "$CODEX_LINUX_USER_PATH" = ":/tmp/tools::/usr/bin:" ] || exit 8
+/usr/bin/bash -c '[ "$CODEX_LINUX_USER_PATH" = ":/tmp/tools::/usr/bin:" ]' || exit 9
+EOF
+
+    /usr/bin/bash "$probe" || fail "Expected managed Node PATH setup to tolerate an unset PATH"
+}
+
+test_packaged_runtime_keeps_managed_node_out_of_user_service_path() {
+    info "Checking packaged runtime exports the user PATH to user services"
+    local workspace="$TMP_DIR/packaged-runtime-user-path"
+    local fake_bin="$workspace/bin"
+    local runtime_dir="$workspace/runtime"
+    local capture_log="$workspace/path-captures"
+    local managed_node_bin="$workspace/managed-node/bin"
+    local user_path="$fake_bin:/usr/bin"
+    local fallback_path="$fake_bin:/fallback/bin"
+    local import_args="PATH DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS XAUTHORITY XDG_RUNTIME_DIR HYPRLAND_INSTANCE_SIGNATURE YDOTOOL_SOCKET"
+    local -a captures
+
+    mkdir -p "$fake_bin" "$runtime_dir" "$managed_node_bin"
+    cat > "$fake_bin/systemctl" <<'EOF'
+#!/bin/bash
+case "$*" in
+    "--user show-environment") exit 0 ;;
+    "--user import-environment "*) printf 'systemctl|%s|%s\n' "${PATH-}" "$*" >> "$CAPTURE_LOG"; exit 0 ;;
+    "--user is-enabled "*) exit 1 ;;
+    *) exit 0 ;;
+esac
+EOF
+    cat > "$fake_bin/dbus-update-activation-environment" <<'EOF'
+#!/bin/bash
+printf 'dbus|%s|%s\n' "${PATH-}" "$*" >> "$CAPTURE_LOG"
+EOF
+    chmod +x "$fake_bin/systemctl" "$fake_bin/dbus-update-activation-environment"
+
+    (
+        export CAPTURE_LOG="$capture_log"
+        export XDG_RUNTIME_DIR="$runtime_dir"
+        export CODEX_LINUX_USER_PATH="$user_path"
+        export PATH="$managed_node_bin:$user_path"
+        # shellcheck disable=SC1091
+        source "$REPO_DIR/packaging/linux/codex-packaged-runtime.sh"
+
+        codex_packaged_runtime_prelaunch_background
+        [ "$PATH" = "$managed_node_bin:$user_path" ] \
+            || fail "Expected the packaged runtime to preserve the app PATH"
+        mapfile -t captures < "$capture_log"
+        [ "${captures[0]:-}" = "systemctl|$user_path|--user import-environment $import_args" ] \
+            || fail "Expected systemd to import the user PATH"
+        [ "${captures[1]:-}" = "dbus|$user_path|--systemd $import_args" ] \
+            || fail "Expected D-Bus activation to import the user PATH"
+        [ "${#captures[@]}" -eq 2 ] \
+            || fail "Expected one PATH export for systemd and D-Bus"
+
+        : > "$capture_log"
+        unset CODEX_LINUX_USER_PATH
+        export PATH="$fallback_path"
+        codex_packaged_runtime_prelaunch_background
+        [ "$PATH" = "$fallback_path" ] \
+            || fail "Expected the packaged runtime to preserve the fallback PATH"
+        mapfile -t captures < "$capture_log"
+        [ "${captures[0]:-}" = "systemctl|$fallback_path|--user import-environment $import_args" ] \
+            || fail "Expected systemd to import PATH when CODEX_LINUX_USER_PATH is unset"
+        [ "${captures[1]:-}" = "dbus|$fallback_path|--systemd $import_args" ] \
+            || fail "Expected D-Bus activation to import PATH when CODEX_LINUX_USER_PATH is unset"
+        [ "${#captures[@]}" -eq 2 ] \
+            || fail "Expected fallback PATH exports only for systemd and D-Bus"
+    )
+}
+
+test_launcher_rejects_missing_webview_entrypoint() {
+    info "Checking launcher rejects an app without webview/index.html"
+    local workspace="$TMP_DIR/launcher-webview-entrypoint"
+    local app_dir="$workspace/app"
+    local home_dir="$workspace/home"
+    local runtime_dir="$workspace/runtime"
+    local electron_marker="$workspace/electron-called"
+    local launcher_log="$home_dir/.cache/codex-desktop/launcher.log"
+
+    mkdir -p \
+        "$app_dir/.codex-linux/cold-start.d" \
+        "$app_dir/.codex-linux/env.d" \
+        "$app_dir/.codex-linux/features" \
+        "$app_dir/.codex-linux/prelaunch.d" \
+        "$app_dir/.codex-linux/electron-args.d" \
+        "$app_dir/.codex-linux/launcher.d" \
+        "$app_dir/.codex-linux/after-exit.d" \
+        "$app_dir/content/webview" \
+        "$app_dir/resources/node-runtime/bin" \
+        "$app_dir/resources/plugins/openai-bundled/.agents/plugins" \
+        "$app_dir/resources/plugins/openai-bundled/plugins" \
+        "$home_dir" \
+        "$runtime_dir"
+
+    {
+        printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'set -Eeuo pipefail' \
+            'CODEX_LINUX_APP_ID=codex-desktop' \
+            'CODEX_LINUX_APP_DISPLAY_NAME="Codex Desktop"' \
+            'CODEX_LINUX_WEBVIEW_PORT="${CODEX_WEBVIEW_PORT:-5175}"'
+        cat "$REPO_DIR/launcher/start.sh.template"
+    } > "$app_dir/start.sh"
+    chmod +x "$app_dir/start.sh"
+    cp "$REPO_DIR/launcher/webview-server.py" "$app_dir/.codex-linux/webview-server.py"
+    ln -s "$(command -v node)" "$app_dir/resources/node-runtime/bin/node"
+
+    cat > "$app_dir/electron" <<'SCRIPT'
+#!/usr/bin/env bash
+printf '%s\n' "${ELECTRON_RENDERER_URL:-}" > "$ELECTRON_MARKER"
+exit 0
+SCRIPT
+    chmod +x "$app_dir/electron"
+
+    set +e
+    timeout 20 env -i \
+        PATH="/usr/bin:/bin:/usr/local/bin" \
+        HOME="$home_dir" \
+        XDG_RUNTIME_DIR="$runtime_dir" \
+        CODEX_CLI_PATH=/bin/true \
+        CODEX_WEBVIEW_PORT=45675 \
+        ELECTRON_MARKER="$electron_marker" \
+        "$app_dir/start.sh" >/dev/null 2>&1
+    local rc=$?
+    set -e
+
+    [ "$rc" -ne 124 ] || fail "Launcher hung while handling a missing webview entrypoint"
+    [ "$rc" -ne 0 ] || fail "Launcher should fail when webview/index.html is missing"
+    [ ! -e "$electron_marker" ] || fail "Launcher should not reach Electron when webview/index.html is missing"
+    assert_contains "$launcher_log" "webview bundle is incomplete"
+
+    rm -f "$electron_marker"
+    set +e
+    timeout 20 env -i \
+        PATH="/usr/bin:/bin:/usr/local/bin" \
+        HOME="$home_dir" \
+        XDG_RUNTIME_DIR="$runtime_dir" \
+        CODEX_CLI_PATH=/bin/true \
+        CODEX_WEBVIEW_PORT=45675 \
+        CODEX_LINUX_ALLOW_RENDERER_URL_OVERRIDE=1 \
+        ELECTRON_RENDERER_URL="http://127.0.0.1:9999/" \
+        ELECTRON_MARKER="$electron_marker" \
+        "$app_dir/start.sh" >/dev/null 2>&1
+    rc=$?
+    set -e
+
+    [ "$rc" -ne 124 ] || fail "Launcher hung while using an explicit renderer URL override"
+    [ "$rc" -eq 0 ] || fail "Launcher should allow an explicit renderer URL override without local webview assets"
+    assert_file_exists "$electron_marker"
+    [ "$(cat "$electron_marker")" = "http://127.0.0.1:9999/" ] \
+        || fail "Launcher should preserve explicit renderer URL override"
+    assert_contains "$launcher_log" "Skipping packaged webview setup because ELECTRON_RENDERER_URL override is enabled"
+}
+
+test_launcher_extra_bundled_plugin_cache_rollback() {
+    info "Checking extra bundled plugin cache rollback"
+    local workspace="$TMP_DIR/extra-bundled-plugin-cache-rollback"
+    local app_dir="$workspace/app"
+    local fake_home="$workspace/home"
+    local source_plugin="$app_dir/resources/plugins/openai-bundled/plugins/sites"
+    local cache_root="$fake_home/.codex/plugins/cache/openai-bundled/sites"
+    local cache_plugin="$cache_root/1.2.3"
+    local launcher_defs="$workspace/launcher-defs.sh"
+    local initial_log="$workspace/initial.log"
+    local failure_log="$workspace/failure.log"
+    local no_cache_log="$workspace/no-cache.log"
+    local visualize_source="$app_dir/resources/plugins/openai-bundled/plugins/visualize"
+    local visualize_cache="$fake_home/.codex/plugins/cache/openai-bundled/visualize/2.0.0"
+
+    mkdir -p "$source_plugin/.codex-plugin" "$fake_home"
+    printf '%s\n' '{"name":"sites","version":"1.2.3"}' > "$source_plugin/.codex-plugin/plugin.json"
+    printf '%s\n' "initial" > "$source_plugin/content.txt"
+    sed '/^hydrate_graphical_session_env$/,$d' "$REPO_DIR/launcher/start.sh.template" > "$launcher_defs"
+
+    (
+        export HOME="$fake_home"
+        export CODEX_HOME="$fake_home/.codex"
+        export CODEX_LINUX_APP_ID="codex-desktop"
+        export CODEX_LINUX_APP_DISPLAY_NAME="Codex Desktop"
+        export CODEX_LINUX_WEBVIEW_PORT="5175"
+        exec 7>&1 8>&2
+        # shellcheck disable=SC1090
+        source "$launcher_defs"
+        exec 1>&7 2>&8
+        SCRIPT_DIR="$app_dir"
+
+        sync_extra_bundled_plugin_cache > "$initial_log" 2>&1
+        printf '%s\n' "replacement" > "$source_plugin/content.txt"
+
+        mv() {
+            local args=("$@")
+            local argc="${#args[@]}"
+            local source="${args[$((argc - 2))]}"
+            local destination="${args[$((argc - 1))]}"
+            if [[ "$source" == *".tmp."* ]] && [ "$destination" = "$cache_plugin" ]; then
+                return 73
+            fi
+            command mv "$@"
+        }
+
+        sync_extra_bundled_plugin_cache > "$failure_log" 2>&1
+
+        rm -rf "$source_plugin"
+        mkdir -p "$visualize_source/.codex-plugin"
+        printf '%s\n' '{"name":"visualize","version":"2.0.0"}' > "$visualize_source/.codex-plugin/plugin.json"
+        printf '%s\n' "visualize" > "$visualize_source/content.txt"
+        sync_extra_bundled_plugin_cache > "$no_cache_log" 2>&1
+    )
+
+    assert_contains "$initial_log" "Extra bundled plugin cache synced from bundled resources"
+    assert_contains "$failure_log" "previous cache was restored"
+    assert_contains "$cache_plugin/content.txt" "initial"
+    assert_not_contains "$cache_plugin/content.txt" "replacement"
+    [ "$(readlink "$cache_root/latest")" = "1.2.3" ] || fail "Expected latest to keep the restored plugin version"
+    [ -L "$fake_home/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/sites" ] \
+        || fail "Expected marketplace plugin link to remain available"
+    [ -z "$(find "$cache_root" -mindepth 1 -maxdepth 1 -type d \( -name '*.tmp.*' -o -name '*.backup.*' \) -print -quit)" ] \
+        || fail "Expected failed extra plugin sync to clean temporary and backup directories"
+    assert_contains "$no_cache_log" "continuing without a new cache"
+    [ ! -e "$visualize_cache" ] || fail "Expected failed first cache install to leave no plugin payload"
+    [ ! -L "${visualize_cache%/*}/latest" ] || fail "Expected failed first cache install to leave no latest link"
+    [ ! -L "$fake_home/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/visualize" ] \
+        || fail "Expected failed first cache install to leave no marketplace link"
+    [ -z "$(find "${visualize_cache%/*}" -mindepth 1 -maxdepth 1 -type d \( -name '*.tmp.*' -o -name '*.backup.*' \) -print -quit)" ] \
+        || fail "Expected failed first cache install to clean temporary and backup directories"
+}
+
+test_launcher_extra_bundled_plugin_cache_concurrent_destination() {
+    info "Checking extra bundled plugin cache concurrent destination handling"
+    local workspace="$TMP_DIR/extra-bundled-plugin-cache-concurrent-destination"
+    local app_dir="$workspace/app"
+    local fake_home="$workspace/home"
+    local source_plugin="$app_dir/resources/plugins/openai-bundled/plugins/sites"
+    local cache_root="$fake_home/.codex/plugins/cache/openai-bundled/sites"
+    local cache_plugin="$cache_root/1.2.3"
+    local launcher_defs="$workspace/launcher-defs.sh"
+    local race_log="$workspace/race.log"
+    local backup_plugin=""
+
+    mkdir -p "$source_plugin/.codex-plugin" "$fake_home"
+    printf '%s\n' '{"name":"sites","version":"1.2.3"}' > "$source_plugin/.codex-plugin/plugin.json"
+    printf '%s\n' "initial" > "$source_plugin/content.txt"
+    sed '/^hydrate_graphical_session_env$/,$d' "$REPO_DIR/launcher/start.sh.template" > "$launcher_defs"
+
+    (
+        export HOME="$fake_home"
+        export CODEX_HOME="$fake_home/.codex"
+        export CODEX_LINUX_APP_ID="codex-desktop"
+        export CODEX_LINUX_APP_DISPLAY_NAME="ChatGPT Desktop"
+        export CODEX_LINUX_WEBVIEW_PORT="5175"
+        exec 7>&1 8>&2
+        # shellcheck disable=SC1090
+        source "$launcher_defs"
+        exec 1>&7 2>&8
+        SCRIPT_DIR="$app_dir"
+
+        sync_extra_bundled_plugin_cache >/dev/null 2>&1
+        printf '%s\n' "replacement" > "$source_plugin/content.txt"
+
+        concurrent_destination_injected=0
+        mv() {
+            local args=("$@")
+            local argc="${#args[@]}"
+            local source="${args[$((argc - 2))]}"
+            local destination="${args[$((argc - 1))]}"
+            if [[ "$source" == *".tmp."* ]] && \
+               [ "$destination" = "$cache_plugin" ] && \
+               [ "$concurrent_destination_injected" -eq 0 ]; then
+                mkdir -p "$cache_plugin"
+                printf '%s\n' "concurrent" > "$cache_plugin/content.txt"
+                concurrent_destination_injected=1
+            fi
+            command mv "$@"
+        }
+
+        sync_extra_bundled_plugin_cache > "$race_log" 2>&1
+    )
+
+    assert_contains "$race_log" "previous cache could not be restored"
+    assert_not_contains "$race_log" "Extra bundled plugin cache synced from bundled resources"
+    assert_contains "$cache_plugin/content.txt" "concurrent"
+    assert_not_contains "$cache_plugin/content.txt" "replacement"
+    [ -z "$(find "$cache_plugin" -mindepth 1 -maxdepth 1 -type d -name '*.tmp.*' -print -quit)" ] \
+        || fail "Expected collision-safe move to avoid nesting the temporary payload"
+    [ -z "$(find "$cache_root" -mindepth 1 -maxdepth 1 -type d -name '*.tmp.*' -print -quit)" ] \
+        || fail "Expected failed concurrent cache install to clean its temporary directory"
+    backup_plugin="$(find "$cache_root" -mindepth 1 -maxdepth 1 -type d -name '*.backup.*' -print -quit)"
+    [ -n "$backup_plugin" ] || fail "Expected concurrent cache collision to preserve the previous cache backup"
+    assert_contains "$backup_plugin/content.txt" "initial"
 }
 
 test_launcher_template_sanity() {
@@ -3735,7 +4399,7 @@ if "clear_bundled_marketplace_tmp_cache\nmonitor_bundled_marketplace_tmp_permiss
 if not re.search(r'if needs_cold_start; then\s+log_phase "cold_start_cache_sync_start"\s+clear_bundled_marketplace_tmp_cache.*?monitor_bundled_marketplace_tmp_permissions.*?stage_bundled_marketplace_metadata.*?sync_browser_use_bundled_plugin_cache &.*?sync_chrome_bundled_plugin_cache &.*?sync_computer_use_bundled_plugin_cache &.*?sync_read_aloud_bundled_plugin_cache &.*?sync_extra_bundled_plugin_cache &.*?run_cold_start_hooks.*?log_phase "cold_start_hooks_dispatched"\s+await_webview_server_ready\s+fi', runtime_body, re.S):
     raise SystemExit("bundled marketplace cleanup, staged metadata, concurrent plugin syncs, cold-start hooks, and the webview readiness wait must run only on cold start")
 remove_tree_body = source.split("remove_tree_if_exists() {", 1)[1].split("replace_symlink() {", 1)[0]
-if "return 0" not in remove_tree_body or "continuing with existing cache" not in remove_tree_body:
+if "if rm -rf" not in remove_tree_body or "continuing with existing cache" not in remove_tree_body or "return 0" not in remove_tree_body:
     raise SystemExit("remove_tree_if_exists must treat busy NFS cache cleanup as non-fatal under set -e")
 # The plugin syncs run concurrently, so the shared marketplace.json is staged
 # exactly once beforehand instead of racing rm+cp per sync, and every sync is
@@ -3783,10 +4447,6 @@ if "if needs_cold_start;" not in runtime_body:
     raise SystemExit("second-instance handoff must skip CLI preflight")
 if 'run_cold_start_hooks' not in runtime_body:
     raise SystemExit("cold start must run feature-staged hooks before Electron launches")
-if 'export CODEX_LINUX_USER_PATH="${PATH:-}"' not in source:
-    raise SystemExit("launcher must capture the user PATH before prepending the managed Node runtime")
-if source.index('export CODEX_LINUX_USER_PATH="${PATH:-}"') > source.index('export PATH="$MANAGED_NODE_BIN_DIR:$PATH"'):
-    raise SystemExit("launcher must capture CODEX_LINUX_USER_PATH before mutating PATH for Electron")
 for name, body in (("prelaunch", prelaunch_hooks_body), ("cold-start", cold_start_hooks_body), ("launcher", launcher_hooks_body)):
     if 'CODEX_HOME="$CODEX_HOME"' not in body:
         raise SystemExit(f"launcher {name} hooks must receive resolved CODEX_HOME")
@@ -4372,7 +5032,7 @@ EOF
     assert_contains "$REPO_DIR/scripts/lib/process-detection.sh" "CODEX_INSTALL_ALLOW_RUNNING"
     assert_contains "$REPO_DIR/scripts/lib/process-detection.sh" "assert_install_target_not_running"
     assert_contains "$REPO_DIR/scripts/lib/process-detection.sh" "find_running_install_target_pid"
-    assert_contains "$REPO_DIR/scripts/lib/process-detection.sh" "Codex Desktop is currently running from"
+    assert_contains "$REPO_DIR/scripts/lib/process-detection.sh" "ChatGPT Desktop is currently running from"
     assert_contains "$REPO_DIR/launcher/start.sh.template" "prompt_install_missing_cli"
     assert_contains "$REPO_DIR/launcher/start.sh.template" "prompt-install-cli"
     assert_contains "$REPO_DIR/launcher/start.sh.template" '.npm-global/bin/codex'
@@ -4734,17 +5394,17 @@ try:
 
     asset_status, asset_headers, _ = request("HEAD", "/assets/app-test-abc123.js")
     assert asset_status == 200, asset_status
-    assert asset_headers.get("cache-control") == "public, max-age=31536000, immutable", asset_headers
-    assert "pragma" not in asset_headers, asset_headers
-    assert "expires" not in asset_headers, asset_headers
+    assert asset_headers.get("cache-control") == "no-store, max-age=0", asset_headers
+    assert asset_headers.get("pragma") == "no-cache", asset_headers
+    assert asset_headers.get("expires") == "0", asset_headers
 
     cached_status, cached_headers, _ = request(
         "GET",
         "/assets/app-test-abc123.js",
         {"If-Modified-Since": asset_headers["last-modified"]},
     )
-    assert cached_status == 304, (cached_status, cached_headers)
-    assert cached_headers.get("cache-control") == "public, max-age=31536000, immutable", cached_headers
+    assert cached_status == 200, (cached_status, cached_headers)
+    assert cached_headers.get("cache-control") == "no-store, max-age=0", cached_headers
 
     refreshed_index_status, _, _ = request(
         "GET",
@@ -5026,6 +5686,295 @@ test_browser_plugin_renamed_upstream_staging() {
     assert_contains "$marketplace" '"path": "./plugins/browser"'
     assert_contains "$output_log" "Browser plugin staged from upstream DMG"
     assert_not_contains "$output_log" "Browser bundled plugin resources not present"
+}
+
+test_portable_bundled_plugins_staging() {
+    info "Checking portable upstream bundled plugin staging"
+    local workspace="$TMP_DIR/portable-bundled-plugins"
+    local app_dir="$workspace/ChatGPT.app"
+    local install_dir="$workspace/install"
+    local output_log="$workspace/output.log"
+    local marketplace="$install_dir/resources/plugins/openai-bundled/.agents/plugins/marketplace.json"
+    local plugins_dir="$install_dir/resources/plugins/openai-bundled/plugins"
+
+    mkdir -p "$workspace" "$install_dir/resources"
+    make_fake_portable_plugins_upstream_app "$app_dir"
+
+    (
+        SCRIPT_DIR="$REPO_DIR"
+        INSTALL_DIR="$install_dir"
+        WORK_DIR="$workspace/work"
+        ARCH="x86_64"
+        ICON_SOURCE="$workspace/missing-icon.png"
+        CODEX_APP_ID="codex-desktop"
+        mkdir -p "$WORK_DIR"
+        warn() { echo "[WARN] $*" >&2; }
+        info() { echo "[INFO] $*" >&2; }
+        # shellcheck disable=SC1091
+        source "$REPO_DIR/scripts/lib/bundled-plugins.sh"
+        stage_linux_computer_use_plugin() { return 1; }
+        stage_browser_plugin_from_upstream() { return 1; }
+        stage_chrome_plugin_from_upstream() { return 1; }
+        install_browser_use_node_repl_resource() { return 0; }
+        install_bundled_plugin_resources "$app_dir"
+    ) >"$output_log" 2>&1
+
+    assert_file_exists "$plugins_dir/sites/.codex-plugin/plugin.json"
+    assert_file_exists "$plugins_dir/deep-research/.codex-plugin/plugin.json"
+    assert_file_exists "$plugins_dir/visualize/.codex-plugin/plugin.json"
+    assert_mode "$plugins_dir/sites/scripts/init-site.sh" "755"
+    [ ! -e "$plugins_dir/latex" ] || fail "Expected native LaTeX plugin to remain unstaged"
+    [ ! -e "$plugins_dir/record-and-replay" ] || fail "Expected native Record and Replay plugin to remain unstaged"
+    assert_contains "$output_log" "Portable bundled plugin sites staged from upstream DMG"
+    assert_contains "$output_log" "Portable bundled plugin deep-research staged from upstream DMG"
+    assert_contains "$output_log" "Portable bundled plugin visualize staged from upstream DMG"
+
+    node - "$marketplace" <<'NODE'
+const fs = require("fs");
+const marketplace = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const names = marketplace.plugins.map((plugin) => plugin.name);
+const expected = ["sites", "deep-research", "visualize"];
+if (JSON.stringify(names) !== JSON.stringify(expected)) {
+  throw new Error(`expected ${JSON.stringify(expected)}, got ${JSON.stringify(names)}`);
+}
+for (const plugin of marketplace.plugins) {
+  if (plugin.source?.source !== "local" || plugin.source.path !== `./plugins/${plugin.name}`) {
+    throw new Error(`unsafe marketplace source for ${plugin.name}`);
+  }
+}
+NODE
+    node --check "$plugins_dir/sites/mcp/server.mjs"
+    python3 -m py_compile "$plugins_dir/visualize/skills/visualize/scripts/render.py"
+}
+
+test_portable_bundled_plugins_reject_unsafe_content() {
+    info "Checking unsafe portable bundled plugin rejection"
+    local workspace="$TMP_DIR/portable-bundled-plugins-unsafe"
+    local app_dir="$workspace/ChatGPT.app"
+    local install_dir="$workspace/install"
+    local output_log="$workspace/output.log"
+    local source_plugins="$app_dir/Contents/Resources/plugins/openai-bundled/plugins"
+    local target_plugins="$install_dir/resources/plugins/openai-bundled/plugins"
+    local victim="$workspace/private.txt"
+
+    mkdir -p "$workspace" "$install_dir/resources"
+    make_fake_portable_plugins_upstream_app "$app_dir"
+    printf '%s\n' 'do-not-copy' > "$victim"
+    ln -s "$victim" "$source_plugins/sites/private-link"
+    printf '\x7fELF' > "$source_plugins/deep-research/native-helper"
+    chmod 0755 "$source_plugins/deep-research/native-helper"
+
+    (
+        SCRIPT_DIR="$REPO_DIR"
+        INSTALL_DIR="$install_dir"
+        WORK_DIR="$workspace/work"
+        ARCH="x86_64"
+        ICON_SOURCE="$workspace/missing-icon.png"
+        CODEX_APP_ID="codex-desktop"
+        mkdir -p "$WORK_DIR"
+        warn() { echo "[WARN] $*" >&2; }
+        info() { echo "[INFO] $*" >&2; }
+        # shellcheck disable=SC1091
+        source "$REPO_DIR/scripts/lib/bundled-plugins.sh"
+        stage_linux_computer_use_plugin() { return 1; }
+        stage_browser_plugin_from_upstream() { return 1; }
+        stage_chrome_plugin_from_upstream() { return 1; }
+        install_browser_use_node_repl_resource() { return 0; }
+        install_bundled_plugin_resources "$app_dir"
+    ) >"$output_log" 2>&1
+
+    [ ! -e "$target_plugins/sites" ] || fail "Expected symlink-bearing Sites plugin to be rejected"
+    [ ! -e "$target_plugins/deep-research" ] || fail "Expected native Deep Research payload to be rejected"
+    assert_file_exists "$target_plugins/visualize/.codex-plugin/plugin.json"
+    assert_contains "$output_log" "symlink is not allowed: private-link"
+    assert_contains "$output_log" "native executable is not portable: native-helper"
+    assert_contains "$victim" "do-not-copy"
+}
+
+test_portable_bundled_plugin_validator_guards() {
+    info "Checking portable bundled plugin manifest and filesystem guards"
+    local workspace="$TMP_DIR/portable-bundled-plugin-validator-guards"
+    local base_plugin="$workspace/base"
+    local case_dir=""
+    local case_name=""
+    local output_log=""
+
+    mkdir -p "$base_plugin/.codex-plugin"
+    printf '%s\n' '{"name":"sites","version":"1.0.0"}' > "$base_plugin/.codex-plugin/plugin.json"
+    printf '%s\n' "portable" > "$base_plugin/content.txt"
+
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/scripts/lib/bundled-plugins.sh"
+
+    for case_name in invalid-version manifest-symlink privileged-directory native-bundle named-pipe; do
+        case_dir="$workspace/$case_name"
+        output_log="$workspace/$case_name.log"
+        cp -R "$base_plugin" "$case_dir"
+
+        case "$case_name" in
+            invalid-version)
+                printf '%s\n' '{"name":"sites","version":"../invalid"}' > "$case_dir/.codex-plugin/plugin.json"
+                ;;
+            manifest-symlink)
+                printf '%s\n' '{"name":"sites","version":"1.0.0"}' > "$workspace/external-manifest.json"
+                rm "$case_dir/.codex-plugin/plugin.json"
+                ln -s "$workspace/external-manifest.json" "$case_dir/.codex-plugin/plugin.json"
+                ;;
+            privileged-directory)
+                mkdir "$case_dir/privileged"
+                chmod 2755 "$case_dir/privileged"
+                ;;
+            native-bundle)
+                mkdir "$case_dir/helper.app"
+                ;;
+            named-pipe)
+                mkfifo "$case_dir/channel"
+                ;;
+        esac
+
+        if validate_portable_bundled_plugin "$case_dir" sites >"$output_log" 2>&1; then
+            fail "Expected portable plugin validator to reject $case_name"
+        fi
+    done
+
+    assert_contains "$workspace/invalid-version.log" "plugin manifest version is missing or invalid"
+    assert_contains "$workspace/manifest-symlink.log" "plugin manifest cannot be a symlink"
+    assert_contains "$workspace/privileged-directory.log" "privileged mode is not allowed: privileged"
+    assert_contains "$workspace/native-bundle.log" "native bundle is not portable: helper.app"
+    assert_contains "$workspace/named-pipe.log" "non-regular file is not allowed: channel"
+}
+
+test_portable_bundled_plugin_stage_failures() {
+    info "Checking portable bundled plugin stage failure propagation"
+    local workspace="$TMP_DIR/portable-bundled-plugin-stage-failures"
+    local failure=""
+
+    for failure in sidecar-cleanup target-backup final-move; do
+        local case_dir="$workspace/$failure"
+        local app_dir="$case_dir/ChatGPT.app"
+        local source_plugin="$app_dir/Contents/Resources/plugins/openai-bundled/plugins/sites"
+        local target_plugins="$case_dir/target"
+        local output_log="$case_dir/output.log"
+
+        mkdir -p "$target_plugins"
+        make_fake_portable_plugins_upstream_app "$app_dir"
+        if [ "$failure" = "target-backup" ] || [ "$failure" = "final-move" ]; then
+            mkdir -p "$target_plugins/sites"
+            printf '%s\n' "keep-existing" > "$target_plugins/sites/existing.txt"
+        fi
+
+        if ! (
+            warn() { echo "[WARN] $*" >&2; }
+            info() { echo "[INFO] $*" >&2; }
+            # shellcheck disable=SC1091
+            source "$REPO_DIR/scripts/lib/bundled-plugins.sh"
+
+            case "$failure" in
+                sidecar-cleanup)
+                    remove_macos_sidecar_files() { return 71; }
+                    ;;
+                target-backup)
+                    mv() {
+                        local args=("$@")
+                        local offset=0
+                        if [ "${args[0]}" = "--" ]; then
+                            offset=1
+                        fi
+                        if [ "${args[$offset]}" = "$target_plugins/sites" ]; then
+                            return 72
+                        fi
+                        command mv "$@"
+                    }
+                    ;;
+                final-move)
+                    mv() {
+                        local args=("$@")
+                        local offset=0
+                        if [ "${args[0]}" = "--" ]; then
+                            offset=1
+                        fi
+                        local source="${args[$offset]}"
+                        local destination="${args[$((offset + 1))]}"
+                        if [[ "$source" == *".sites.tmp."* ]] && [ "$destination" = "$target_plugins/sites" ]; then
+                            return 73
+                        fi
+                        command mv "$@"
+                    }
+                    ;;
+            esac
+
+            if stage_portable_bundled_plugin_from_upstream "$source_plugin" "$target_plugins" sites; then
+                echo "stage unexpectedly succeeded for $failure" >&2
+                exit 1
+            fi
+        ) >"$output_log" 2>&1; then
+            fail "Expected $failure to propagate as a staging failure"
+        fi
+
+        assert_not_contains "$output_log" "Portable bundled plugin sites staged from upstream DMG"
+        [ -z "$(find "$target_plugins" -mindepth 1 -maxdepth 1 -type d \( -name '.sites.tmp.*' -o -name '.sites.backup.*' \) -print -quit)" ] \
+            || fail "Expected $failure staging and backup cleanup"
+
+        case "$failure" in
+            sidecar-cleanup)
+                assert_contains "$output_log" "Failed to clean macOS sidecar files for portable bundled plugin sites"
+                [ ! -e "$target_plugins/sites" ] || fail "Expected sidecar cleanup failure to leave no target"
+                ;;
+            target-backup)
+                assert_contains "$output_log" "Failed to preserve existing portable bundled plugin sites"
+                assert_contains "$target_plugins/sites/existing.txt" "keep-existing"
+                ;;
+            final-move)
+                assert_contains "$output_log" "previous target was restored"
+                assert_contains "$target_plugins/sites/existing.txt" "keep-existing"
+                ;;
+        esac
+    done
+}
+
+test_portable_bundled_plugin_marketplace_path_guard() {
+    info "Checking portable bundled plugin marketplace path guard"
+    local workspace="$TMP_DIR/portable-bundled-plugin-path-guard"
+    local marketplace="$workspace/marketplace.json"
+    local listed="$workspace/listed.txt"
+    local rewritten="$workspace/rewritten/.agents/plugins/marketplace.json"
+
+    mkdir -p "$workspace"
+    cat > "$marketplace" <<'JSON'
+{"plugins":[{"name":"sites","source":{"source":"local","path":"../../outside"},"category":"unsafe-first"},{"name":"sites","source":{"source":"local","path":"./plugins/sites"},"category":"safe-sites"},{"name":"sites","source":{"source":"local","path":"./plugins/sites"},"category":"duplicate-safe"},{"name":"deep-research","source":{"source":"git","path":"./plugins/deep-research"}},{"name":"visualize","source":{"source":"local","path":".\\plugins\\visualize"},"category":"safe-visualize"}]}
+JSON
+
+    (
+        # shellcheck disable=SC1091
+        source "$REPO_DIR/scripts/lib/bundled-plugins.sh"
+        list_portable_bundled_plugins "$marketplace"
+    ) > "$listed"
+
+    [ "$(grep -Fxc 'sites' "$listed")" -eq 1 ] || fail "Expected one safe Sites marketplace entry"
+    [ "$(grep -Fxc 'visualize' "$listed")" -eq 1 ] || fail "Expected one safe Visualize marketplace entry"
+    assert_not_contains "$listed" "deep-research"
+
+    (
+        # shellcheck disable=SC1091
+        source "$REPO_DIR/scripts/lib/bundled-plugins.sh"
+        write_bundled_plugins_marketplace "$marketplace" "$rewritten" 0 0 0 sites visualize
+    )
+    node - "$rewritten" <<'NODE'
+const fs = require("fs");
+const marketplace = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const byName = new Map(marketplace.plugins.map((plugin) => [plugin.name, plugin]));
+if (byName.get("sites")?.category !== "safe-sites") {
+  throw new Error("Sites metadata did not come from the accepted marketplace entry");
+}
+if (byName.get("visualize")?.category !== "safe-visualize") {
+  throw new Error("Visualize metadata did not come from the accepted marketplace entry");
+}
+for (const [name, plugin] of byName) {
+  if (plugin.source?.source !== "local" || plugin.source.path !== `./plugins/${name}`) {
+    throw new Error(`unsafe rewritten source for ${name}`);
+  }
+}
+NODE
 }
 
 test_browser_use_node_repl_glibc_pidfd_patch_static() {
@@ -5513,31 +6462,16 @@ test_linux_translucent_sidebar_default_patch_smoke() {
     make_fake_extracted_asar \
         "$extracted" \
         'let D={removeMenu(){},setMenuBarVisibility(){},setIcon(){},once(){}};let n=require(`electron`),t=require(`node:path`),a=require(`node:fs`);...process.platform===`win32`?{autoHideMenuBar:!0}:{},process.platform===`win32`&&D.removeMenu(),foo)}),D.once(`ready-to-show`,()=>{var sa=Mi({id:`fileManager`,label:`Finder`,icon:`apps/finder.png`,kind:`fileManager`,darwin:{detect:()=>`open`,args:e=>ai(e)},win32:{label:`File Explorer`,icon:`apps/file-explorer.png`,detect:ca,args:e=>ai(e),open:async({path:e})=>la(e)}});function ca(){let e=1;return e}async function la(e){let t=ua(e);if(t&&(0,a.statSync)(t).isFile()){n.shell.showItemInFolder(t);return}let r=t??e,i=await n.shell.openPath(r);if(i)throw Error(i)}function ua(e){return e}var Ua=Mi({id:`systemDefault`,label:`System Default App`,icon:`apps/file-explorer.png`,kind:`systemDefault`,hidden:!0,darwin:{icon:`apps/finder.png`,detect:()=>`system-default`,iconPath:()=>null,args:e=>[e],open:async({path:e})=>Wa(e)},win32:{detect:()=>`system-default`,iconPath:()=>null,args:e=>[e],open:async({path:e})=>Wa(e)},linux:{detect:()=>`system-default`,iconPath:()=>null,args:e=>[e],open:async({path:e})=>Wa(e)}});async function Wa(e){return e}' \
-        'function settings(){let d=ot(r,e),f=at(e),p={codeThemeId:tt(a,e).id,theme:d},x=`settings.general.appearance.chromeTheme.translucentSidebar`;return {p,x}}' \
-        'function runtime(){let o=`light`,a=`electron`,l=null,f=null,C=fl(l,`light`),w=fl(f,`dark`);let T=o===`light`?C:w,E;if(T.opaqueWindows&&!XZ()){document.body.classList.add(`electron-opaque`);return E}return E}'
-    cat > "$extracted/webview/assets/app-main-test.js" <<'JS'
-let{data:c}=Qc(y.APPEARANCE_LIGHT_CHROME_THEME,s),l;let{data:u}=Qc(y.APPEARANCE_DARK_CHROME_THEME,l),d;let x=b,S;let C=o===`light`?x:S,w;if(C.opaqueWindows&&!ba()){e.classList.add(`electron-opaque`)}
-JS
-    cat > "$extracted/webview/assets/diff-view-mode-test.js" <<'JS'
-function oe(e,t){let n=o[t];return{accent:p(e?.accent)??n.accent,contrast:se(e?.contrast,n.contrast),fonts:le(e?.fonts),ink:p(e?.ink)??n.ink,opaqueWindows:e?.opaqueWindows??n.opaqueWindows,semanticColors:ue(e?.semanticColors,n.semanticColors),surface:p(e?.surface)??n.surface}}
-JS
+        'function settings(){let{canImportThemeString:u,setThemePatch:b,theme:x}=p(t),S=vn(r,t),k=[{label:i}],A=[];return x.opaqueWindows}' \
+        ''
 
     node "$REPO_DIR/scripts/patch-linux-window-ui.js" "$extracted" >"$output_log" 2>&1
-    assert_contains "$extracted/webview/assets/general-settings-test.js" 'navigator.userAgent.includes(`Linux`)&&r?.opaqueWindows==null&&(d={...d,opaqueWindows:!0})'
-    assert_contains "$extracted/webview/assets/index-test.js" 'document.documentElement.dataset.codexOs===`linux`&&((o===`light`?l:f)?.opaqueWindows==null&&(T={...T,opaqueWindows:!0}))'
-    assert_contains "$extracted/webview/assets/app-main-test.js" 'document.documentElement.dataset.codexOs===`linux`&&((o===`light`?c:u)?.opaqueWindows==null&&(C={...C,opaqueWindows:!0}))'
-    assert_contains "$extracted/webview/assets/diff-view-mode-test.js" 'opaqueWindows:e?.opaqueWindows??(typeof navigator<`u`&&((navigator.userAgentData?.platform??navigator.platform??navigator.userAgent).toLowerCase().includes(`linux`))?!0:n.opaqueWindows)'
+    assert_contains "$extracted/webview/assets/general-settings-test.js" 'navigator.userAgent.includes(`Linux`)&&x?.opaqueWindows==null&&(x={...x,opaqueWindows:!0})'
     assert_occurrence_count "$extracted/webview/assets/general-settings-test.js" 'navigator.userAgent.includes(`Linux`)' '1'
-    assert_occurrence_count "$extracted/webview/assets/index-test.js" 'dataset.codexOs===`linux`' '1'
-    assert_occurrence_count "$extracted/webview/assets/app-main-test.js" 'dataset.codexOs===`linux`' '1'
-    assert_occurrence_count "$extracted/webview/assets/diff-view-mode-test.js" 'toLowerCase().includes(`linux`)' '1'
     assert_not_contains "$output_log" 'Could not find Linux opaque window default insertion point'
 
     node "$REPO_DIR/scripts/patch-linux-window-ui.js" "$extracted" >"$output_log" 2>&1
     assert_occurrence_count "$extracted/webview/assets/general-settings-test.js" 'navigator.userAgent.includes(`Linux`)' '1'
-    assert_occurrence_count "$extracted/webview/assets/index-test.js" 'dataset.codexOs===`linux`' '1'
-    assert_occurrence_count "$extracted/webview/assets/app-main-test.js" 'dataset.codexOs===`linux`' '1'
-    assert_occurrence_count "$extracted/webview/assets/diff-view-mode-test.js" 'toLowerCase().includes(`linux`)' '1'
     assert_not_contains "$output_log" 'Could not find Linux opaque window default insertion point'
 }
 
@@ -5551,7 +6485,7 @@ test_linux_tray_patch_smoke() {
     mkdir -p "$workspace"
     bundle_body="$(cat <<'JS'
 let D={removeMenu(){},setMenuBarVisibility(){},setIcon(){},once(){}};
-let n=require(`electron`),i=require(`node:path`),a=require(`node:fs`);
+const x={o:e=>e};let s=require(`node:url`),n=require(`electron`);n=x.o(n);let l=require(`node:os`);l=x.o(l);let i=require(`node:path`);i=x.o(i);let d=require(`node:util`),q=require(`node:crypto`),a=require(`node:fs`);a=x.o(a);
 let t={join(){},C:{Prod:`prod`},A(){}};
 let k={hide(){},isDestroyed(){return false}};
 let f=`local`;
@@ -5562,13 +6496,13 @@ async function la(e){let t=ua(e);if(t&&(0,a.statSync)(t).isFile()){n.shell.showI
 function ua(e){return e}
 var Ua=Mi({id:`systemDefault`,label:`System Default App`,icon:`apps/file-explorer.png`,kind:`systemDefault`,hidden:!0,darwin:{icon:`apps/finder.png`,detect:()=>`system-default`,iconPath:()=>null,args:e=>[e],open:async({path:e})=>Wa(e)},win32:{detect:()=>`system-default`,iconPath:()=>null,args:e=>[e],open:async({path:e})=>Wa(e)},linux:{detect:()=>`system-default`,iconPath:()=>null,args:e=>[e],open:async({path:e})=>Wa(e)}});
 async function Wa(e){return e}
-function Nw(e,n){return `icon`}
-async function Hw(e){return process.platform!==`win32`&&process.platform!==`darwin`?null:(zw=!0,Lw??Rw??(Rw=(async()=>{let r=await Ww(e.buildFlavor,e.repoRoot),i=new n.Tray(r.defaultIcon);return i})()))}
-async function Ww(e,t){if(process.platform===`darwin`){return null}let r=process.platform===`win32`?`.ico`:`.png`,a=Nw(e,process.platform),o=[...n.app.isPackaged?[(0,i.join)(process.resourcesPath,`${a}${r}`)]:[],(0,i.join)(t,`electron`,`src`,`icons`,`${a}${r}`)];for(let e of o){let t=n.nativeImage.createFromPath(e);if(!t.isEmpty())return{defaultIcon:t,chronicleRunningIcon:null}}return{defaultIcon:await n.app.getFileIcon(process.execPath,{size:process.platform===`win32`?`small`:`normal`}),chronicleRunningIcon:null}}
+async function Hw(e){return process.platform!==`win32`&&process.platform!==`darwin`?null:(zw=!0,Lw??Rw??(Rw=(async()=>{let r=await Ww(e.buildFlavor,e.appBrand,e.repoRoot),i=new n.Tray(r.defaultIcon);return i})()))}
+async function Ww(e,t,i){if(process.platform===`darwin`){return null}let r=K9(e,t,i);return r==null?{defaultIcon:await n.app.getFileIcon(process.execPath,{size:`small`}),chronicleRunningIcon:null}:{defaultIcon:r,chronicleRunningIcon:null}}
+function K9(e,t,r){let a=[(0,i.join)(r,`electron`,`src`,`icons`,`tray.png`)];for(let e of a){let t=n.nativeImage.createFromPath(e);if(!t.isEmpty())return t}return null}
 var pb=class{trayMenuThreads={runningThreads:[],unreadThreads:[],pinnedThreads:[],recentThreads:[],usageLimits:[]};constructor(){this.tray={on(){},setContextMenu(){},popUpContextMenu(){}};this.onTrayButtonClick=()=>{};this.tray.on(`click`,()=>{this.onTrayButtonClick()}),this.tray.on(`right-click`,()=>{this.openNativeTrayMenu()})}async handleMessage(e){switch(e.type){case`tray-menu-threads-changed`:this.trayMenuThreads=e.trayMenuThreads;return}}openNativeTrayMenu(){this.updateChronicleTrayIcon();let e=n.Menu.buildFromTemplate(this.getNativeTrayMenuItems());e.once(`menu-will-show`,()=>{this.isNativeTrayMenuOpen=!0}),e.once(`menu-will-close`,()=>{this.isNativeTrayMenuOpen=!1,this.handleNativeTrayMenuClosed()}),this.tray.popUpContextMenu(e)}updateChronicleTrayIcon(){}getNativeTrayMenuItems(){return[]}}
-v&&k.on(`close`,e=>{this.persistPrimaryWindowBounds(k,f);let t=this.getPrimaryWindows(f).some(e=>e!==k);if(process.platform===`win32`&&!this.isAppQuitting&&this.options.canHideLastLocalWindowToTray?.()===!0&&!t){e.preventDefault(),k.hide();return}if(process.platform===`darwin`&&!this.isAppQuitting&&!t){e.preventDefault(),k.hide()}});
+v&&k.on(`close`,e=>{this.persistPrimaryWindowBounds(k);let t=this.getPrimaryWindows().some(e=>e!==k);if(process.platform===`win32`&&!this.isAppQuitting&&this.options.canHideLastWindowToTray?.()===!0&&!t){e.preventDefault(),k.hide();return}if(process.platform===`darwin`&&!this.isAppQuitting&&!t){e.preventDefault(),k.hide()}});
 let E=process.platform===`win32`;
-let oe=async()=>{};
+let oe=async()=>{O=!0;try{await Hw({appBrand:a.U(),buildFlavor:b,repoRoot:j.repoRoot})}catch(e){O=!1}};
 let se=async e=>{};
 E&&oe();let ce=Hr({});
 JS
@@ -5604,7 +6538,7 @@ function registerCloseHandler({ quitInProgress = false, isAppQuitting = false, t
   const state = { hideCalls: 0 };
   const controller = {
     isAppQuitting,
-    options: { canHideLastLocalWindowToTray: () => trayEnabled },
+    options: { canHideLastWindowToTray: () => trayEnabled },
     persistPrimaryWindowBounds() {},
     getPrimaryWindows() {
       return [];
@@ -5631,7 +6565,7 @@ function runCloseWithoutHelper({ trayEnabled = true, isAppQuitting = false } = {
   const state = { hideCalls: 0 };
   const controller = {
     isAppQuitting,
-    options: { canHideLastLocalWindowToTray: () => trayEnabled },
+    options: { canHideLastWindowToTray: () => trayEnabled },
     persistPrimaryWindowBounds() {},
     getPrimaryWindows() {
       return [];
@@ -5707,11 +6641,11 @@ test_linux_explicit_quit_patch_smoke() {
 
     mkdir -p "$workspace"
     bundle_body="$(cat <<'JS'
-let n=require(`electron`),i=require(`node:path`),a=require(`node:fs`);
+const x={o:e=>e};let s=require(`node:url`),n=require(`electron`);n=x.o(n);let l=require(`node:os`);l=x.o(l);let i=require(`node:path`);i=x.o(i);let d=require(`node:util`),q=require(`node:crypto`),a=require(`node:fs`);a=x.o(a);
 var pb=class{getNativeTrayMenuItems(){return[{label:rB(this.appName),click:()=>{n.app.quit()}}]}};
 function qB(r,o){if(o.type===`quit-app`){n.app.quit();return}return o}
 n.app.on(`before-quit`,o=>{let s=BI(),c=t.sr().some(e=>e.status===`ACTIVE`);if(e||i.canQuitWithoutPrompt()||r||!s&&!c){g=!0,a.markAppQuitting();return}let l=n.app.getName();if(n.dialog.showMessageBoxSync({type:`warning`,buttons:[`Quit`,`Cancel`],defaultId:0,cancelId:1,noLink:!0,title:`Quit ${l}?`,message:`Quit ${l}?`,detail:vB({hasInProgressLocalConversation:s,hasEnabledAutomations:c})})!==0){o.preventDefault();return}i.markQuitApproved(),g=!0,a.markAppQuitting()});
-n.app.on(`will-quit`,e=>{if(g=!0,!h){if(i.shouldSkipDrainBeforeQuit()){mB({hotkeyWindowLifecycleManager:c,globalDictationLifecycleManager:l,flushAndDisposeContexts:d,disposables:f});return}e.preventDefault(),h=!0,c.dispose(),l.dispose(),Promise.all([...u.values()].map(e=>e.flush())).finally(()=>{d(),f.dispose(),n.app.quit()})}});
+n.app.on(`will-quit`,e=>{if(g=!0,!h){if(i.shouldSkipDrainBeforeQuit()){mB({hotkeyWindowLifecycleManager:c,globalDictationLifecycleManager:l,flushAndDisposeContexts:d,disposables:f});return}e.preventDefault(),h=!0,c.dispose(),l.dispose(),Promise.all([u.flush(),p.flush()]).finally(()=>{d(),f.dispose(),n.app.quit()})}});
 JS
 )"
     make_fake_extracted_asar "$extracted" "$bundle_body"
@@ -5847,7 +6781,7 @@ JS
 import{t as d}from"./jsx-runtime-test.js";var c={"general-settings":{id:`settings.nav.general-settings`,defaultMessage:`General`,description:`Title for general settings section`},"keyboard-shortcuts":{id:`settings.nav.keyboard-shortcuts`,defaultMessage:`Keyboard shortcuts`,description:`Title for keyboard shortcuts settings section`}};function m(e){let t=(0,u.c)(17),{slug:r}=e;switch(r){case`keyboard-shortcuts`:{let e;return t[1]===Symbol.for(`react.memo_cache_sentinel`)?(e=(0,d.jsx)(n,{id:`settings.section.keyboard-shortcuts`,defaultMessage:`Keyboard shortcuts`,description:`Title for keyboard shortcuts settings section`}),t[1]=e):e=t[1],e}case`general-settings`:{let e;return t[2]===Symbol.for(`react.memo_cache_sentinel`)?(e=(0,d.jsx)(n,{id:`settings.section.general-settings`,defaultMessage:`General`,description:`Title for general settings section`}),t[2]=e):e=t[2],e}}}
 JS
     cat > "$extracted/webview/assets/index-test.js" <<'JS'
-var Xge={"general-settings":xh,"keyboard-shortcuts":ks,appearance:Pf,agent:gU},H7={},Zge=[`general-settings`,`profile`,`keyboard-shortcuts`,`appearance`,`agent`,`personalization`,`mcp-settings`,`connections`,`git-settings`,`local-environments`,`worktrees`,`browser-use`,`computer-use`,`data-controls`],Qge=[{key:`app`,heading:H7.appHeading,slugs:[`general-settings`,`profile`,`keyboard-shortcuts`,`appearance`,`connections`,`git-settings`,`usage`]}];function n_e(){let l=`electron`,e=e=>{switch(e.slug){case`appearance`:case`git-settings`:case`worktrees`:case`local-environments`:case`data-controls`:case`environments`:return l===`electron`;case`account`:case`general-settings`:case`agent`:case`personalization`:case`keyboard-shortcuts`:case`mcp-settings`:return!0}};if(O)bb0:switch(D.slug){case`usage`:k=g;break bb0;case`appearance`:case`general-settings`:case`agent`:case`git-settings`:case`account`:case`data-controls`:case`personalization`:case`keyboard-shortcuts`:k=!1;break bb0;}}function s_e(e){let{slug:n}=e,r=c_e[n];return (0,$.jsx)(r,{})}var c_e={"general-settings":(0,Z.lazy)(()=>s(()=>import(`./general-settings-DZbwMmWz.js`).then(e=>({default:e.GeneralSettings})),__vite__mapDeps([4]),import.meta.url)),"keyboard-shortcuts":(0,Z.lazy)(()=>s(()=>import(`./keyboard-shortcuts-settings-test.js`),[],import.meta.url)),appearance:(0,Z.lazy)(()=>s(()=>import(`./appearance-settings-D4xYjo5o.js`).then(e=>({default:e.AppearanceSettings})),__vite__mapDeps([56]),import.meta.url)),agent:(0,Z.lazy)(()=>Promise.resolve({default:l_e}))};
+var Xge={"general-settings":xh,"keyboard-shortcuts":ks,appearance:Pf,agent:gU},H7={},Zge=[`general-settings`,`profile`,`keyboard-shortcuts`,`appearance`,`agent`,`personalization`,`mcp-settings`,`connections`,`git-settings`,`local-environments`,`worktrees`,`browser-use`,`computer-use`,`data-controls`],Qge=[{key:`app`,heading:H7.appHeading,slugs:[`general-settings`,`profile`,`keyboard-shortcuts`,`appearance`,`connections`,`git-settings`,`usage`]}];function n_e(){let e=e=>{switch(e.slug){case`general-settings`:case`agent`:case`personalization`:return!0;case`keyboard-shortcuts`:return!0}};if(O)bb0:switch(D.slug){case`usage`:k=g;break bb0;case`appearance`:case`general-settings`:case`agent`:case`git-settings`:case`account`:case`data-controls`:case`personalization`:k=!1;break bb0;case`keyboard-shortcuts`:k=!1;break bb0;}}function s_e(e){let{slug:n}=e,r=c_e[n];return (0,$.jsx)(r,{})}var c_e={"general-settings":Z(async()=>(await s(async()=>{let{GeneralSettings:e}=await import(`./general-settings-DZbwMmWz.js`);return{GeneralSettings:e}},[],import.meta.url)).GeneralSettings),"keyboard-shortcuts":Z(async()=>(await s(async()=>{let{KeyboardShortcutsSettings:e}=await import(`./keyboard-shortcuts-settings-test.js`);return{KeyboardShortcutsSettings:e}},[],import.meta.url)).KeyboardShortcutsSettings)};
 JS
     cat > "$extracted/webview/assets/keyboard-shortcuts-settings-test.js" <<'JS'
 slug:`keyboard-shortcuts`;export default function KeyboardShortcutsSettings(){}
@@ -5875,7 +6809,7 @@ JS
     assert_contains "$extracted/webview/assets/index-test.js" '"linux-desktop":'
     assert_contains "$extracted/webview/assets/index-test.js" 'Zge=\[`general-settings`,`linux-desktop`'
     assert_contains "$extracted/webview/assets/index-test.js" 'slugs:\[`general-settings`,`linux-desktop`'
-    assert_contains "$extracted/webview/assets/index-test.js" 'case`linux-desktop`:return l===`electron`'
+    assert_contains "$extracted/webview/assets/index-test.js" 'case`linux-desktop`:case`general-settings`'
     assert_not_contains "$extracted/webview/assets/index-test.js" "keybinds-settings-linux.js"
     assert_not_contains "$extracted/webview/assets/index-test.js" "codexLinuxKeybindOverridesRuntime"
 
@@ -5910,7 +6844,6 @@ JS
 
     node "$REPO_DIR/scripts/patch-linux-window-ui.js" "$extracted" >"$output_log" 2>&1
     assert_contains "$output_log" "WARN: Keybinds settings patch skipped"
-    assert_contains "$output_log" "could not add Linux desktop visibility"
     [ ! -f "$extracted/webview/assets/linux-desktop-settings-linux.js" ] || fail "Linux desktop settings asset should not be written when route bundle is missing"
     [ ! -f "$extracted/webview/assets/linux-settings-row-linux.js" ] || fail "Fallback row asset should not be written when route bundle is missing"
     [ ! -f "$extracted/webview/assets/linux-settings-section-linux.js" ] || fail "Fallback section asset should not be written when route bundle is missing"
@@ -5952,10 +6885,10 @@ test_linux_single_instance_patch_smoke() {
     mkdir -p "$workspace"
     bundle_body="$(cat <<'JS'
 let S=globalThis.__codexSmoke;
-let n={app:{whenReady(){return Promise.resolve()},quit(){S.quitCount++},requestSingleInstanceLock(){S.lockCount++;return true},on(e,t){S.appHandlers[e]=t},off(e,t){S.offHandlers[e]=t}}};
+let n=require(`electron`);
 let t={Er(){return {info(){}}},jn:class{add(e){S.disposables.push(e)}},y(){return{setSecondInstanceArgsHandler:e=>{S.initialHandler=e}}},g(e){return e},t(e){return Array.isArray(e)&&e.includes(`--open-project`)}};
 let i={default:{dirname(e){S.dirnameCalls.push(e);return `/tmp`}}},o={mkdirSync(...e){S.mkdirSyncCalls.push(e)},rmSync(...e){S.rmSyncCalls.push(e)}},u={default:{createServer(e){S.createServerCalls++;S.socketConnectionHandler=e;return S.socketServer}}};
-async function uT(){let{setSecondInstanceArgsHandler:l}=t.y(),k=new t.jn;k.add(()=>{}),t.Er().info(`Launching app`,{safe:{agentRunId:process.env.CODEX_ELECTRON_AGENT_RUN_ID?.trim()||null}});let A=Date.now();await n.app.whenReady();let w=(...e)=>{S.traceCalls.push(e)},M={globalState:S.globalState,repoRoot:`/tmp/codex-smoke`},z=`local`,R={deepLinks:{queueProcessArgs(e){S.queueArgs.push(e);return Array.isArray(e)&&e.some(e=>{let t=String(e);return t.startsWith(`codex://`)||t.startsWith(`codex-browser-sidebar://`)})},flushPendingDeepLinks(){S.flushPendingDeepLinksCalls++;return Promise.resolve()}},navigateToRoute(e,t){S.navigateCalls.push({windowId:e.id,path:t})}},P={windowManager:{sendMessageToWindow(e,t){S.messages.push({windowId:e.id,message:t})}},hotkeyWindowLifecycleManager:{hide(){S.hideCalls++},show(){S.showCalls++;return S.hotkeyWindowShowResult},ensureHotkeyWindowController(){S.ensureHotkeyWindowControllerCalls++;return S.hotkeyWindowController}},getPrimaryWindow(){return S.primaryWindow},createFreshLocalWindow(e){S.createFreshLocalWindowCalls.push(e);return S.createdWindow},ensureHostWindow(e){S.ensureHostWindowCalls.push(e);return S.primaryWindow??S.createdWindow}},g={reportNonFatal(e,t){S.errors.push({error:String(e),meta:t})}},re=e=>{S.focusCalls.push(e.id);e.isMinimized()&&e.restore(),e.show(),e.focus()},ie=async()=>{S.ieCalls++;try{P.hotkeyWindowLifecycleManager.hide();let e=P.getPrimaryWindow()??await P.createFreshLocalWindow(`/`);if(e==null)return;re(e)}catch(e){g.reportNonFatal(e instanceof Error?e:`Failed to open window on second instance`,{kind:`second-instance-open-window-failed`})}};l(e=>{let n=t.t(t.g(e));if(R.deepLinks.queueProcessArgs(e)){n&&ie();return}if(n){ie();return}ie()});let ae=async(e,t)=>{P.hotkeyWindowLifecycleManager.hide();let n=P.getPrimaryWindow(),r=n??await P.createFreshLocalWindow(e);r!=null&&(n!=null&&t.navigateExistingWindow&&R.navigateToRoute(r,e),re(r))},oe=async()=>{S.trayStartupCalls++};let E=process.platform===`win32`;E&&oe();let me=await P.ensureHostWindow(z);me&&re(me),w(`local window ensured`,A,{hostId:z,localWindowVisible:me?.isVisible()??!1}),A=Date.now(),await R.deepLinks.flushPendingDeepLinks()}
+async function uT(){let{setSecondInstanceArgsHandler:l}=t.y(),k=new t.jn;k.add(()=>{}),t.Er().info(`Launching app`,{safe:{agentRunId:process.env.CODEX_ELECTRON_AGENT_RUN_ID?.trim()||null}});let A=Date.now();await n.app.whenReady();let w=(...e)=>{S.traceCalls.push(e)},M={globalState:S.globalState,repoRoot:`/tmp/codex-smoke`},z=`local`,R={deepLinks:{queueProcessArgs(e){S.queueArgs.push(e);return Array.isArray(e)&&e.some(e=>{let t=String(e);return t.startsWith(`codex://`)||t.startsWith(`codex-browser-sidebar://`)})},flushPendingDeepLinks(){S.flushPendingDeepLinksCalls++;return Promise.resolve()}},navigateToRoute(e,t){S.navigateCalls.push({windowId:e.id,path:t})}},P={windowManager:{sendMessageToWindow(e,t){S.messages.push({windowId:e.id,message:t})}},hotkeyWindowLifecycleManager:{hide(){S.hideCalls++},show(){S.showCalls++;return S.hotkeyWindowShowResult},ensureHotkeyWindowController(){S.ensureHotkeyWindowControllerCalls++;return S.hotkeyWindowController}},getPrimaryWindow(){return S.primaryWindow},createFreshLocalWindow(e){S.createFreshLocalWindowCalls.push(e);return S.createdWindow},ensureHostWindow(e){S.ensureHostWindowCalls.push(e);return S.primaryWindow??S.createdWindow}},g={reportNonFatal(e,t){S.errors.push({error:String(e),meta:t})}},re=e=>{S.focusCalls.push(e.id);e.isMinimized()&&e.restore(),e.show(),e.focus()},ie=async()=>{S.ieCalls++;try{P.hotkeyWindowLifecycleManager.hide();let e=P.getPrimaryWindow()??await P.createFreshLocalWindow(`/`);if(e==null)return;re(e)}catch(e){g.reportNonFatal(e instanceof Error?e:`Failed to open window on second instance`,{kind:`second-instance-open-window-failed`})}};l(e=>{let n=t.t(t.g(e));if(R.deepLinks.queueProcessArgs(e)){n&&ie();return}if(n){ie();return}ie()});let ae=async(e,t)=>{P.hotkeyWindowLifecycleManager.hide();let n=P.getPrimaryWindow(),r=n??await P.createFreshLocalWindow(e);r!=null&&(n!=null&&t.navigateExistingWindow&&R.navigateToRoute(r,e),re(r))};async function ore(e){return new n.Tray(e)}let oe=async()=>{N=!0;try{await ore({appBrand:`codex`,buildFlavor:`prod`,repoRoot:M.repoRoot}),S.trayStartupCalls++}catch(e){N=!1}};let E=process.platform===`win32`;E&&oe();let me=await P.ensureHostWindow(z);me&&re(me),w(`local window ensured`,A,{hostId:z,localWindowVisible:me?.isVisible()??!1}),A=Date.now(),await R.deepLinks.flushPendingDeepLinks()}
 JS
 )"
     make_fake_extracted_asar "$extracted" "$bundle_body"
@@ -6170,6 +7103,29 @@ async function boot(settings = {}, env = { CODEX_DESKTOP_LAUNCH_ACTION_SOCKET: "
     console,
     process: { platform: "linux", env },
     require(moduleName) {
+      if (moduleName === "electron") {
+        return {
+          app: {
+            whenReady() {
+              return Promise.resolve();
+            },
+            quit() {
+              state.quitCount++;
+            },
+            requestSingleInstanceLock() {
+              state.lockCount++;
+              return true;
+            },
+            on(event, handler) {
+              state.appHandlers[event] = handler;
+            },
+            off(event, handler) {
+              state.offHandlers[event] = handler;
+            },
+          },
+          Tray: class {},
+        };
+      }
       if (moduleName === "node:path") {
         return {
           dirname(path) {
@@ -6474,10 +7430,10 @@ test_linux_computer_use_ui_opt_in_smoke() {
     local fake_home="$workspace/home"
     local output_log="$workspace/output.log"
     local main_bundle="$extracted/.vite/build/main-test.js"
-    local renderer_asset="$extracted/webview/assets/use-model-settings-test.js"
-    local current_renderer_asset="$extracted/webview/assets/use-is-plugins-enabled-current-test.js"
-    local install_flow_asset="$extracted/webview/assets/app-initial~app-main~worktree-init-v2-page~remote-conversation-page~pull-requests-page~plug~test.js"
-    local native_apps_asset="$extracted/webview/assets/use-native-apps.electron-test.js"
+    local renderer_asset="$extracted/webview/assets/computer-use-settings-renderer-test.js"
+    local current_renderer_asset="$extracted/webview/assets/computer-use-settings-current-test.js"
+    local install_flow_asset="$extracted/webview/assets/app-initial~app-main~pull-request-code-review~onboarding-page~hotkey-window-thread-page~cha~b76hmflu-test.js"
+    local native_apps_asset="$extracted/webview/assets/computer-use-settings-native-apps-test.js"
     local bundle_body
     local renderer_body
     local current_renderer_body
@@ -6536,7 +7492,7 @@ JS
     assert_not_contains "$renderer_asset" 'function hae(e){return e===`macOS`||e===`windows`||e===`linux`}'
     assert_not_contains "$current_renderer_asset" 'areRequiredFeaturesEnabled:o===`linux`||y'
     assert_not_contains "$native_apps_asset" 'a===`macOS`||a===`windows`||a===`linux`'
-    assert_not_contains "$install_flow_asset" 'areRequiredFeaturesEnabled:o===`linux`||h'
+    assert_not_contains "$install_flow_asset" 'isHostCompatiblePlatform:o===`linux`||Rj(o)'
 
     # Branch 2: env var opts in — all Computer Use UI patches apply.
     rm "$main_bundle" "$renderer_asset" "$current_renderer_asset" "$install_flow_asset" "$native_apps_asset"
@@ -6558,8 +7514,12 @@ JS
     assert_contains "$current_renderer_asset" 'areRequiredFeaturesEnabled:o===`linux`||y'
     assert_contains "$current_renderer_asset" 'isAnyFeatureLoading:o===`linux`?!1:g'
     assert_contains "$native_apps_asset" 'a===`macOS`||a===`windows`||a===`linux`'
-    assert_contains "$install_flow_asset" 'areRequiredFeaturesEnabled:o===`linux`||h'
-    assert_contains "$install_flow_asset" 'isAnyFeatureLoading:o===`linux`?!1:m'
+    assert_contains "$install_flow_asset" 'areRequiredFeaturesEnabled:h'
+    assert_contains "$install_flow_asset" 'isAnyFeatureLoading:m'
+    assert_contains "$install_flow_asset" 'isComputerUseGateEnabled:s'
+    assert_contains "$install_flow_asset" 'isHostCompatiblePlatform:o===`linux`||Rj(o)'
+    assert_not_contains "$install_flow_asset" 'areRequiredFeaturesEnabled:o===`linux`||h'
+    assert_not_contains "$install_flow_asset" 'isComputerUseGateEnabled:o===`linux`||s'
 
     # Branch 3: settings.json flag opts in even without env var.
     rm "$main_bundle" "$renderer_asset" "$current_renderer_asset" "$install_flow_asset" "$native_apps_asset"
@@ -6578,7 +7538,11 @@ JS
     assert_contains "$renderer_asset" 'function hae(e){return e===`macOS`||e===`windows`||e===`linux`}'
     assert_contains "$current_renderer_asset" 'areRequiredFeaturesEnabled:o===`linux`||y'
     assert_contains "$native_apps_asset" 'a===`macOS`||a===`windows`||a===`linux`'
-    assert_contains "$install_flow_asset" 'areRequiredFeaturesEnabled:o===`linux`||h'
+    assert_contains "$install_flow_asset" 'areRequiredFeaturesEnabled:h'
+    assert_contains "$install_flow_asset" 'isComputerUseGateEnabled:s'
+    assert_contains "$install_flow_asset" 'isHostCompatiblePlatform:o===`linux`||Rj(o)'
+    assert_not_contains "$install_flow_asset" 'areRequiredFeaturesEnabled:o===`linux`||h'
+    assert_not_contains "$install_flow_asset" 'isComputerUseGateEnabled:o===`linux`||s'
 }
 
 test_linux_file_manager_patch_fails_soft() {
@@ -7408,7 +8372,12 @@ EOF
 
 main() {
     test_common_helper_sourcing
+    test_package_icon_source_resolution
     test_extract_webview_replaces_linux_icon_assets
+    test_installer_prefers_compact_upstream_chatgpt_icon
+    test_user_local_icon_prefers_generated_app_icon
+    test_extract_webview_requires_entrypoint
+    test_package_layout_requires_webview_entrypoint
     test_package_payload_permission_normalization
     test_deb_builder_smoke
     test_deb_builder_rebuilds_deleted_updater_source
@@ -7427,6 +8396,7 @@ main() {
     test_make_run_app_reports_missing_launcher
     test_make_build_app_uses_installer_download_flow_by_default
     test_make_build_app_fresh_uses_installer_fresh_flow
+    test_make_build_dev_app_writes_host_portable_launcher_symlink
     test_installer_refreshes_stale_cached_dmg_metadata
     test_extract_dmg_repairs_safe_7z_link_warnings
     test_fresh_install_removes_cached_dmg_metadata
@@ -7458,7 +8428,6 @@ main() {
     test_setup_native_wizard_blank_interactive_cleanup_ids_skip_cleanup
     test_setup_native_wizard_dry_run_cleanup_does_not_delete_confirmed_paths
     test_setup_native_wizard_cleanup_deletes_only_confirmed_paths
-    test_upstream_build_app_workflow_tracks_dmg_metadata
     test_update_nix_hashes_skips_unchanged_package_verification
     test_update_nix_hashes_verifies_changed_pins
     test_update_nix_hashes_verifies_changed_dmg_hash
@@ -7476,12 +8445,22 @@ main() {
     test_browser_use_node_repl_fallback_runtime
     test_browser_use_file_url_policy_patch_behavior
     test_browser_plugin_renamed_upstream_staging
+    test_portable_bundled_plugins_staging
+    test_portable_bundled_plugins_reject_unsafe_content
+    test_portable_bundled_plugin_validator_guards
+    test_portable_bundled_plugin_stage_failures
+    test_portable_bundled_plugin_marketplace_path_guard
     test_browser_use_node_repl_glibc_pidfd_patch_static
     test_browser_use_node_repl_ldd_output_compatibility
     test_chrome_plugin_staging
     test_chrome_browser_client_profile_root_variants
     test_chrome_marketplace_fallback_synthesis
     test_chrome_native_host_manifest_writer
+    test_launcher_managed_node_handles_unset_path
+    test_packaged_runtime_keeps_managed_node_out_of_user_service_path
+    test_launcher_extra_bundled_plugin_cache_rollback
+    test_launcher_extra_bundled_plugin_cache_concurrent_destination
+    test_launcher_rejects_missing_webview_entrypoint
     test_launcher_template_sanity
     test_launcher_cli_resolution_policy
     test_webview_server_cache_policy

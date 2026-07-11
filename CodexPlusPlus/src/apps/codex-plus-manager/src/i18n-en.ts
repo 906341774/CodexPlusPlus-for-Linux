@@ -16,8 +16,8 @@ export const EN_PLAIN: Record<string, string> = {
   "Codex 意外停止": "Codex stopped unexpectedly",
   "Codex 版本": "Codex version",
   "Codex 目标": "Codex goals",
-  "Codex++ 官方中转站，主打稳定接入和划算价格，支持 GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。":
-    "The official Codex++ relay, built for stable access and good value, supporting GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2 and other models plus image capabilities.",
+  "Codex++ 官方中转站，主打稳定接入和划算价格，支持 GPT-5.6 全系列、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。":
+    "The official Codex++ relay, built for stable access and good value, supporting the full GPT-5.6 family, GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2 and other models plus image capabilities.",
   "Codex++ 导入": "Codex++ import",
   "Codex++ 版本": "Codex++ version",
   "Codex增强": "Codex enhancements",
@@ -384,8 +384,8 @@ export const EN_PLAIN: Record<string, string> = {
   "日志已复制。": "Logs copied.",
   "时间": "Time",
   "释放并注册内置缓存": "Extract and register embedded cache",
-  "显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。":
-    "Show the service-tier toggle button; Fast only supports gpt-5.4 / gpt-5.5, other models are sent as Standard.",
+  "显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5 / gpt-5.6，其他模型按 Standard 发送。":
+    "Show the service-tier toggle button; Fast only supports gpt-5.4 / gpt-5.5 / gpt-5.6; other models are sent as Standard.",
   "普通推荐": "Regular recommendations",
   "暂无": "None",
   "暂无启动状态。": "No launch status yet.",

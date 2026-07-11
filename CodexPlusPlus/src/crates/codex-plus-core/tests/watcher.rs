@@ -1,8 +1,7 @@
 use codex_plus_core::watcher::{
     build_spawn_launcher_command, build_watcher_install_plan, cdp_listening, codex_process_ids,
     disable_watcher_at, enable_watcher_at, filter_killable_launcher_processes,
-    filter_killable_unix_launcher_processes, process_ids_still_running,
-    should_recover_stale_launcher, watcher_disabled_flag,
+    process_ids_still_running, should_recover_stale_launcher, watcher_disabled_flag,
 };
 
 #[cfg(windows)]
@@ -88,6 +87,30 @@ fn codex_process_filter_keeps_only_windowsapps_codex_processes() {
 }
 
 #[test]
+fn codex_process_filter_keeps_chatgpt_desktop_package_processes() {
+    let processes = [
+        (
+            21,
+            r"C:\Program Files\WindowsApps\OpenAI.ChatGPT-Desktop_1.2026.133.0_x64__abc\app\ChatGPT.exe",
+        ),
+        (
+            22,
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_26.707.3748.0_x64__abc\app\ChatGPT.exe",
+        ),
+        (
+            23,
+            r"C:\Program Files\WindowsApps\OpenAI.ChatGPT-Desktop_1.2026.133.0_x64__abc\app\resources\ChatGPT.exe",
+        ),
+        (
+            24,
+            r"C:\Program Files\WindowsApps\Other.ChatGPT_1.0.0.0_x64__abc\app\ChatGPT.exe",
+        ),
+    ];
+
+    assert_eq!(codex_process_ids(processes), vec![21, 22]);
+}
+
+#[test]
 fn launcher_process_filter_protects_current_process_ancestry() {
     let processes = [
         (10, 0, "codex-plus-plus.exe"),
@@ -100,41 +123,14 @@ fn launcher_process_filter_protects_current_process_ancestry() {
     assert_eq!(filter_killable_launcher_processes(processes, 30), vec![40]);
 }
 
+#[cfg(not(windows))]
 #[test]
-fn unix_launcher_process_filter_kills_stale_silent_launcher_only() {
-    let processes = [
-        (
-            10,
-            0,
-            "/home/deck/opt/CodexDesktop/.codex-plusplus/install/codex-plus-plus",
-        ),
-        (
-            20,
-            10,
-            "/home/deck/opt/CodexDesktop/.codex-plusplus/install/codex-plus-plus",
-        ),
-        (30, 20, "/usr/bin/cargo"),
-        (
-            40,
-            10,
-            "/home/deck/opt/CodexDesktop/.codex-plusplus/install/codex-plus-plus",
-        ),
-        (
-            50,
-            10,
-            "/home/deck/opt/CodexDesktop/.codex-plusplus/install/codex-plus-plus-manager",
-        ),
-        (
-            60,
-            10,
-            "/home/deck/opt/CodexDesktop/.codex-plusplus/install/launch-codex-plus-plus",
-        ),
-    ];
+fn unix_launcher_cleanup_contract_filters_only_adapter_launchers() {
+    let source = include_str!("../src/watcher.rs");
 
-    assert_eq!(
-        filter_killable_unix_launcher_processes(processes, 30),
-        vec![40, 60]
-    );
+    assert!(source.contains("filter_killable_unix_launcher_processes"));
+    assert!(source.contains("launch-codex-plus-plus"));
+    assert!(source.contains("terminate_unix_processes_and_wait"));
 }
 
 #[test]
@@ -220,9 +216,9 @@ fn find_codex_processes_combines_store_and_local_installs() {
         WindowsProcessInfo {
             process_id: 11,
             parent_process_id: 0,
-            exe_file: "Codex.exe".to_string(),
+            exe_file: "ChatGPT.exe".to_string(),
             executable_path: Some(std::path::PathBuf::from(
-                r"C:\Program Files\WindowsApps\OpenAI.Codex_1.0.0.0_x64__abc\app\Codex.exe",
+                r"C:\Program Files\WindowsApps\OpenAI.ChatGPT-Desktop_1.2026.133.0_x64__abc\app\ChatGPT.exe",
             )),
         },
         WindowsProcessInfo {

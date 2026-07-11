@@ -1,4 +1,5 @@
 .tmp/
+.adaptation-runs/
 .cache/
 cache/
 work/

@@ -5,7 +5,7 @@
 xref:snippets.adoc[English] | 简体中文
 
 本页面同时是文档和安装器输入。
-表格面向维护者；JSON manifest 由 `scripts/Installer-and-Manager.ps1` 解析。
+表格面向维护者；JSON manifest 由 `scripts/developer/Installer-and-Manager.ps1` 解析。
 
 == 补丁分类
 
@@ -19,21 +19,21 @@ xref:snippets.adoc[English] | 简体中文
 
 |`010-linux-app-paths`
 |必需
-|`Cargo.lock`, `crates/codex-plus-core/Cargo.toml`, `crates/codex-plus-core/src/app_paths.rs`
+|`crates/codex-plus-core/src/app_paths.rs`
 |识别 Linux `start.sh` 作为 Codex 可执行入口，读取 Linux wrapper 的 `version` 文件，并在残留旧 `codex-app` 状态时通过适配器 desktop entry 恢复真实 app 根目录。
 |当上游尚不能原生识别 `ilysenko/codex-desktop-linux` 应用布局时需要。
 |xref:attachment$patches/compatibility/010-linux-app-paths.patch[patch]
 
 |`020-cdp-multi-target-injection`
 |必需
-|`crates/codex-plus-core/src/cdp.rs`, `apps/codex-plus-launcher/src/main.rs`
+|`Cargo.lock`, `crates/codex-plus-core/Cargo.toml`, `crates/codex-plus-core/src/cdp.rs`, `apps/codex-plus-launcher/src/main.rs`
 |注入所有存活的 Codex webview page target，同时优先选择主窗口而不是 hotkey window。
 |当 Linux webview 暴露多个未标记 CDP page target，或第一个 target 不是主窗口时需要。
 |xref:attachment$patches/compatibility/020-cdp-multi-target-injection.patch[patch]
 
 |`030-linux-launcher-environment`
 |必需
-|`crates/codex-plus-core/src/launcher.rs`, `crates/codex-plus-core/src/watcher.rs`
+|`apps/codex-plus-launcher/src/main.rs`, `crates/codex-plus-core/src/launcher.rs`, `crates/codex-plus-core/src/watcher.rs`
 |通过 `start.sh` 启动 Linux Codex Desktop，保留 resolver/proxy 环境，移除会污染 Electron 的变量，设置安全 webview 端口，允许 Chromium private-network helper 预检，为 settings/user scripts 暴露 helper HTTP bridge routes，在注入失败后保持 Linux wrapper 存活，并在重启前清理残留的 Linux launcher/helper 进程。
 |适配 hacked Linux Codex Desktop wrapper、保证桌面会话中的 DNS/proxy 行为稳定、当 CDP binding 缺失或重连时让 Codex webview 仍能读取 Codex++ helper 状态，以及从崩溃 launcher 留下的 helper 端口占用中恢复时需要。
 |xref:attachment$patches/compatibility/030-linux-launcher-environment.patch[patch]
@@ -54,8 +54,8 @@ xref:snippets.adoc[English] | 简体中文
 
 |`060-renderer-linux-compatibility`
 |必需
-|`assets/inject/renderer-inject.js`
-|稳定 Linux renderer injection：plugin nav unlock、plugin detail response normalization、Pure API synthetic account compatibility、删除对话不触发 full refresh、Plugins label 不显示 debug suffix、floating Codex++ trigger overlap avoidance，把 Fast service-tier badge 正确放入 Linux composer footer，避免后端短暂 checking 时阻断 Fast badge 点击，在 CDP binding 不可用时通过 HTTP helper fallback 调用 bridge routes，为已重命名或合并的 Codex asset chunk 提供 fallback discovery，跳过 Linux `app://-/assets/` 中不可动态 import 的 chunk 记录，在查找 Codex dispatcher 时不依赖单个混淆后的 export 名称，并在 hotkey window route 上跳过只适用于主窗口的 dispatcher patches。
+|`apps/codex-plus-manager/src/App.tsx`, `apps/codex-plus-manager/src/i18n-en.ts`, `assets/inject/renderer-inject.js`
+|稳定 Linux renderer injection 的插件市场请求/详情、Pure API synthetic account、删除行为、浮动控件位置和 Fast/Standard 切换。Fast 支持 GPT-5.4、GPT-5.5、GPT-5.6、GPT-5.6 模型后缀、本地化标签和 Linux composer footer 发现；后端短暂 checking 不会阻断已知本地模型，Codex++ 清理自身 badge 时保留官方 Fast 控件。本补丁明确不恢复已经移除的侧边栏入口解锁、ChatGPT 鉴权伪装或 disabled 按钮篡改。
 |当上游 renderer injection 尚未覆盖 Linux Codex Desktop DOM 和 MCP response 差异时需要。
 |xref:attachment$patches/compatibility/060-renderer-linux-compatibility.patch[patch]
 
@@ -68,15 +68,15 @@ xref:snippets.adoc[English] | 简体中文
 
 |`080-linux-local-thread-catalog-sync`
 |必需
-|`crates/codex-plus-core/src/codex_sqlite.rs`, `crates/codex-plus-data/src/provider_sync.rs`, `codex-desktop-linux` 本地对话 webview 补丁
-|在 provider sync 阶段把旧 `threads` 行回填并恢复到新版 Codex Desktop 的 `local_thread_catalog` 表中，让项目侧边栏继续显示已有本地对话；同时把跨 host 的、没有可打开来源的可见 catalog 行标记为 missing，并在按路由打开本地对话时先完成 hydration，避免已经显示出来的历史记录点击后一直停留在 Codex 加载图标。
+|`crates/codex-plus-core/src/codex_sqlite.rs`, `crates/codex-plus-data/src/provider_sync.rs`
+|从真实 rollout 来源回填 Codex Desktop `local_thread_catalog`，保留非空标题、排除 projectless 线程，并在数据不变时避免推进 revision/sequence 或产生备份。固定版 CodexDesktop 源码快照另含首次 snapshot、pruning 保留和直接路由 hydration 配套补丁。
 |当 Codex++ 能列出本机会话，但 Codex Desktop Linux 项目侧边栏在 Codex 存储结构升级后显示“暂无对话”；当远端空来源 catalog 行仍作为空历史记录可见；或显示了对话但点击后始终无法加载时需要。
 |xref:attachment$patches/compatibility/080-linux-local-thread-catalog-sync.patch[patch]
 
 |`900-regression-tests`
 |可选
-|`crates/codex-plus-core/tests/*.rs`, `crates/codex-plus-data/tests/provider_sync.rs`
-|为 CDP target selection、Linux launcher/watcher 进程清理、helper bridge route fallback、plugin details、delete stability、floating menu positioning、Fast badge composer placement、已重命名或合并的 Codex asset chunk fallback、跳过 Linux `app://-/assets/` 中不可动态 import 的 chunk 记录、混淆 dispatcher export 漂移、hotkey window dispatcher guard、local thread catalog backfill/restoration、远端空来源 catalog 隐藏和后端短暂 checking 时的点击可用性添加回归覆盖。
+|`apps/codex-plus-manager`、`crates/codex-plus-core/tests` 与 `crates/codex-plus-data/tests` 下的 9 个定点测试文件
+|覆盖九个生产补丁，包括 GPT-5.6 Fast/Standard 变体、与官方 Fast 控件共存、Linux 用户脚本 URL alias、真实标题 catalog 回填、catalog 幂等同步和 projectless 排除。
 |推荐在源码构建和 CI 中启用；如果只需要更快的 production-only patch，可以禁用。
 |xref:attachment$patches/compatibility/900-regression-tests.patch[patch]
 |===
@@ -96,8 +96,6 @@ xref:snippets.adoc[English] | 简体中文
     "kind": "production",
     "patch": "docs/modules/ROOT/attachments/patches/compatibility/010-linux-app-paths.patch",
     "targets": [
-      "Cargo.lock",
-      "crates/codex-plus-core/Cargo.toml",
       "crates/codex-plus-core/src/app_paths.rs"
     ],
     "purpose": "Recognize the Linux start.sh wrapper and version file, and recover from stale codex-app state through adapter desktop entries."
@@ -109,8 +107,10 @@ xref:snippets.adoc[English] | 简体中文
     "kind": "production",
     "patch": "docs/modules/ROOT/attachments/patches/compatibility/020-cdp-multi-target-injection.patch",
     "targets": [
-      "crates/codex-plus-core/src/cdp.rs",
-      "apps/codex-plus-launcher/src/main.rs"
+      "Cargo.lock",
+      "apps/codex-plus-launcher/src/main.rs",
+      "crates/codex-plus-core/Cargo.toml",
+      "crates/codex-plus-core/src/cdp.rs"
     ],
     "purpose": "Inject every live Codex webview target and prefer the primary Codex window."
   },
@@ -121,6 +121,7 @@ xref:snippets.adoc[English] | 简体中文
     "kind": "production",
     "patch": "docs/modules/ROOT/attachments/patches/compatibility/030-linux-launcher-environment.patch",
     "targets": [
+      "apps/codex-plus-launcher/src/main.rs",
       "crates/codex-plus-core/src/launcher.rs",
       "crates/codex-plus-core/src/watcher.rs"
     ],
@@ -158,9 +159,11 @@ xref:snippets.adoc[English] | 简体中文
     "kind": "production",
     "patch": "docs/modules/ROOT/attachments/patches/compatibility/060-renderer-linux-compatibility.patch",
     "targets": [
+      "apps/codex-plus-manager/src/App.tsx",
+      "apps/codex-plus-manager/src/i18n-en.ts",
       "assets/inject/renderer-inject.js"
     ],
-    "purpose": "Patch Linux-specific renderer compatibility for plugin navigation, plugin details, Pure API account reads, delete behavior, label cleanup, menu positioning, Fast badge composer placement, helper HTTP fallback when CDP binding is missing, renamed or merged Codex asset chunk fallback, unimportable app:// asset records, minified dispatcher export drift, hotkey-window dispatcher guard, and transient backend-check clickability."
+    "purpose": "Patch Linux renderer compatibility for marketplace requests/details, Pure API account reads, delete and menu behavior, and GPT-5.6 Fast/Standard switching while preserving official Fast controls and refusing legacy plugin-entry auth spoofing."
   },
   {
     "id": "070-linux-user-scripts-compatibility",
@@ -181,10 +184,9 @@ xref:snippets.adoc[English] | 简体中文
     "patch": "docs/modules/ROOT/attachments/patches/compatibility/080-linux-local-thread-catalog-sync.patch",
     "targets": [
       "crates/codex-plus-core/src/codex_sqlite.rs",
-      "crates/codex-plus-data/src/provider_sync.rs",
-      "codex-desktop-linux local conversation webview patches"
+      "crates/codex-plus-data/src/provider_sync.rs"
     ],
-    "purpose": "Backfill and restore Codex Desktop local_thread_catalog rows from legacy local session threads, mark visible catalog rows without an openable source as missing across hosts, and hydrate route-opened local conversations before resume, so project sidebars keep showing and opening existing conversations after storage schema updates."
+    "purpose": "Backfill Codex Desktop local_thread_catalog rows from rollout-backed sessions with real titles, exclude projectless threads, and keep unchanged syncs idempotent; companion CodexDesktop snapshot patches preserve and hydrate those rows."
   },
   {
     "id": "900-regression-tests",
@@ -193,12 +195,17 @@ xref:snippets.adoc[English] | 简体中文
     "kind": "test",
     "patch": "docs/modules/ROOT/attachments/patches/compatibility/900-regression-tests.patch",
     "targets": [
+      "apps/codex-plus-manager/src/relay-config-contract.test.mjs",
+      "crates/codex-plus-core/tests/bridge_routes.rs",
       "crates/codex-plus-core/tests/cdp_bridge.rs",
+      "crates/codex-plus-core/tests/codex_sqlite.rs",
+      "crates/codex-plus-core/tests/installers.rs",
       "crates/codex-plus-core/tests/launcher.rs",
+      "crates/codex-plus-core/tests/relay_config.rs",
       "crates/codex-plus-core/tests/watcher.rs",
       "crates/codex-plus-data/tests/provider_sync.rs"
     ],
-    "purpose": "Add regression tests for the Linux adaptation snippets, including helper bridge route fallback, Fast badge placement, renamed or merged Codex asset chunk fallback, unimportable app:// asset records, minified dispatcher export drift, hotkey-window dispatcher guard, launcher/watcher cleanup, local thread catalog backfill/restoration, remote source-less catalog hiding, route-opened local conversation hydration, and transient backend-check clickability in the current Linux composer footer."
+    "purpose": "Add regression tests for all production patches, including GPT-5.6 Fast variants, official Fast control coexistence, Linux user-script URL aliasing, real-title catalog backfill, idempotent catalog sync, and projectless exclusion."
   }
 ]
 ----

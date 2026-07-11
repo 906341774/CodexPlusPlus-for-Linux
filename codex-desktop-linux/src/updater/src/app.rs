@@ -5,7 +5,7 @@ use crate::{
     cli::{Cli, Commands},
     codex_cli,
     config::{RuntimeConfig, RuntimePaths},
-    feature_picker, install, install_rollback, liveness, logging, notify, rollback,
+    diagnostics, feature_picker, install, install_rollback, liveness, logging, notify, rollback,
     state::{CliStatus, PersistedState, UpdateStatus},
     upstream, wrapper, wrapper_apply,
 };
@@ -51,6 +51,10 @@ const POLKIT_AUTH_AGENT_PROCESS_TOKENS: &[&str] = &[
 /// Runs the updater command-line entrypoint.
 pub async fn run(cli: Cli) -> Result<()> {
     let paths = RuntimePaths::detect()?;
+    if let Commands::Diagnose { json } = &cli.command {
+        return run_diagnose_command(&paths, *json).await;
+    }
+
     paths.ensure_dirs()?;
     logging::init(&paths.log_file)?;
 
@@ -90,6 +94,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             print_path,
         } => run_prompt_install_cli(&mut state, &paths, cli_path, print_path),
         Commands::Status { json } => run_status(&config, &mut state, &paths, json),
+        Commands::Diagnose { .. } => unreachable!("diagnose is handled before runtime writes"),
         Commands::InstallReady => run_install_ready(&config, &mut state, &paths).await,
         Commands::Rollback => rollback::run(&config, &mut state, &paths).await,
         Commands::InstallDeb { path } => install::install_deb(&path),
@@ -99,6 +104,17 @@ pub async fn run(cli: Cli) -> Result<()> {
         Commands::InstallRollbackRpm { path } => install_rollback::install_rpm(&path),
         Commands::InstallRollbackPacman { path } => install_rollback::install_pacman(&path),
     }
+}
+
+async fn run_diagnose_command(paths: &RuntimePaths, json: bool) -> Result<()> {
+    let mut config = RuntimeConfig::load_or_default(paths)?;
+    if let Some(enabled) = crate::config::settings_wrapper_updates_override() {
+        config.enable_wrapper_updates = enabled;
+    }
+    let mut state =
+        PersistedState::load_or_default(&paths.state_file, effective_auto_install(&config))?;
+    state.installed_version = install::installed_package_version();
+    diagnostics::run(&config, &state, paths, json).await
 }
 
 fn persist_state(paths: &RuntimePaths, state: &PersistedState) -> Result<()> {
@@ -519,7 +535,7 @@ fn detect_and_record_wrapper_update(
                 paths,
                 config.notifications,
                 &format!("wrapper_update:{}", update.candidate_commit),
-                "Codex Desktop wrapper update available",
+                "ChatGPT Desktop wrapper update available",
                 &format!(
                     "A newer Linux wrapper build is available ({change_count} change(s)). Rebuild to apply."
                 ),
@@ -617,7 +633,10 @@ fn run_status(
     }
 
     if json {
-        println!("{}", serde_json::to_string_pretty(state)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&status_json_value(state)?)?
+        );
     } else {
         println!("status: {:?}", state.status);
         println!("installed_version: {}", state.installed_version);
@@ -643,8 +662,18 @@ fn run_status(
             state.cli_installed_version.as_deref().unwrap_or("unknown")
         );
         println!(
-            "cli_latest_version: {}",
-            state.cli_latest_version.as_deref().unwrap_or("unknown")
+            "cli_official_latest_version: {}",
+            state
+                .cli_official_latest_version
+                .as_deref()
+                .unwrap_or("unknown")
+        );
+        println!(
+            "cli_package_manager_latest_version: {}",
+            state
+                .cli_package_manager_latest_version
+                .as_deref()
+                .unwrap_or("unknown")
         );
         println!(
             "cli_error: {}",
@@ -653,6 +682,17 @@ fn run_status(
     }
 
     Ok(())
+}
+
+fn status_json_value(state: &PersistedState) -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(state)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "cli_latest_version".to_string(),
+            serde_json::to_value(&state.cli_official_latest_version)?,
+        );
+    }
+    Ok(value)
 }
 
 fn update_error_status_line(state: &PersistedState) -> String {
@@ -823,7 +863,7 @@ fn run_kdialog_prompt() -> Result<bool> {
     let status = Command::new("kdialog")
         .args([
             "--title",
-            "Codex Desktop",
+            "ChatGPT Desktop",
             "--yesno",
             "Codex CLI is not installed. Install it now?",
         ])
@@ -836,7 +876,7 @@ fn run_zenity_prompt() -> Result<bool> {
     let status = Command::new("zenity")
         .args([
             "--question",
-            "--title=Codex Desktop",
+            "--title=ChatGPT Desktop",
             "--text=Codex CLI is not installed. Install it now?",
         ])
         .status()
@@ -847,7 +887,7 @@ fn run_zenity_prompt() -> Result<bool> {
 fn run_actionable_notification_prompt() -> Result<bool> {
     match notify::send_actionable(
         "Codex CLI not installed",
-        "Codex Desktop needs the Codex CLI. Choose Install now to let Codex Desktop install it.",
+        "ChatGPT Desktop needs the Codex CLI. Choose Install now to let ChatGPT Desktop install it.",
         &[("install", "Install now"), ("dismiss", "Dismiss")],
     )? {
         notify::ActionResponse::Invoked(action) if action == "install" => Ok(true),
@@ -976,7 +1016,7 @@ async fn run_check_cycle(
             paths,
             config.notifications,
             "update_detected",
-            "New Codex Desktop update detected",
+            "New ChatGPT Desktop update detected",
             "Preparing a local Linux package from the new upstream DMG.",
         )?;
 
@@ -1056,8 +1096,8 @@ async fn reconcile_pending_install(
                     paths,
                     config.notifications,
                     "ready_to_install",
-                    "Codex Desktop update ready",
-                    "Close Codex Desktop to install the ready update.",
+                    "ChatGPT Desktop update ready",
+                    "Close ChatGPT Desktop to install the ready update.",
                 )?;
                 return Ok(());
             }
@@ -1098,8 +1138,8 @@ async fn reconcile_pending_install(
                     paths,
                     config.notifications,
                     "waiting_for_app_exit",
-                    "Codex Desktop update ready",
-                    "The update will install after you close Codex Desktop.",
+                    "ChatGPT Desktop update ready",
+                    "The update will install after you close ChatGPT Desktop.",
                 )?;
                 return Ok(());
             }
@@ -1131,7 +1171,7 @@ async fn run_install_ready(
     recover_interrupted_install(state, paths)?;
 
     if complete_current_dmg_update_if_already_installed(config, state, paths)? {
-        println!("Codex Desktop is already up to date.");
+        println!("ChatGPT Desktop is already up to date.");
         return Ok(());
     }
 
@@ -1140,7 +1180,7 @@ async fn run_install_ready(
         if pending_recovery.should_notify_installed() {
             let _ = maybe_notify_installed(state, paths, config.notifications);
         }
-        println!("Codex Desktop update is already installed or superseded.");
+        println!("ChatGPT Desktop update is already installed or superseded.");
         return Ok(());
     }
 
@@ -1149,19 +1189,19 @@ async fn run_install_ready(
         UpdateStatus::Installing => {
             maybe_send_notification(
                 config.notifications,
-                "Codex update already installing",
-                "Codex Desktop is already applying the ready update.",
+                "ChatGPT Desktop update already installing",
+                "ChatGPT Desktop is already applying the ready update.",
             );
-            println!("Codex Desktop update is already installing.");
+            println!("ChatGPT Desktop update is already installing.");
             return Ok(());
         }
         _ => {
             maybe_send_notification(
                 config.notifications,
-                "No Codex update ready",
-                "There is no rebuilt Codex Desktop update waiting to install.",
+                "No ChatGPT Desktop update ready",
+                "There is no rebuilt ChatGPT Desktop update waiting to install.",
             );
-            println!("No Codex Desktop update is ready to install.");
+            println!("No update is ready to install.");
             return Ok(());
         }
     }
@@ -1170,7 +1210,7 @@ async fn run_install_ready(
         mark_failed_and_persist(state, paths, "No ready update package is recorded")?;
         maybe_send_notification(
             config.notifications,
-            "Codex update failed",
+            "ChatGPT Desktop update failed",
             "The updater has no package path recorded for the ready update.",
         );
         println!("No ready update package is recorded.");
@@ -1188,7 +1228,7 @@ async fn run_install_ready(
         )?;
         maybe_send_notification(
             config.notifications,
-            "Codex update failed",
+            "ChatGPT Desktop update failed",
             "The rebuilt package is missing. Check the updater log for details.",
         );
         println!(
@@ -1209,10 +1249,10 @@ async fn run_install_ready(
         set_waiting_for_app_exit(state, paths, false)?;
         maybe_send_notification(
             config.notifications,
-            "Codex Desktop update ready",
-            "Close Codex Desktop to install the ready update.",
+            "ChatGPT Desktop update ready",
+            "Close ChatGPT Desktop to install the ready update.",
         );
-        println!("Codex Desktop is running. Close it to install the ready update.");
+        println!("ChatGPT Desktop is running. Close it to install the ready update.");
         return Ok(());
     }
 
@@ -1542,7 +1582,7 @@ fn maybe_notify_cli_missing(
         enabled,
         CLI_MISSING_NOTIFICATION_EVENT,
         "Codex CLI not installed",
-        "Codex Desktop needs the Codex CLI. Open the app to retry the automatic install flow, or install it manually with npm.",
+        "ChatGPT Desktop needs the Codex CLI. Open the app to retry the automatic install flow, or install it manually with npm.",
     )
 }
 
@@ -1560,7 +1600,7 @@ fn maybe_notify_installed(
         paths,
         enabled,
         "installed",
-        "Codex Desktop updated",
+        "ChatGPT Desktop updated",
         "The new package is installed and will be used the next time you open the app.",
     )
 }
@@ -1581,11 +1621,11 @@ fn maybe_notify_update_ready(
 
     if enabled {
         let body = if state.auto_install_on_app_exit {
-            "A rebuilt Linux package is ready. Close Codex Desktop to install it, or open Codex Desktop and choose Update."
+            "A rebuilt Linux package is ready. Close ChatGPT Desktop to install it, or open ChatGPT Desktop and choose Update."
         } else {
-            "A rebuilt Linux package is ready. Open Codex Desktop and choose Update to install it."
+            "A rebuilt Linux package is ready. Open ChatGPT Desktop and choose Update to install it."
         };
-        if let Err(error) = notify::send("Codex Desktop update ready", body) {
+        if let Err(error) = notify::send("ChatGPT Desktop update ready", body) {
             warn!(?error, "failed to send update-ready notification");
         }
     }
@@ -1612,7 +1652,7 @@ async fn trigger_install(
     persist_state(paths, state)?;
 
     let _ = notify::send(
-        "Installing Codex Desktop update",
+        "Installing ChatGPT Desktop update",
         "Applying the locally rebuilt Linux package.",
     );
 
@@ -1660,7 +1700,7 @@ async fn trigger_install(
 
     mark_failed_and_persist(state, paths, error.to_string())?;
     let _ = notify::send(
-        "Codex update failed",
+        "ChatGPT Desktop update failed",
         "The package could not be installed. Check the updater log for details.",
     );
     Err(error)
@@ -1685,7 +1725,7 @@ fn install_auth_retry_is_blocked(state: &PersistedState) -> bool {
 
 fn manual_install_required_message(package_path: &Path) -> String {
     format!(
-        "No graphical polkit authentication agent is available for pkexec. Run this from a terminal after closing Codex Desktop: {}",
+        "No graphical polkit authentication agent is available for pkexec. Run this from a terminal after closing ChatGPT Desktop: {}",
         manual_install_command(package_path)
     )
 }
@@ -1709,7 +1749,7 @@ fn shell_quote_path(path: &Path) -> String {
 
 fn print_manual_install_required(package_path: &Path) {
     println!("Manual install required: no graphical polkit authentication agent is available.");
-    println!("Run this from a terminal after closing Codex Desktop:");
+    println!("Run this from a terminal after closing ChatGPT Desktop:");
     println!("{}", manual_install_command(package_path));
 }
 
@@ -1734,7 +1774,7 @@ fn maybe_notify_manual_install_required(
         paths,
         enabled,
         "manual_install_required",
-        "Codex update needs manual install",
+        "ChatGPT Desktop update needs manual install",
         "No graphical authentication agent was found for pkexec. Run codex-update-manager status for details.",
     )
 }
@@ -1742,7 +1782,7 @@ fn maybe_notify_manual_install_required(
 fn maybe_send_manual_install_required_notification(enabled: bool) {
     maybe_send_notification(
         enabled,
-        "Codex update needs manual install",
+        "ChatGPT Desktop update needs manual install",
         "No graphical authentication agent was found for pkexec. Run codex-update-manager status for details.",
     );
 }
@@ -1828,7 +1868,7 @@ fn defer_install_until_next_app_exit(
     if let Some(event_key) = install_auth_required_event_key(state) {
         if state.notified_events.insert(event_key) {
             let _ = notify::send(
-                "Codex update needs permission",
+                "ChatGPT Desktop update needs permission",
                 "The ready update will retry after the next app close. Approve the system authentication dialog to install it.",
             );
         }
@@ -1849,7 +1889,7 @@ fn notify_failure(
         paths,
         config.notifications,
         "build_failed",
-        "Codex update failed",
+        "ChatGPT Desktop update failed",
         &body,
     )
 }
@@ -3577,7 +3617,25 @@ mod tests {
         }
 
         assert!(result.is_err());
-        assert_eq!(state.cli_status, CliStatus::Updating);
+        assert_eq!(state.cli_status, CliStatus::Failed);
+        assert!(state
+            .cli_error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("npm")));
+        Ok(())
+    }
+
+    #[test]
+    fn status_json_keeps_legacy_cli_latest_version_alias() -> Result<()> {
+        let mut state = PersistedState::new(true);
+        state.cli_official_latest_version = Some("0.42.1".to_string());
+        state.cli_package_manager_latest_version = Some("0.42.0-1".to_string());
+
+        let value = status_json_value(&state)?;
+
+        assert_eq!(value["cli_latest_version"], "0.42.1");
+        assert_eq!(value["cli_official_latest_version"], "0.42.1");
+        assert_eq!(value["cli_package_manager_latest_version"], "0.42.0-1");
         Ok(())
     }
 
@@ -3704,7 +3762,7 @@ mod tests {
             &paths,
             false,
             "ready_to_install",
-            "Codex Desktop update ready",
+            "ChatGPT Desktop update ready",
             "An update is ready to install.",
         )?;
         let notified_count = state.notified_events.len();
@@ -3713,7 +3771,7 @@ mod tests {
             &paths,
             false,
             "ready_to_install",
-            "Codex Desktop update ready",
+            "ChatGPT Desktop update ready",
             "An update is ready to install.",
         )?;
 

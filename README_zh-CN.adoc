@@ -7,7 +7,7 @@ link:README.adoc[English] | 简体中文
 `CodexPlusPlus-on-Linux` 是面向 `BigPizzaV3/CodexPlusPlus` 的源码级 Linux 适配项目。
 它记录并重新应用必要补丁，使 Codex++ 可以配合 `ilysenko/codex-desktop-linux` 生成的非官方 Linux Codex Desktop 构建使用。
 
-项目版本：`1.2.32`，与上游 Codex++ `v1.2.32` 同步。
+项目版本：`1.2.34`，与上游 Codex++ `v1.2.34` 同步。
 
 本仓库作为下列项目的 fork/适配版本维护：
 
@@ -24,7 +24,7 @@ link:README.adoc[English] | 简体中文
 * `docs/modules/ROOT/pages/maintenance-workflow_zh-CN.adoc` 中的正式维护流程。
 * `docs/modules/ROOT/pages/adapter-workflow_zh-CN.adoc` 中的历史/实验性定期适配工作流。
 * `docs/modules/ROOT/attachments/patches/` 中的补丁附件。
-* 双语 PowerShell 安装与管理脚本：`scripts/Installer-and-Manager.ps1`。
+* 双语 PowerShell 安装与管理脚本：`scripts/developer/Installer-and-Manager.ps1`。
 * `CodexPlusPlus/src` 和 `codex-desktop-linux/src` 下的上游源码快照，供研究和可复现对照使用；嵌套 `.git` 元数据和本地构建缓存有意不纳入跟踪。
 
 管理脚本可从原始 Codex++ 源码包安装、更新、卸载并重新应用 Linux 适配。
@@ -63,21 +63,14 @@ $HOME/opt/CodexDesktop/.codex-plusplus
 
 [source,powershell,subs="attributes,macros"]
 ----
-$codexDesktopLinuxSource = "$HOME/opt/CodexPlusPlus-on-Linux/codex-desktop-linux/src"
+$adapterRoot = "$HOME/opt/CodexPlusPlus-on-Linux"
 $codexDesktopInstallPath = "$HOME/opt/CodexDesktop"
 
-Set-Location $codexDesktopLinuxSource
-Set-Item Env:CODEX_LINUX_FEATURES 'agent-workspace,api-key-service-tier,appshots,authenticated-proxy,codex-wrapper-updater,conversation-mode,copilot-reasoning-effort,frameless-titlebar,node-repl-reaper,open-target-discovery,persistent-status-panel,read-aloud,read-aloud-mcp,remote-control-ui,remote-mobile-control,thorium-chrome-plugin,x11-ewmh-computer-use,zed-opener'
-Set-Item Env:CODEX_LINUX_DISABLE_FEATURES ''
-Set-Item Env:PACKAGE_WITH_UPDATER '0'
-Set-Item Env:CODEX_BOOTSTRAP_NONINTERACTIVE '1'
-Set-Item Env:CODEX_LINUX_ENABLE_COMPUTER_USE_UI '1'
-
-make build-app
-if (Test-Path $codexDesktopInstallPath) {
-    throw "Install path already exists: $codexDesktopInstallPath"
-}
-Move-Item -Path "codex-app" -Destination $codexDesktopInstallPath
+Set-Location $adapterRoot
+pwsh ./scripts/developer/Build-CodexDesktopLinux.ps1 `
+    -Action build-install `
+    -SourceRoot "$adapterRoot/codex-desktop-linux/src" `
+    -InstallPath $codexDesktopInstallPath
 
 New-Item -ItemType Directory -Force -Path "$HOME/.local/bin", "$HOME/.local/share/icons", "$HOME/.local/share/applications"
 New-Item -ItemType SymbolicLink -Force `
@@ -91,17 +84,18 @@ $desktopFilePath = "$HOME/.local/share/applications/codex-desktop-linux.desktop"
 Copy-Item -Path "contrib/user-local-install/files/.local/share/applications/codex-desktop.desktop" -Destination $desktopFilePath -Force
 (Get-Content $desktopFilePath) -creplace '^Exec=.*', 'Exec=codex-desktop-linux' | Set-Content $desktopFilePath
 
-Remove-Item -ErrorAction SilentlyContinue `
-    Env:CODEX_LINUX_FEATURES,
-    Env:CODEX_LINUX_DISABLE_FEATURES,
-    Env:PACKAGE_WITH_UPDATER,
-    Env:CODEX_BOOTSTRAP_NONINTERACTIVE,
-    Env:CODEX_LINUX_ENABLE_COMPUTER_USE_UI
 ----
+
+构建脚本会动态发现固定版 `codex-desktop-linux` 源码中除
+`example-feature` 与 `local` 之外所有带描述文件的顶层 feature，写入 gitignored
+的 `linux-features/features.json`，同时导出 `CODEX_LINUX_FEATURES` 和
+`CODEX_LINUX_FEATURES_CONFIG`，并要求两份 build-info 文件精确记录发现结果。
+`v1.2.34` 基线当前启用 23 个 Linux features；若出现
+`Enabled features: None`，构建会直接判定失败。
 
 `ydotool` 的安装命令本身因发行版而异；当前包名和服务配置请参考 `ilysenko/codex-desktop-linux` 的 `docs/linux-computer-use.md`。
 
-如果要更新 Linux Codex Desktop 构建，请替换 `ilysenko/codex-desktop-linux` 使用的 `codex.dmg`，然后重新执行它的构建流程。
+如果要更新 Linux Codex Desktop 构建，请替换 `ilysenko/codex-desktop-linux` 使用的 `Codex.dmg`，然后重新执行同一 PowerShell 构建流程。
 
 == 安装适配后的 Codex++
 
@@ -109,7 +103,7 @@ Remove-Item -ErrorAction SilentlyContinue `
 
 [source,powershell]
 ----
-pwsh ./scripts/Installer-and-Manager.ps1 -Action install -CodexDesktopRootPath "$HOME/opt/CodexDesktop"
+pwsh ./scripts/developer/Installer-and-Manager.ps1 -Action install -CodexDesktopRootPath "$HOME/opt/CodexDesktop"
 ----
 
 脚本默认值保持保守：
@@ -132,7 +126,7 @@ pwsh ./scripts/Installer-and-Manager.ps1 -Action install -CodexDesktopRootPath "
 
 [source,powershell]
 ----
-pwsh ./scripts/Installer-and-Manager.ps1 -Action update -CodexDesktopRootPath "$HOME/opt/CodexDesktop"
+pwsh ./scripts/developer/Installer-and-Manager.ps1 -Action update -CodexDesktopRootPath "$HOME/opt/CodexDesktop"
 ----
 
 `update` 操作会拉取或复制一份新的上游源码，重新应用已启用片段，重新构建，并替换已安装的适配器二进制文件。
@@ -141,7 +135,7 @@ pwsh ./scripts/Installer-and-Manager.ps1 -Action update -CodexDesktopRootPath "$
 
 [source,powershell]
 ----
-pwsh ./scripts/Installer-and-Manager.ps1 -Action uninstall -CodexDesktopRootPath "$HOME/opt/CodexDesktop"
+pwsh ./scripts/developer/Installer-and-Manager.ps1 -Action uninstall -CodexDesktopRootPath "$HOME/opt/CodexDesktop"
 ----
 
 默认会保留用户脚本。

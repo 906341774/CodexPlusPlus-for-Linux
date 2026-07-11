@@ -1,8 +1,6 @@
 "use strict";
 
-const {
-  webviewAssetPatch,
-} = require("../../../../descriptor.js");
+const { webviewAssetPatch } = require("../../../../descriptor.js");
 const {
   applyLinuxLocalThreadCatalogInitialSnapshotPatch,
 } = require("../../../../impl/webview/index.js");

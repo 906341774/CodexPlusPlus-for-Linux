@@ -1,8 +1,8 @@
 diff --git a/crates/codex-plus-core/src/app_paths.rs b/crates/codex-plus-core/src/app_paths.rs
-index eea4285..1e362c6 100644
+index 0cf1995..da51c60 100644
 --- a/crates/codex-plus-core/src/app_paths.rs
 +++ b/crates/codex-plus-core/src/app_paths.rs
-@@ -178,6 +178,12 @@ pub fn resolve_codex_app_dir_with_saved(
+@@ -208,6 +208,12 @@ pub fn resolve_codex_app_dir_with_saved(
              return Some(path);
          }
      }
@@ -15,18 +15,18 @@ index eea4285..1e362c6 100644
      resolve_codex_app_dir(None)
  }
 
-@@ -225,6 +231,10 @@ pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
-     if app_dir.extension() == Some(OsStr::new("app")) {
-         return app_dir.join("Contents").join("MacOS").join("Codex");
+@@ -257,6 +263,10 @@ pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
+         }
+         return macos_dir.join("Codex");
      }
 +    let linux_launcher = app_dir.join("start.sh");
 +    if cfg!(target_os = "linux") && linux_launcher.exists() {
 +        return linux_launcher;
 +    }
-     let upper = app_dir.join("Codex.exe");
-     if upper.exists() {
-         upper
-@@ -237,6 +247,15 @@ pub fn codex_app_version(app_dir: &Path) -> Option<String> {
+     if let Some(executable) = executable_in_dir(app_dir) {
+         return executable;
+     }
+@@ -270,6 +280,15 @@ pub fn codex_app_version(app_dir: &Path) -> Option<String> {
      if app_dir.extension() == Some(OsStr::new("app")) {
          return macos_app_version(app_dir);
      }
@@ -42,9 +42,9 @@ index eea4285..1e362c6 100644
      let package_dir = if app_dir
          .file_name()
          .and_then(OsStr::to_str)
-@@ -345,3 +364,178 @@ fn codex_package_parts(package_name: &str) -> Option<(&str, &str, &str)> {
-     }
-     None
+@@ -459,3 +478,158 @@ fn strip_prefix_ignore_ascii_case<'a>(value: &'a str, prefix: &str) -> Option<&'
+     let (head, rest) = value.split_at(prefix.len());
+     head.eq_ignore_ascii_case(prefix).then_some(rest)
  }
 +
 +#[cfg(target_os = "linux")]
@@ -80,24 +80,14 @@ index eea4285..1e362c6 100644
 +#[cfg(target_os = "linux")]
 +fn linux_adapter_state_path() -> PathBuf {
 +    if let Some(value) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
-+        return PathBuf::from(value)
-+            .join("codex-plusplus")
-+            .join("state.json");
++        return PathBuf::from(value).join("codex-plusplus/state.json");
 +    }
 +    directories::BaseDirs::new()
 +        .map(|dirs| {
 +            dirs.home_dir()
-+                .join(".local")
-+                .join("share")
-+                .join("codex-plusplus")
-+                .join("state.json")
++                .join(".local/share/codex-plusplus/state.json")
 +        })
-+        .unwrap_or_else(|| {
-+            PathBuf::from(".local")
-+                .join("share")
-+                .join("codex-plusplus")
-+                .join("state.json")
-+        })
++        .unwrap_or_else(|| PathBuf::from(".local/share/codex-plusplus/state.json"))
 +}
 +
 +#[cfg(target_os = "linux")]
@@ -113,11 +103,7 @@ index eea4285..1e362c6 100644
 +#[cfg(target_os = "linux")]
 +fn normalize_linux_codex_app_root(path: &Path) -> Option<PathBuf> {
 +    let path = normalize_codex_app_path(path)?;
-+    if path.join("start.sh").is_file() {
-+        Some(path)
-+    } else {
-+        None
-+    }
++    path.join("start.sh").is_file().then_some(path)
 +}
 +
 +#[cfg(target_os = "linux")]
@@ -184,14 +170,12 @@ index eea4285..1e362c6 100644
 +    let mut quote = None;
 +    let mut escaped = false;
 +    let mut consumed = value.len();
-+
 +    for (index, ch) in value.char_indices() {
 +        if escaped {
 +            token.push(ch);
 +            escaped = false;
 +            continue;
 +        }
-+
 +        if let Some(quote_char) = quote {
 +            if ch == quote_char {
 +                quote = None;
@@ -202,22 +186,18 @@ index eea4285..1e362c6 100644
 +            }
 +            continue;
 +        }
-+
 +        if ch.is_whitespace() {
 +            consumed = index;
 +            break;
 +        }
-+
 +        match ch {
 +            '\'' | '"' => quote = Some(ch),
 +            '\\' => escaped = true,
 +            _ => token.push(ch),
 +        }
 +    }
-+
 +    if escaped {
 +        token.push('\\');
 +    }
-+
 +    Some((token, &value[consumed..]))
 +}

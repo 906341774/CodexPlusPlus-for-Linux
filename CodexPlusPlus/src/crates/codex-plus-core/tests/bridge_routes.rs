@@ -1,3 +1,5 @@
+use std::io::Write;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -119,7 +121,7 @@ async fn settings_get_includes_runtime_codex_app_version() {
 
     assert_eq!(result["codexAppVersion"], json!("26.601.21317"));
     assert_eq!(result["codexAppPluginMarketplaceUnlock"], json!(true));
-    assert_eq!(result["codexAppForcePluginInstall"], json!(true));
+    assert_eq!(result.get("codexAppForcePluginInstall"), None);
     assert_eq!(result["codexAppThreadIdBadge"], json!(false));
 }
 
@@ -721,13 +723,16 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
 }
 
 #[test]
-fn user_script_bundle_wraps_scripts_with_linux_codex_location_alias() {
+fn user_script_bundle_aliases_only_linux_sandbox_location() {
     let temp = tempfile::tempdir().unwrap();
     let user_dir = temp.path().join("user");
     std::fs::create_dir_all(&user_dir).unwrap();
     std::fs::write(
-        user_dir.join("market-codex-context-used-meter.js"),
-        r#"window.__seenCodexLocation = new URL(location.href).href;"#,
+        user_dir.join("location-probe.js"),
+        r#"window.__locationProbe = {
+  scriptHref: location.href,
+  windowHref: window.location.href,
+};"#,
     )
     .unwrap();
     let manager = UserScriptManager::new(
@@ -735,14 +740,58 @@ fn user_script_bundle_wraps_scripts_with_linux_codex_location_alias() {
         user_dir,
         temp.path().join("user_scripts.json"),
     );
+    let bundle_path = temp.path().join("user-scripts.cjs");
+    std::fs::write(&bundle_path, manager.build_enabled_bundle().unwrap()).unwrap();
 
-    let bundle = manager.build_enabled_bundle().unwrap();
+    let run_probe = |url: &str| {
+        let harness_path = temp.path().join(format!(
+            "probe-{}.cjs",
+            if url.contains("mcpAppSandboxDevtools") {
+                "sandbox"
+            } else {
+                "regular"
+            }
+        ));
+        let mut harness = std::fs::File::create(&harness_path).unwrap();
+        writeln!(
+            harness,
+            r#"globalThis.window = globalThis;
+globalThis.location = new URL({url});
+window.location = globalThis.location;
+require({bundle});
+process.stdout.write(JSON.stringify(window.__locationProbe));"#,
+            url = serde_json::to_string(url).unwrap(),
+            bundle = serde_json::to_string(&bundle_path.to_string_lossy()).unwrap(),
+        )
+        .unwrap();
+        drop(harness);
+        let output = Command::new("node").arg(&harness_path).output().unwrap();
+        assert!(
+            output.status.success(),
+            "node location probe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
 
-    assert!(bundle.contains("codexPlusLinuxUserScriptLocation"));
-    assert!(bundle.contains("mcpAppSandboxDevtools"));
-    assert!(bundle.contains("app://-/index.html"));
-    assert!(bundle.contains("((location) => {"));
-    assert!(bundle.contains("window.__seenCodexLocation = new URL(location.href).href;"));
+    let sandbox = run_probe(
+        "http://127.0.0.1:5176/conversation?thread_id=t1&mcpAppSandboxDevtools=1#composer",
+    );
+    assert_eq!(
+        sandbox["scriptHref"],
+        "app://-/index.html?thread_id=t1&mcpAppSandboxDevtools=1#composer"
+    );
+    assert_eq!(
+        sandbox["windowHref"],
+        "http://127.0.0.1:5176/conversation?thread_id=t1&mcpAppSandboxDevtools=1#composer"
+    );
+
+    let regular = run_probe("http://127.0.0.1:5176/conversation?thread_id=t2");
+    assert_eq!(
+        regular["scriptHref"],
+        "http://127.0.0.1:5176/conversation?thread_id=t2"
+    );
+    assert_eq!(regular["windowHref"], regular["scriptHref"]);
 }
 
 #[tokio::test]
@@ -1050,7 +1099,6 @@ impl BridgeSettingsService for FakeSettings {
         }
         for key in [
             "codexAppPluginMarketplaceUnlock",
-            "codexAppForcePluginInstall",
             "codexAppModelWhitelistUnlock",
             "codexAppSessionDelete",
             "codexAppMarkdownExport",

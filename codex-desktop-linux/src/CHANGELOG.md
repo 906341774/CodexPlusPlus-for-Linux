@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Read Aloud no longer crashes the generated Linux desktop settings page after
+  its shared controls moved from React hooks to class components. The feature's
+  enabled state, voice setup actions, and speech pace now use the same
+  class-based global-state bridge as the rest of that page.
 - Cold launches no longer stall for a full second between acquiring the
   launcher lock and spawning Electron. The CLI version log line reads the
   probe result through command substitution, and the probe's watchdog

@@ -4,6 +4,39 @@ use codex_plus_core::install::{
     shortcut_names,
 };
 
+#[cfg(target_os = "linux")]
+fn linux_install_env_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+#[cfg(target_os = "linux")]
+struct EnvVarRestore {
+    key: &'static str,
+    old_value: Option<std::ffi::OsString>,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for EnvVarRestore {
+    fn drop(&mut self) {
+        if let Some(value) = self.old_value.take() {
+            unsafe { std::env::set_var(self.key, value) };
+        } else {
+            unsafe { std::env::remove_var(self.key) };
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn set_xdg_data_home_for_test(path: &std::path::Path) -> EnvVarRestore {
+    let old_value = std::env::var_os("XDG_DATA_HOME");
+    unsafe { std::env::set_var("XDG_DATA_HOME", path) };
+    EnvVarRestore {
+        key: "XDG_DATA_HOME",
+        old_value,
+    }
+}
+
 #[test]
 fn windows_entrypoint_plan_contains_silent_and_manager_entrypoints() {
     let options = InstallOptions {
@@ -193,54 +226,29 @@ fn windows_default_install_root_uses_known_folder_before_userprofile_desktop() {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_install_env_lock() -> &'static std::sync::Mutex<()> {
-    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| std::sync::Mutex::new(()))
-}
+#[test]
+fn linux_adapter_entrypoint_health_contract_accepts_codex_app_root() {
+    let source = include_str!("../src/install/mod.rs");
 
-#[cfg(target_os = "linux")]
-struct EnvVarRestore {
-    key: &'static str,
-    old_value: Option<std::ffi::OsString>,
-}
-
-#[cfg(target_os = "linux")]
-impl Drop for EnvVarRestore {
-    fn drop(&mut self) {
-        if let Some(value) = self.old_value.take() {
-            unsafe { std::env::set_var(self.key, value) };
-        } else {
-            unsafe { std::env::remove_var(self.key) };
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn set_xdg_data_home_for_test(path: &std::path::Path) -> EnvVarRestore {
-    let old_value = std::env::var_os("XDG_DATA_HOME");
-    unsafe { std::env::set_var("XDG_DATA_HOME", path) };
-    EnvVarRestore {
-        key: "XDG_DATA_HOME",
-        old_value,
-    }
+    assert!(source.contains("pub fn inspect_entrypoints_for_app"));
+    assert!(source.contains(".codex-plusplus"));
+    assert!(source.contains("launch-codex-plus-plus"));
+    assert!(source.contains("linuxAdapterInstallRoot"));
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_adapter_entrypoint_detection_uses_codex_app_install_dir() {
-    let _guard = linux_install_env_lock().lock().unwrap();
+    let _guard = linux_install_env_lock()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let temp = tempfile::tempdir().unwrap();
     let xdg_data_home = temp.path().join("empty-xdg-data");
     let _restore = set_xdg_data_home_for_test(&xdg_data_home);
     let app_dir = temp.path().join("codex-app");
-    let install_dir = app_dir.join(".codex-plusplus").join("install");
+    let install_dir = app_dir.join(".codex-plusplus/install");
     std::fs::create_dir_all(&install_dir).unwrap();
-    std::fs::write(
-        install_dir.join("launch-codex-plus-plus"),
-        "#!/bin/sh
-",
-    )
-    .unwrap();
+    std::fs::write(install_dir.join("launch-codex-plus-plus"), "#!/bin/sh\n").unwrap();
     std::fs::write(install_dir.join("codex-plus-plus-manager"), "").unwrap();
 
     let state = codex_plus_core::install::inspect_entrypoints_for_app(Some(&app_dir));
@@ -268,30 +276,27 @@ fn linux_adapter_entrypoint_detection_uses_codex_app_install_dir() {
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_adapter_entrypoint_detection_uses_synced_state_install_root() {
-    let _guard = linux_install_env_lock().lock().unwrap();
+    let _guard = linux_install_env_lock()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let temp = tempfile::tempdir().unwrap();
     let data_home = temp.path().join("xdg-data");
     let install_root = temp.path().join("external-codexpp");
     let install_dir = install_root.join("install");
     std::fs::create_dir_all(data_home.join("codex-plusplus")).unwrap();
     std::fs::create_dir_all(&install_dir).unwrap();
-    std::fs::write(
-        install_dir.join("launch-codex-plus-plus"),
-        "#!/bin/sh
-",
-    )
-    .unwrap();
+    std::fs::write(install_dir.join("launch-codex-plus-plus"), "#!/bin/sh\n").unwrap();
     std::fs::write(install_dir.join("codex-plus-plus-manager"), "").unwrap();
     std::fs::write(
-        data_home.join("codex-plusplus").join("state.json"),
+        data_home.join("codex-plusplus/state.json"),
         format!(
             r#"{{"linuxAdapterInstallRoot":"{}","appRoot":"/stale/codex-app"}}"#,
             install_root.display()
         ),
     )
     .unwrap();
-
     let _restore = set_xdg_data_home_for_test(&data_home);
+
     let state = codex_plus_core::install::inspect_entrypoints_for_app(None);
 
     assert!(state.silent_shortcut.installed);

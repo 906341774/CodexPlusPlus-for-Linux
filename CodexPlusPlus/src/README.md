@@ -42,7 +42,7 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
 </p>
 <p align="center">
   <a href="https://jojocode.com/"><strong>JOJO Code｜Codex++ 官方中转站</strong></a><br>
-  Codex++ 官方中转站，主打稳定接入和划算价格，支持 GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力，适合日常开发、团队协作和长期项目工作流。
+  Codex++ 官方中转站，主打稳定接入和划算价格，支持 GPT-5.6 全系列、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力，适合日常开发、团队协作和长期项目工作流。
 </p>
 
 <a href="mailto:1727532@qq.com">想显示在下方？</a>
@@ -59,7 +59,7 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
         <img src="docs/images/sponsor-jojocode.png" alt="JOJO Code" height="80">
       </a>
     </td>
-    <td><a href="https://jojocode.com/"><strong>JOJO Code｜Codex++ 官方中转站</strong></a><br>感谢 JOJO Code 赞助本项目。JOJO Code 是 Codex++ 官方中转站，提供价格划算、稳定易接入的 Codex API 中转服务，支持 GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力，适合日常开发、快速配置、团队协作和长期使用。</td>
+    <td><a href="https://jojocode.com/"><strong>JOJO Code｜Codex++ 官方中转站</strong></a><br>感谢 JOJO Code 赞助本项目。JOJO Code 是 Codex++ 官方中转站，提供价格划算、稳定易接入的 Codex API 中转服务，支持 GPT-5.6 全系列、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力，适合日常开发、快速配置、团队协作和长期使用。</td>
   </tr>
   <tr>
     <td align="center">
@@ -100,14 +100,6 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
       </a>
     </td>
     <td><a href="https://www.0029.org/?promo=AFF11F"><strong>0029云桥｜codex api中转站(gpt5.5 gpt-image-2)</strong></a><br>支持个人和企业接入。包月套餐/按量计费，Pro/Plus 号池，全站接口稳定可用，7×24 小时技术支持！</td>
-  </tr>
-  <tr>
-    <td align="center">
-      <a href="https://unity2.ai/register?source=codexplusplus">
-        <img src="docs/images/sponsor-unity2.png" alt="Unity2.ai" height="80">
-      </a>
-    </td>
-    <td><a href="https://unity2.ai/register?source=codexplusplus"><strong>Unity2.ai</strong></a><br>感谢 Unity2.ai 赞助了本项目！Unity2.ai 是面向个人开发者、团队和企业的高性能 AI 模型 API 中转平台，长期服务国内头部企业，日均承载超 300 亿 token 调用，支持 5000 RPM 级高并发。支持余额计费、首充赠额、组合订阅、企业开票和专属对接。通过<a href="https://unity2.ai/register?source=codexplusplus">此链接注册</a>可领取 $2 余额，加入官方群再送 $10 余额，最高可领 $12 免费额度。</td>
   </tr>
   <tr>
     <td align="center">
@@ -159,11 +151,11 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
   </tr>
   <tr>
     <td align="center">
-      <a href="https://ergouapi.com">
+      <a href="https://ergouapi.com/r/gh-codexplusplus">
         <img src="docs/images/sponsor-ergou-api.png" alt="二狗 API" height="80">
       </a>
     </td>
-    <td><a href="https://ergouapi.com"><strong>二狗 API</strong></a><br>二狗，稳如老狗的 AI API 中转站。全站 0.1x~0.2x 超低倍率，提供 Claude/GPT/Gemini 等多个国内外 100% 纯血大模型接口，顶级 IPLC 线路 + 住宅双 ISP 冗余，确保全国范围稳定低延迟访问。欢迎各位开发者、工作室注册使用。</td>
+    <td><a href="https://ergouapi.com/r/gh-codexplusplus"><strong>二狗 API</strong></a><br>二狗，稳如老狗的 AI API 中转站。全站 0.1x~0.2x 超低倍率，提供 Claude/GPT/Gemini 等多个国内外 100% 纯血大模型接口，顶级 IPLC 线路 + 住宅双 ISP 冗余，确保全国范围稳定低延迟访问。欢迎各位开发者、工作室注册使用。</td>
   </tr>
   <tr>
     <td align="center">

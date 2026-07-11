@@ -343,8 +343,6 @@
   const codexThreadScrollRouteHooksVersion = "dispatcher:2";
   const codexThreadScrollListenerVersion = "4";
   const codexThreadScrollUserIntentVersion = "dispatcher:2";
-  const codexPluginEntryUnlockVersion = "2";
-  const codexPluginEntryRefreshIntervalMs = 1000;
   const codexPlusImageOverlayId = "codex-plus-image-overlay";
   window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
   const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
@@ -1415,7 +1413,7 @@
       ["sendRequest", "list-plugins", "install-plugin"],
     ],
   };
-  const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5"]);
+  const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5", "gpt-5.6"]);
   const codexThreadServiceTierModes = new Set(["inherit", "standard", "fast"]);
   const codexServiceTierControlModes = new Set(["inherit", "global-standard", "global-fast", "custom"]);
 
@@ -1541,7 +1539,7 @@
     const normalized = String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
     if (!normalized || normalized.length > 160) return "";
     if (codexServiceTierSupportedFastModels.has(normalized)) return normalized;
-    const explicit = normalized.match(/\bgpt[-_\s]?5[._-]([45])\b/);
+    const explicit = normalized.match(/\bgpt[-_\s]?5[._-]([456])\b/);
     if (explicit) return `gpt-5.${explicit[1]}`;
     if (!/(超高|high|ultra|reasoning|推理|model|模型|gpt)/i.test(normalized)) return "";
     for (const modelName of codexServiceTierSupportedFastModels) {
@@ -1932,7 +1930,7 @@
 
   function codexServiceTierBadgeState() {
     if (codexPlusBackendStatus.status === "checking" && codexServiceTierState.status === "loading") return { tier: "loading", label: "...", disabled: true, title: "服务模式：正在检查后端连接" };
-    if (codexPlusBackendStatus.status && codexPlusBackendStatus.status !== "ok") return { tier: "failed", label: "未连接", disabled: true, title: "服务模式：后端未连接，无法切换" };
+    if (codexServiceTierBackendBlocksLocalOverride()) return { tier: "failed", label: "未连接", disabled: true, title: "服务模式：后端未连接，无法切换" };
     if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: "服务模式：正在读取" };
     if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: "服务模式：读取失败" };
     const fastAvailability = codexServiceTierFastAvailability();
@@ -1968,9 +1966,10 @@
     const featureEnabled = !!codexPlusSettings().serviceTierControls;
     const backendConnected = codexPlusBackendStatus.status === "ok";
     const backendChecking = codexPlusBackendStatus.status === "checking";
+    const backendAllowsLocalOverride = !codexServiceTierBackendBlocksLocalOverride();
     if (featureEnabled && backendConnected) codexServiceTierMaybeLoadModelCatalog();
     const fastAvailability = codexServiceTierFastAvailability();
-    const fastDisabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading" || !fastAvailability.supported;
+    const fastDisabled = !featureEnabled || !backendAllowsLocalOverride || codexServiceTierState.status === "loading" || !fastAvailability.supported;
     const fastTitle = fastAvailability.supported
       ? "Fast：使用 service_tier=\"priority\""
       : codexServiceTierFastUnsupportedMessage(fastAvailability.modelName);
@@ -1985,11 +1984,11 @@
         : "未启用";
     });
     document.querySelectorAll("[data-codex-service-tier-inherit]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
+      button.disabled = !featureEnabled || !backendAllowsLocalOverride || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "inherit");
     });
     document.querySelectorAll("[data-codex-service-tier-standard]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
+      button.disabled = !featureEnabled || !backendAllowsLocalOverride || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "global-standard");
     });
     document.querySelectorAll("[data-codex-service-tier-fast]").forEach((button) => {
@@ -1998,16 +1997,16 @@
       button.title = fastTitle;
     });
     document.querySelectorAll("[data-codex-service-tier-custom]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
+      button.disabled = !featureEnabled || !backendAllowsLocalOverride || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "custom");
     });
     document.querySelectorAll("[data-codex-service-tier-thread-inherit]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
+      button.disabled = !featureEnabled || !backendAllowsLocalOverride || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "inherit");
       button.title = `当前 thread 不单独覆盖，继承自定义默认 ${codexServiceTierState.defaultMode || "inherit"}`;
     });
     document.querySelectorAll("[data-codex-service-tier-thread-standard]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
+      button.disabled = !featureEnabled || !backendAllowsLocalOverride || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "standard");
     });
     document.querySelectorAll("[data-codex-service-tier-thread-fast]").forEach((button) => {
@@ -3754,180 +3753,11 @@
     void patch();
   }
 
-  function reactFiberFrom(element) {
-    const fiberKey = Object.keys(element).find((key) => key.startsWith("__reactFiber"));
-    return fiberKey ? element[fiberKey] : null;
-  }
-
-  function authContextValueFrom(element) {
-    for (let fiber = reactFiberFrom(element); fiber; fiber = fiber.return) {
-      for (const value of [fiber.memoizedProps?.value, fiber.pendingProps?.value]) {
-        if (value && typeof value === "object" && typeof value.setAuthMethod === "function" && "authMethod" in value) {
-          return value;
-        }
-      }
-    }
-    return null;
-  }
-
-  function spoofChatGPTAuthMethod(element) {
-    const auth = authContextValueFrom(element);
-    if (!auth || auth.authMethod === "chatgpt") return false;
-    auth.setAuthMethod("chatgpt");
-    return true;
-  }
-
-  function normalizePluginEntryLabel(text) {
-    return (text || "").replace(/\s+/g, " ").trim();
-  }
-
-  function isPluginEntryLabel(text) {
-    return /^(插件|Plugins)(\s+-\s+.*)?$/i.test(normalizePluginEntryLabel(text));
-  }
-
-  function pluginEntryCandidates() {
-    return Array.from(new Set([
-      ...document.querySelectorAll(selectors.pluginNavButton),
-      ...document.querySelectorAll('nav[role="navigation"] button, nav button'),
-    ]));
-  }
-
-  function pluginEntryButton() {
-    const byIcon = document.querySelector(`${selectors.pluginNavButton} ${selectors.pluginSvgPath}`)?.closest("button");
-    if (byIcon) return byIcon;
-    return pluginEntryCandidates()
-      .find((button) => isPluginEntryLabel(button.textContent || button.innerText)) || null;
-  }
-
-  function clearPluginEntryUnlockLabel(button) {
-    const labelTextNode = Array.from(button.querySelectorAll("span, div")).reverse()
-      .flatMap((node) => Array.from(node.childNodes))
-      .find((node) => node.nodeType === 3 && /^(插件 - 已解锁|Plugins - Unlocked)$/i.test((node.nodeValue || "").trim()));
-    if (!labelTextNode) return;
-    labelTextNode.nodeValue = /^Plugins/i.test((labelTextNode.nodeValue || "").trim()) ? "Plugins" : "插件";
-  }
-
-  function labelUnlockedPluginEntry(button) {
-    clearPluginEntryUnlockLabel(button);
-  }
-
-  function pluginEntryUnlockNodes(button) {
-    const nodes = [button];
-    button.querySelectorAll?.("button, [role='button'], [disabled], [aria-disabled], [data-disabled], .cursor-not-allowed, .pointer-events-none")
-      .forEach((node) => nodes.push(node));
-    let parent = button.parentElement;
-    for (let depth = 0; parent && depth < 3; depth += 1, parent = parent.parentElement) {
-      if (parent.matches?.("[disabled], [aria-disabled], [data-disabled], .cursor-not-allowed, .pointer-events-none")) {
-        nodes.push(parent);
-      }
-    }
-    return Array.from(new Set(nodes));
-  }
-
-  function clearPluginEntryDisabledState(element) {
-    if (!(element instanceof HTMLElement)) return;
-    if ("disabled" in element) element.disabled = false;
-    element.removeAttribute("disabled");
-    element.removeAttribute("aria-disabled");
-    element.removeAttribute("data-disabled");
-    element.removeAttribute("inert");
-    element.classList.remove("disabled", "opacity-50", "cursor-not-allowed", "pointer-events-none");
-    element.style.display = "";
-    element.style.pointerEvents = "auto";
-    element.style.opacity = "";
-    element.style.cursor = "pointer";
-    if (element.tagName === "BUTTON" || element.getAttribute("role") === "button") {
-      element.tabIndex = 0;
-    }
-    patchReactDisabledProps(element);
-  }
-
-  function pluginPageVisible(button) {
-    if (button?.getAttribute("aria-current") === "page") return true;
-    const text = document.body?.innerText || "";
-    return /(^|\n)(搜索插件|Search plugins)(\n|$)/i.test(text) ||
-      /(^|\n)(插件|Plugins)\n(技能|Skills)\n(管理|Manage)/i.test(text);
-  }
-
-  function installPluginEntryGuard(button) {
-    if (button.dataset.codexPluginEnabled === codexPluginEntryUnlockVersion) return;
-    const keepUnlocked = () => {
-      spoofChatGPTAuthMethod(button);
-      pluginEntryUnlockNodes(button).forEach(clearPluginEntryDisabledState);
-    };
-    ["pointerdown", "mousedown", "mouseup", "focus", "keydown"].forEach((eventName) => {
-      button.addEventListener(eventName, keepUnlocked, true);
-    });
-    button.addEventListener("click", () => {
-      keepUnlocked();
-      if (button.dataset.codexPluginSyntheticClick === "true") return;
-      setTimeout(() => {
-        if (!button.isConnected || pluginPageVisible(button)) return;
-        button.dataset.codexPluginSyntheticClick = "true";
-        try {
-          button.click();
-        } finally {
-          setTimeout(() => {
-            delete button.dataset.codexPluginSyntheticClick;
-          }, 0);
-        }
-      }, 250);
-    }, true);
-  }
-
-  function enablePluginEntry() {
-    if (pluginPatchDisabledInRelayMode()) return;
-    if (!codexPlusSettings().pluginMarketplaceUnlock) return;
-    const pluginButton = pluginEntryButton();
-    if (!pluginButton) return;
-    const spoofed = spoofChatGPTAuthMethod(pluginButton);
-    pluginEntryUnlockNodes(pluginButton).forEach(clearPluginEntryDisabledState);
-    labelUnlockedPluginEntry(pluginButton);
-    installPluginEntryGuard(pluginButton);
-    pluginButton.dataset.codexPluginEnabled = codexPluginEntryUnlockVersion;
-    sendCodexPlusDiagnostic("plugin_entry_unlock_applied", { spoofed });
-  }
-
-  function refreshPluginEntryUnlockLoop() {
-    const shouldRun = !pluginPatchDisabledInRelayMode() && codexPlusSettings().pluginMarketplaceUnlock;
-    if (!shouldRun) {
-      clearInterval(window.__codexPluginEntryRefreshTimer);
-      window.__codexPluginEntryRefreshTimer = null;
-      return;
-    }
-    if (window.__codexPluginEntryRefreshTimer) return;
-    window.__codexPluginEntryRefreshTimer = setInterval(() => {
-      if (!codexPlusSettings().pluginMarketplaceUnlock || pluginPatchDisabledInRelayMode()) {
-        clearInterval(window.__codexPluginEntryRefreshTimer);
-        window.__codexPluginEntryRefreshTimer = null;
-        return;
-      }
-      enablePluginEntry();
-    }, codexPluginEntryRefreshIntervalMs);
-  }
   function pluginPatchDisabledInRelayMode() {
-    return codexPlusBackendSettings.launchMode === "relay";
-  }
-
-  function patchReactDisabledProps(element) {
-    Object.keys(element)
-      .filter((key) => key.startsWith("__reactProps"))
-      .forEach((key) => {
-        const props = element[key];
-        if (!props || typeof props !== "object") return;
-        props.disabled = false;
-        props["aria-disabled"] = false;
-      });
+    return !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.launchMode === "relay";
   }
 
   function clearPluginPatchArtifacts() {
-    clearInterval(window.__codexPluginEntryRefreshTimer);
-    window.__codexPluginEntryRefreshTimer = null;
-    const pluginButton = pluginEntryButton();
-    if (pluginButton) {
-      delete pluginButton.dataset.codexPluginEnabled;
-      clearPluginEntryUnlockLabel(pluginButton);
-    }
   }
 
   let cachedSessionRows = [];
@@ -5014,6 +4844,11 @@
       setServiceTierState: (state = {}) => {
         codexServiceTierState = { ...codexServiceTierState, ...state };
       },
+      setBackendStatus: (state = {}) => {
+        codexPlusBackendStatus = { ...codexPlusBackendStatus, ...state };
+      },
+      backendBlocksLocalOverride: () => codexServiceTierBackendBlocksLocalOverride(),
+      badgeState: () => codexServiceTierBadgeState(),
       setThreadState: (state = {}) => {
         localStorage.setItem(codexThreadServiceTierKey, JSON.stringify({
           version: codexThreadServiceTierVersion,
@@ -5043,8 +4878,29 @@
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
     if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
     codexModelCatalogPromise = postJson("/codex-model-catalog", {})
-      .then((result) => {
+      .then(async (result) => {
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
+        if ((!codexModelCatalog.models || codexModelCatalog.models.length === 0) && codexModelCatalog.status === "not_configured") {
+          try {
+            const settingsPromise = postJson("/settings/get", {});
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("fallback timeout")), 3000));
+            const settingsResp = await Promise.race([settingsPromise, timeoutPromise]);
+            if (settingsResp && settingsResp.relayProfiles && Array.isArray(settingsResp.relayProfiles)) {
+              const activeId = settingsResp.activeRelayId || "";
+              const profile = settingsResp.relayProfiles.find(p => p.id === activeId) || settingsResp.relayProfiles[0];
+              if (profile && profile.modelList) {
+                const extraModels = profile.modelList.split(/[\r\n,]+/).map(s => s.trim()).filter(Boolean);
+                if (extraModels.length > 0) {
+                  codexModelCatalog.models = extraModels;
+                  codexModelCatalog.default_model = codexModelCatalog.default_model || extraModels[0];
+                  sendCodexPlusDiagnostic("model_catalog_fallback_applied", { count: extraModels.length });
+                }
+              }
+            }
+          } catch (fallbackError) {
+            sendCodexPlusDiagnostic("model_catalog_fallback_error", { error: String(fallbackError?.message || fallbackError) });
+          }
+        }
         codexModelCatalogLoadedAt = Date.now();
         renderCodexPlusMenu();
         scheduleCodexModelWhitelistRefresh();
@@ -5506,8 +5362,36 @@
     return true;
   }
 
+  const appServerModelRequestPatchMaxMisses = 8;
+  let appServerModelRequestPatchMissCount = 0;
+  let appServerModelRequestPatchDisabled = false;
+
+  function noteAppServerModelRequestPatchMiss(event, detail) {
+    appServerModelRequestPatchMissCount += 1;
+    // installAppServerModelRequestPatch() runs on every model-whitelist
+    // refresh tick (~120ms). On Codex builds where the app-server module was
+    // renamed/removed (e.g. 26.623+, issue #1324) this layer never succeeds
+    // and would otherwise emit the same diagnostic on every tick forever.
+    // Report the first miss so telemetry still captures the cause, then stay
+    // quiet, and finally disable this layer once it is clearly unavailable.
+    // This is a graceful fallback: the remaining whitelist layers (Statsig
+    // config / React state / response JSON patch) keep injecting the custom
+    // models on their own.
+    if (appServerModelRequestPatchMissCount === 1) {
+      sendCodexPlusDiagnostic(event, detail);
+    }
+    if (appServerModelRequestPatchMissCount >= appServerModelRequestPatchMaxMisses && !appServerModelRequestPatchDisabled) {
+      appServerModelRequestPatchDisabled = true;
+      sendCodexPlusDiagnostic("model_app_server_request_patch_skipped", {
+        misses: appServerModelRequestPatchMissCount,
+        lastEvent: event,
+      });
+    }
+  }
+
   function installAppServerModelRequestPatch() {
     if (window.__codexPlusAppServerModelRequestPatchInstalled === codexAppServerModelRequestPatchVersion) return;
+    if (appServerModelRequestPatchDisabled) return;
     const patch = async () => {
       try {
         const module = await loadCodexAppModule("app-server-manager-signals-");
@@ -5523,19 +5407,20 @@
           }
         }
         if (patchedCount > 0) {
+          appServerModelRequestPatchMissCount = 0;
           window.__codexPlusAppServerModelRequestPatchInstalled = codexAppServerModelRequestPatchVersion;
           sendCodexPlusDiagnostic("model_app_server_request_patch_installed", {
             candidateCount: candidates.length,
             patchedCount,
           });
         } else {
-          sendCodexPlusDiagnostic("model_app_server_request_patch_not_found", {
+          noteAppServerModelRequestPatchMiss("model_app_server_request_patch_not_found", {
             exportCount: Object.keys(module || {}).length,
             candidateCount: candidates.length,
           });
         }
       } catch (error) {
-        sendCodexPlusDiagnostic("model_app_server_request_patch_failed", {
+        noteAppServerModelRequestPatchMiss("model_app_server_request_patch_failed", {
           errorName: error?.name || "",
           errorMessage: error?.message || String(error),
         });
@@ -9240,15 +9125,10 @@
   function scanDeferred() {
     if (pluginPatchDisabledInRelayMode()) {
       clearPluginPatchArtifacts();
-      refreshPluginEntryUnlockLoop();
     } else {
       const pluginUnlockStrategy = codexPluginUnlockStrategy();
       const settings = codexPlusSettings();
       logCodexPluginUnlockStrategy(pluginUnlockStrategy);
-      if ((pluginUnlockStrategy === "legacy" || pluginUnlockStrategy === "unknown") && settings.pluginMarketplaceUnlock) {
-        enablePluginEntry();
-      }
-      refreshPluginEntryUnlockLoop();
       if ((pluginUnlockStrategy === "modern" || pluginUnlockStrategy === "unknown") && settings.pluginMarketplaceUnlock) {
         const marketplaceRequestPatchStrategy = codexPluginMarketplaceRequestPatchStrategy();
         installPluginBuildFlavorFilterPatch();

@@ -1,4 +1,6 @@
-use codex_plus_core::codex_sqlite::sanitize_historical_model_suffixes;
+use codex_plus_core::codex_sqlite::{
+    codex_session_db_paths_from_home, sanitize_historical_model_suffixes,
+};
 use rusqlite::Connection;
 
 fn create_threads_table(conn: &Connection) {
@@ -160,4 +162,28 @@ fn sanitize_cleans_suffix_from_logs() {
         "expected suffix to be stripped from logs, got: {body}"
     );
     assert!(body.contains("deepseek-v4-flash"));
+}
+
+#[test]
+fn session_db_discovery_includes_local_catalog_only_database() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    std::fs::create_dir_all(&sqlite_dir).unwrap();
+    let catalog_path = sqlite_dir.join("codex-dev.db");
+    let db = Connection::open(&catalog_path).unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog (
+            host_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            PRIMARY KEY (host_id, thread_id)
+        )",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let paths = codex_session_db_paths_from_home(&home);
+
+    assert!(paths.contains(&catalog_path));
 }

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This repository adapts the official macOS Codex Desktop DMG into a runnable
+This repository adapts the official macOS ChatGPT Desktop DMG into a runnable
 Linux app, packages it as `.deb`, `.rpm`, pacman, and AppImage artifacts, and
 ships a local Rust update manager that can rebuild future Linux packages from
 newer upstream DMGs.

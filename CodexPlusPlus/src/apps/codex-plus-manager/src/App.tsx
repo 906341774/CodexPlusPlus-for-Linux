@@ -2307,12 +2307,13 @@ function OverviewScreen({
                 <span className="eyebrow">{t("官方中转站")}</span>
                 <h2>JOJO Code</h2>
                 <p>
-                  {t("Codex++ 官方中转站，主打稳定接入和划算价格，支持 GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。")}
+                  {t("Codex++ 官方中转站，主打稳定接入和划算价格，支持 GPT-5.6 全系列、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。")}
                 </p>
               </div>
             </div>
             <div className="jojocode-overview-side">
               <div className="jojocode-model-tags">
+                <span>GPT-5.6 全系列</span>
                 <span>GPT-5.5</span>
                 <span>GPT-5.4</span>
                 <span>Opus 4.8</span>
@@ -2666,7 +2667,7 @@ function EnhanceScreen({
               <FeatureToggle title={t("插件市场解锁")} detail={t("API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。")} checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
               <FeatureToggle title={t("插件列表全量展示")} detail={t("进入插件页后自动连续展开“更多”，尽量一次显示完整插件列表。")} checked={form.codexAppPluginAutoExpand} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginAutoExpand", value)} />
               <FeatureToggle title={t("模型白名单解锁")} detail={t("从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。")} checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
-              <FeatureToggle title={t("Fast 按钮")} detail={t("显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。")} checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
+              <FeatureToggle title={t("Fast 按钮")} detail={t("显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5 / gpt-5.6，其他模型按 Standard 发送。")} checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
               <div className="feature-action-row">
                 <div>
                   <strong>{t("官方远端插件缓存")}</strong>
@@ -6366,7 +6367,7 @@ function applyRelayProfilePatchToFiles(
   }
   if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch) {
     const baseUrlForConfig = next.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : effectiveCodexBaseUrl(next.upstreamBaseUrl || next.baseUrl);
-    next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig);
+    next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, next.relayMode !== "pureApi");
     next.configContents = removeRootTomlKey(next.configContents, CHAT_UPSTREAM_BASE_URL_KEY);
   }
   if ("contextWindow" in patch) {
@@ -6526,13 +6527,13 @@ function setRootTomlLine(contents: string, key: string, lineText: string): strin
   return ensureTrailingNewline(lines.join("\n").trimEnd());
 }
 
-function setCodexProviderStringKey(contents: string, key: string, value: string): string {
+function setCodexProviderStringKey(contents: string, key: string, value: string, requiresOpenAiAuth = true): string {
   const provider = rootTomlStringValue(contents, "model_provider") || "custom";
   let next = contents;
   if (!rootTomlStringValue(next, "model_provider")) {
     next = setRootTomlStringKey(next, "model_provider", provider);
   }
-  next = ensureCodexProviderDefaults(next, provider);
+  next = ensureCodexProviderDefaults(next, provider, requiresOpenAiAuth);
   return setTomlSectionStringKey(next, `model_providers.${provider}`, key, value);
 }
 
@@ -6548,12 +6549,12 @@ function removeCodexExperimentalBearerToken(contents: string): string {
   return removeTomlSectionKey(contents, `model_providers.${provider}`, "experimental_bearer_token");
 }
 
-function ensureCodexProviderDefaults(contents: string, provider: string): string {
+function ensureCodexProviderDefaults(contents: string, provider: string, requiresOpenAiAuth = true): string {
   let next = contents;
   const section = `model_providers.${provider}`;
   next = setTomlSectionStringKey(next, section, "name", provider);
   next = setTomlSectionStringKey(next, section, "wire_api", "responses");
-  return setTomlSectionBoolKey(next, section, "requires_openai_auth", true);
+  return setTomlSectionBoolKey(next, section, "requires_openai_auth", requiresOpenAiAuth);
 }
 
 function setTomlSectionBoolKey(contents: string, sectionName: string, key: string, value: boolean): string {

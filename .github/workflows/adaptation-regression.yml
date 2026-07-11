@@ -22,30 +22,31 @@ permissions:
   contents: read
 
 jobs:
-  contract-and-selftest:
-    name: Workflow contract and installer selftest
+  regression:
+    name: Adapter and source regression
     runs-on: ubuntu-latest
     steps:
       - name: Checkout adapter repository
         uses: actions/checkout@v4
 
-      - name: Check adaptation workflow contract
-        shell: bash
-        run: |
-          HOME="$RUNNER_TEMP/codexpp-workflow-home" \
-          XDG_DATA_HOME="$RUNNER_TEMP/codexpp-workflow-data" \
-          XDG_CONFIG_HOME="$RUNNER_TEMP/codexpp-workflow-config" \
-          XDG_CACHE_HOME="$RUNNER_TEMP/codexpp-workflow-cache" \
-          pwsh -NoLogo -NoProfile -File scripts/Test-AdapterWorkflow.ps1
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
-      - name: Run installer manifest selftest
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install regression dependencies
         shell: bash
         run: |
-          HOME="$RUNNER_TEMP/codexpp-installer-home" \
-          XDG_DATA_HOME="$RUNNER_TEMP/codexpp-installer-data" \
-          XDG_CONFIG_HOME="$RUNNER_TEMP/codexpp-installer-config" \
-          XDG_CACHE_HOME="$RUNNER_TEMP/codexpp-installer-cache" \
-          pwsh -NoLogo -NoProfile -File scripts/Installer-and-Manager.ps1 selftest -NonInteractive -NoTui
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+
+      - name: Run adapter regression stage
+        shell: bash
+        run: |
+          ./scripts/developer/run-adapter-regression.sh
 
       - name: Report manual validation requirements
         shell: bash
@@ -56,7 +57,7 @@ jobs:
   release-to-fork:
     name: Push validated adapter branch to fork
     runs-on: ubuntu-latest
-    needs: contract-and-selftest
+    needs: regression
     if: github.event_name == 'workflow_dispatch' && inputs.release_to_fork == 'true'
     permissions:
       contents: write
