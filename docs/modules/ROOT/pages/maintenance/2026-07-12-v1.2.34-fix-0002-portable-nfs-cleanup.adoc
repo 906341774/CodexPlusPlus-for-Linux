@@ -1,0 +1,111 @@
+= Codex++ v1.2.34-fix-0002 Portable NFS cleanup validation
+:toc:
+:toclevels: 2
+
+Date: 2026-07-12
+
+== Scope
+
+This hotfix follows `v1.2.34-fix-0001` without moving or replacing that tag.
+The Codex Desktop, Codex++, DEB, RPM, and Portable 7z payloads remain
+byte-identical. Only the end-user Portable lifecycle Manager and its workflow
+contract change.
+
+== Host-only failure
+
+The clean AlmaLinux 9 Portable lifecycle passed on a local container
+filesystem. The final host replacement used `/home/deck/opt/CodexDesktop` on
+an NFS-backed home filesystem and exposed a different deletion rule.
+
+The Manager completed these steps successfully:
+
+* extracted and validated the new payload;
+* renamed the old installation to a hidden backup;
+* atomically renamed the validated incoming tree into the destination;
+* restored executable permissions and user integration.
+
+It then tried to delete the old backup. A Node runtime from the previous
+installation was still open. NFS renamed that unlinked executable to a hidden
+`.nfs*` file and refused to remove its parent directory with `Directory not
+empty`. The Manager propagated that cleanup exception and returned exit code 1
+even though the new application had already been committed successfully.
+
+This was a lifecycle-reporting bug, not a payload rollback or integrity
+failure. The installed tree already reported ChatGPT Desktop `26.707.31428`,
+23 Linux features, 144 patch records, and zero integrity findings, and its
+critical hashes matched the release manifest.
+
+== Corrected cleanup semantics
+
+The Portable Manager now separates transaction-critical cleanup from
+post-commit backup cleanup:
+
+* extraction, validation, incoming-tree cleanup, destination commit, and
+  rollback paths remain strict;
+* old-backup cleanup retries four times with bounded delays;
+* if an NFS open handle still prevents deletion after the new tree is
+  committed, the Manager emits an explicit warning and returns success;
+* every subsequent install or update scans only sibling paths named
+  `.codexdesktop-portable-backup-*` and retries their cleanup;
+* no external Codex or Codex++ user-data path is included in this cleanup.
+
+The warning names the retained backup and tells the user to close processes
+from the previous installation. This preserves both truthful exit status and
+a visible recovery action.
+
+== Test-first evidence
+
+The distribution workflow contract was changed before the implementation. Its
+red run failed with:
+
+[source,text]
+----
+Portable manager does not retry cleanup of a backup deferred by an earlier NFS update.
+----
+
+The green run then passed the complete distribution workflow. It creates a
+stale sibling backup, performs a real Portable update, and verifies that the
+next lifecycle operation removes that backup. Static contract assertions also
+require the post-commit deferred-cleanup warning so a future refactor cannot
+silently restore the misleading nonzero exit behavior.
+
+== Real NFS acceptance
+
+The corrected Manager was exercised against the same host and the same live
+NFS condition while old runtime handles were deliberately left open.
+
+Observed behavior:
+
+* the Manager identified the exact `.nfs*` path and warned that cleanup was
+  deferred;
+* extraction, payload validation, and atomic replacement continued;
+* the command ended with `[OK] Installed at /home/deck/opt/CodexDesktop` and
+  exit code 0;
+* `fuser` identified one old Node PID and four old `node_repl` PIDs as the only
+  holders;
+* after those old helpers were terminated, NFS released the hidden files and
+  the separately archived backup was removed;
+* no `.codexdesktop-portable-*` work, incoming, or backup directory remained;
+* the seven tracked external user-data paths had identical existence state,
+  device number, inode, and type before and after all updates.
+
+== Final regression gates
+
+The final worktree passed the adapter and distribution workflow contracts, the
+installer selftest, 290 Codex++ core tests, 19 provider-sync tests, one Pure API
+contract, and 879 Codex Desktop Node tests.
+
+The first shell smoke run reached the late launcher checks but measured an
+existing assistive-technology watchdog scenario at 3,248 ms against its 3,000
+ms timing ceiling. This occurred immediately after sustained NFS archive,
+extraction, and deletion I/O. Per the bounded retry rule, only the failed shell
+smoke stage was rerun once. The rerun passed the complete suite, including all
+21 probe-equivalence scenarios and the minimal-system prelaunch hook checks.
+
+== Release relation
+
+`v1.2.34-fix-0002` supersedes only the Portable Manager asset from
+`v1.2.34-fix-0001`. Users installing the DEB or RPM need no replacement.
+Portable users should use the unchanged `v1.2.34-fix-0001` 7z payload with the
+`v1.2.34-fix-0002` Manager and verify the Manager against the fix-0002 checksum
+manifest.

@@ -112,6 +112,43 @@ function Resolve-SevenZip {
     throw '7zz is required to install or update the portable release.'
 }
 
+function Remove-PortableBackupBestEffort {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) { return $true }
+    $lastError = $null
+    foreach ($attempt in 1..4) {
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            return $true
+        } catch {
+            $lastError = $_
+            if ($attempt -lt 4) { Start-Sleep -Milliseconds (250 * $attempt) }
+        }
+    }
+
+    $message = if ($script:UseChinese) {
+        "便携版更新已成功，但旧备份暂时无法清理：$Path。请关闭旧安装仍在运行的进程；下次安装或更新会重试。$($lastError.Exception.Message)"
+    } else {
+        "Portable update succeeded, but old backup cleanup was deferred: $Path. Close processes from the previous installation; the next install or update will retry cleanup. $($lastError.Exception.Message)"
+    }
+    Write-ManagerStatus $message warn
+    return $false
+}
+
+function Remove-StalePortableBackups {
+    param([Parameter(Mandatory = $true)][string]$Parent)
+
+    if (-not (Test-Path -LiteralPath $Parent -PathType Container)) { return }
+    $backups = @(
+        Get-ChildItem -LiteralPath $Parent -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like '.codexdesktop-portable-backup-*' }
+    )
+    foreach ($backup in $backups) {
+        [void](Remove-PortableBackupBestEffort -Path $backup.FullName)
+    }
+}
+
 function Assert-Payload {
     param([Parameter(Mandatory = $true)][string]$Root)
     foreach ($relative in @(
@@ -220,6 +257,7 @@ function Install-PortablePayload {
 
     $parent = Split-Path -Parent $Destination
     New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    Remove-StalePortableBackups -Parent $parent
     $workRoot = Join-Path $parent ".codexdesktop-portable-work-$PID-$([Guid]::NewGuid().ToString('N'))"
     $incoming = Join-Path $parent ".codexdesktop-portable-incoming-$PID-$([Guid]::NewGuid().ToString('N'))"
     $backup = Join-Path $parent ".codexdesktop-portable-backup-$PID-$([Guid]::NewGuid().ToString('N'))"
@@ -246,7 +284,7 @@ function Install-PortablePayload {
             if (Test-Path -LiteralPath $backup) { Move-Item -LiteralPath $backup -Destination $Destination }
             throw
         }
-        if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
+        if (Test-Path -LiteralPath $backup) { [void](Remove-PortableBackupBestEffort -Path $backup) }
         Write-ManagerStatus "Installed at $Destination" ok
     } finally {
         foreach ($path in @($incoming, $workRoot)) {

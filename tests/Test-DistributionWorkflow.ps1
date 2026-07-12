@@ -352,6 +352,13 @@ cp codex-app/.codex-linux/build-info.json codex-app/resources/codex-linux-build-
     Assert-True (($archiveListing -join "`n").Contains('CodexDesktop/.codex-plusplus/install/codex-plus-plus')) 'Portable archive does not contain Codex++.'
 
     Write-Host '== Portable manager lifecycle contract =='
+    $portableManagerText = [System.IO.File]::ReadAllText($PortableManager)
+    Assert-True (
+        $portableManagerText.Contains('Remove-StalePortableBackups')
+    ) 'Portable manager does not retry cleanup of a backup deferred by an earlier NFS update.'
+    Assert-True (
+        $portableManagerText.Contains('Portable update succeeded, but old backup cleanup was deferred')
+    ) 'Portable manager does not distinguish a committed update from deferred NFS backup cleanup.'
     $isolatedHome = Join-Path $testRoot 'home'
     $xdgConfig = Join-Path $isolatedHome '.config'
     $xdgData = Join-Path $isolatedHome '.local/share'
@@ -399,10 +406,14 @@ cp codex-app/.codex-linux/build-info.json codex-app/resources/codex-linux-build-
             '-CodexDesktopCommit', 'test-commit-two',
             '-NonInteractive'
         ))
+        $staleBackup = Join-Path (Split-Path -Parent $installRoot) '.codexdesktop-portable-backup-stale-test'
+        New-Item -ItemType Directory -Force -Path $staleBackup | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $staleBackup 'old-payload'), "stale`n")
         [void](Invoke-CheckedPowerShell $PortableManager @(
             '-Action', 'update', '-ArchivePath', $archiveTwo, '-InstallPath', $installRoot,
             '-NonInteractive', '-NoTui'
         ))
+        Assert-True (-not (Test-Path -LiteralPath $staleBackup)) 'Portable update did not clean a deferred stale backup.'
         Assert-True ((Get-Content -LiteralPath (Join-Path $installRoot 'version') -Raw).Trim() -eq '9.9.2') 'Portable update did not replace the installed payload.'
         foreach ($path in $userDataFiles) { Assert-PathIsFile $path }
 
