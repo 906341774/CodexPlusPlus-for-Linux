@@ -1,4 +1,4 @@
-= Codex++ v1.2.34-fix-0002 Portable NFS cleanup validation
+= Codex++ v1.2.34-fix-0002 Portable host integration validation
 :toc:
 :toclevels: 2
 
@@ -53,6 +53,30 @@ The warning names the retained backup and tells the user to close processes
 from the previous installation. This preserves both truthful exit status and
 a visible recovery action.
 
+== Duplicate iconless menu entry
+
+The host update also revealed an integration collision that was not visible in
+the clean Portable container. The host already had the standard
+`codex-plus-plus.desktop` and `codex-plus-plus-manager.desktop` entries. The
+old Portable Manager added a third `codex-desktop-portable.desktop` entry with
+`Name=CodexDesktop` and no `Icon` key. KDE therefore showed a duplicate
+CodexDesktop launcher with a generic blank icon.
+
+This entry did not come from the OpenAI Codex/ChatGPT product merge or from a
+new Codex++ upstream behavior. It was created solely by the Linux Portable
+Manager.
+
+The corrected Manager now:
+
+* requires `.codex-linux/codex-desktop.png` in the validated Portable payload;
+* creates the same `Codex++` and `Codex++ Manager` desktop filenames used by
+  the developer installer;
+* points both entries at relocatable user-level symlinks and the release icon;
+* marks both entries with `X-CodexDesktop-Portable-Managed=true` so uninstall
+  removes only entries owned by the Portable Manager;
+* removes the obsolete generic entry when it carries the same ownership
+  marker.
+
 == Test-first evidence
 
 The distribution workflow contract was changed before the implementation. Its
@@ -68,6 +92,11 @@ stale sibling backup, performs a real Portable update, and verifies that the
 next lifecycle operation removes that backup. Static contract assertions also
 require the post-commit deferred-cleanup warning so a future refactor cannot
 silently restore the misleading nonzero exit behavior.
+
+A second red/green contract captured the menu regression. Before the fix it
+failed because `codex-plus-plus.desktop` was absent. The green run verifies
+both standard entries, their release icon, their ownership marker, removal of
+the obsolete generic entry, and ownership-aware uninstall cleanup.
 
 == Real NFS acceptance
 
@@ -91,9 +120,9 @@ Observed behavior:
 
 == Final regression gates
 
-The final worktree passed the adapter and distribution workflow contracts, the
-installer selftest, 290 Codex++ core tests, 19 provider-sync tests, one Pure API
-contract, and 879 Codex Desktop Node tests.
+The NFS-only worktree passed the adapter and distribution workflow contracts,
+the installer selftest, 290 Codex++ core tests, 19 provider-sync tests, one Pure
+API contract, and 879 Codex Desktop Node tests.
 
 The first shell smoke run reached the late launcher checks but measured an
 existing assistive-technology watchdog scenario at 3,248 ms against its 3,000
@@ -101,6 +130,12 @@ ms timing ceiling. This occurred immediately after sustained NFS archive,
 extraction, and deletion I/O. Per the bounded retry rule, only the failed shell
 smoke stage was rerun once. The rerun passed the complete suite, including all
 21 probe-equivalence scenarios and the minimal-system prelaunch hook checks.
+
+After adding the desktop-menu regression contract and its implementation, the
+complete `Run-AdapterRegression.ps1` gate was run again. That final run passed
+in one attempt, including the Portable lifecycle contract, all test counts
+listed above, the complete shell smoke suite, all 21 probe-equivalence
+scenarios, and the assistive-technology watchdog check.
 
 == Release relation
 

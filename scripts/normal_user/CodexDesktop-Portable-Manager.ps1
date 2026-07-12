@@ -154,6 +154,7 @@ function Assert-Payload {
     foreach ($relative in @(
         'start.sh',
         '.codex-linux/build-info.json',
+        '.codex-linux/codex-desktop.png',
         'resources/codex-linux-build-info.json',
         '.codex-plusplus/install/codex-plus-plus',
         '.codex-plusplus/install/codex-plus-plus-manager',
@@ -181,6 +182,38 @@ function Write-AtomicTextFile {
     Move-Item -LiteralPath $temporary -Destination $Path -Force
 }
 
+function Remove-PortableManagedDesktopEntry {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+    $text = Get-Content -LiteralPath $Path -Raw
+    if ($text.Contains('X-CodexDesktop-Portable-Managed=true')) {
+        Remove-Item -LiteralPath $Path -Force
+    }
+}
+
+function New-PortableDesktopEntryText {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Comment,
+        [Parameter(Mandatory = $true)][string]$Executable,
+        [Parameter(Mandatory = $true)][string]$Icon
+    )
+
+    $quotedExecutable = '"' + $Executable.Replace('\', '\\').Replace('"', '\"') + '"'
+    return @"
+[Desktop Entry]
+Type=Application
+Name=$Name
+Comment=$Comment
+Exec=$quotedExecutable
+Icon=$Icon
+Terminal=false
+Categories=Development;
+X-CodexDesktop-Portable-Managed=true
+"@
+}
+
 function Set-PortableIntegration {
     param([Parameter(Mandatory = $true)][string]$Destination)
     $dataHome = Get-XdgPath 'XDG_DATA_HOME' '.local/share'
@@ -199,18 +232,26 @@ function Set-PortableIntegration {
         New-Item -ItemType SymbolicLink -Path $link -Target $links[$name] | Out-Null
     }
 
-    $desktopEntry = @"
-[Desktop Entry]
-Type=Application
-Name=CodexDesktop
-Comment=CodexDesktop with Codex++
-Exec=$($links['codex-plus-plus'])
-TryExec=$($links['codex-plus-plus'])
-Terminal=false
-Categories=Development;
-X-CodexDesktop-Portable-Managed=true
-"@
-    Write-AtomicTextFile -Path (Join-Path $applicationsRoot 'codex-desktop-portable.desktop') -Content $desktopEntry
+    Remove-PortableManagedDesktopEntry -Path (Join-Path $applicationsRoot 'codex-desktop-portable.desktop')
+    $icon = Join-Path $Destination '.codex-linux/codex-desktop.png'
+    $desktopEntries = @(
+        [ordered]@{
+            File = 'codex-plus-plus.desktop'
+            Name = 'Codex++'
+            Comment = 'Launch Codex Desktop with Codex++ injection'
+            Executable = Join-Path $binRoot 'codex-plus-plus'
+        },
+        [ordered]@{
+            File = 'codex-plus-plus-manager.desktop'
+            Name = 'Codex++ Manager'
+            Comment = 'Manage Codex++ settings and diagnostics'
+            Executable = Join-Path $binRoot 'codex-plus-plus-manager'
+        }
+    )
+    foreach ($entry in $desktopEntries) {
+        $text = New-PortableDesktopEntryText -Name $entry.Name -Comment $entry.Comment -Executable $entry.Executable -Icon $icon
+        Write-AtomicTextFile -Path (Join-Path $applicationsRoot $entry.File) -Content $text
+    }
 
     $stateRoot = Get-XdgPath 'XDG_STATE_HOME' '.local/state'
     $statePath = Join-Path $stateRoot 'codexdesktop-portable-manager/state.json'
@@ -232,10 +273,8 @@ function Remove-PortableIntegration {
             Remove-Item -LiteralPath $path -Force
         }
     }
-    $desktopPath = Join-Path $dataHome 'applications/codex-desktop-portable.desktop'
-    if (Test-Path -LiteralPath $desktopPath) {
-        $text = Get-Content -LiteralPath $desktopPath -Raw
-        if ($text.Contains('X-CodexDesktop-Portable-Managed=true')) { Remove-Item -LiteralPath $desktopPath -Force }
+    foreach ($name in @('codex-desktop-portable.desktop', 'codex-plus-plus.desktop', 'codex-plus-plus-manager.desktop')) {
+        Remove-PortableManagedDesktopEntry -Path (Join-Path $dataHome "applications/$name")
     }
     $statePath = Join-Path (Get-XdgPath 'XDG_STATE_HOME' '.local/state') 'codexdesktop-portable-manager/state.json'
     if (Test-Path -LiteralPath $statePath) { Remove-Item -LiteralPath $statePath -Force }

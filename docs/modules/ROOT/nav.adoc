@@ -3,7 +3,7 @@
 ** xref:snippets.adoc[Linux adaptation snippets]
 ** xref:maintenance-workflow.adoc[Maintenance workflow]
 ** xref:adapter-workflow.adoc[Recurring adaptation workflow]
-** xref:maintenance/2026-07-12-v1.2.34-fix-0002-portable-nfs-cleanup.adoc[v1.2.34-fix-0002 Portable NFS cleanup]
+** xref:maintenance/2026-07-12-v1.2.34-fix-0002-portable-nfs-cleanup.adoc[v1.2.34-fix-0002 Portable host integration]
 ** xref:maintenance/2026-07-12-v1.2.34-fix-0001-validation.adoc[v1.2.34-fix-0001 package validation]
 ** xref:maintenance/2026-07-11-v1.2.34-baseline-validation.adoc[v1.2.34 baseline validation]
 ** xref:maintenance/2026-07-08-v1.2.32-baseline-packaging.adoc[v1.2.32 baseline and packages]

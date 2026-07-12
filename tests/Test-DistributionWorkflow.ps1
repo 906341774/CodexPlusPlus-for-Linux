@@ -64,6 +64,7 @@ function New-FakeCodexDesktopPayload {
 
     [System.IO.File]::WriteAllText((Join-Path $appRoot 'start.sh'), "#!/usr/bin/env bash`necho CodexDesktop $Version`n")
     [System.IO.File]::WriteAllText((Join-Path $appRoot 'version'), "$Version`n")
+    [System.IO.File]::WriteAllBytes((Join-Path $buildInfoRoot 'codex-desktop.png'), [byte[]](137, 80, 78, 71))
     foreach ($name in @('codex-plus-plus', 'codex-plus-plus-manager', 'launch-codex-plus-plus')) {
         [System.IO.File]::WriteAllText((Join-Path $codexPlusInstall $name), "#!/usr/bin/env bash`necho $name $Version`n")
     }
@@ -385,6 +386,18 @@ cp codex-app/.codex-linux/build-info.json codex-app/resources/codex-linux-build-
         Assert-PathIsFile (Join-Path $installRoot 'start.sh')
         Assert-PathIsFile (Join-Path $installRoot '.codex-plusplus/install/codex-plus-plus')
         Assert-True ((Get-Content -LiteralPath (Join-Path $installRoot 'version') -Raw).Trim() -eq '9.9.1') 'Portable install selected the wrong payload version.'
+        $portableApplications = Join-Path $xdgData 'applications'
+        $portableLauncherEntry = Join-Path $portableApplications 'codex-plus-plus.desktop'
+        $portableManagerEntry = Join-Path $portableApplications 'codex-plus-plus-manager.desktop'
+        $legacyPortableEntry = Join-Path $portableApplications 'codex-desktop-portable.desktop'
+        Assert-PathIsFile $portableLauncherEntry
+        Assert-PathIsFile $portableManagerEntry
+        Assert-True (-not (Test-Path -LiteralPath $legacyPortableEntry)) 'Portable install created the obsolete duplicate CodexDesktop menu entry.'
+        foreach ($desktopEntry in @($portableLauncherEntry, $portableManagerEntry)) {
+            $desktopText = [System.IO.File]::ReadAllText($desktopEntry)
+            Assert-True ($desktopText.Contains("Icon=$installRoot/.codex-linux/codex-desktop.png")) "Portable menu entry has no release icon: $desktopEntry"
+            Assert-True ($desktopText.Contains('X-CodexDesktop-Portable-Managed=true')) "Portable menu entry lacks its ownership marker: $desktopEntry"
+        }
 
         $userDataFiles = @(
             (Join-Path $isolatedHome '.codex/session.json'),
@@ -421,6 +434,8 @@ cp codex-app/.codex-linux/build-info.json codex-app/resources/codex-linux-build-
             '-Action', 'uninstall', '-InstallPath', $installRoot, '-NonInteractive', '-NoTui'
         ))
         Assert-True (-not (Test-Path -LiteralPath $installRoot)) 'Portable uninstall left the installation directory behind.'
+        Assert-True (-not (Test-Path -LiteralPath $portableLauncherEntry)) 'Portable uninstall left its Codex++ menu entry behind.'
+        Assert-True (-not (Test-Path -LiteralPath $portableManagerEntry)) 'Portable uninstall left its Manager menu entry behind.'
         foreach ($path in $userDataFiles) { Assert-PathIsFile $path }
 
         [void](Invoke-CheckedPowerShell $PortableManager @(
