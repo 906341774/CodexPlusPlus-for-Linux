@@ -912,6 +912,7 @@ test("default core patch descriptors are grouped and unique", () => {
     "composer-persistent-rate-limit-footer",
     "keybinds-settings",
     "package-desktop-name",
+    "generated-webview-asset-cache-keys",
   ];
 
   assert.equal(new Set(ids).size, ids.length);
@@ -919,6 +920,10 @@ test("default core patch descriptors are grouped and unique", () => {
   assert.ok(descriptors.every((descriptor) => descriptor.sourcePath.includes(`${path.sep}core${path.sep}`)));
   assert.equal(
     descriptors.find((descriptor) => descriptor.id === "package-desktop-name")?.phase,
+    "extracted-app:post-webview",
+  );
+  assert.equal(
+    descriptors.find((descriptor) => descriptor.id === "generated-webview-asset-cache-keys")?.phase,
     "extracted-app:post-webview",
   );
   assert.equal(
@@ -983,6 +988,10 @@ test("default core patch descriptors are grouped and unique", () => {
   );
 
   const descriptorOrder = new Map(descriptors.map((descriptor) => [descriptor.id, descriptor.order]));
+  assert.ok(
+    descriptorOrder.get("generated-webview-asset-cache-keys") > descriptorOrder.get("package-desktop-name"),
+    "generated webview asset cache keys must be finalized after other post-webview core patches",
+  );
   assert.ok(
     descriptorOrder.get("linux-native-titlebar") > descriptorOrder.get("linux-opaque-background"),
     "linux-native-titlebar must run after linux-opaque-background so it can reuse the inserted Linux background branch aliases",

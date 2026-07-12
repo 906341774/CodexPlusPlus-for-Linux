@@ -1,0 +1,239 @@
+= Codex++ v1.2.34-fix-0003 generated Webview cache validation
+:toc:
+:toclevels: 2
+
+Date: 2026-07-12
+
+== Scope and tag policy
+
+This report records the generated Webview asset cache fix and package rebuild
+for `v1.2.34-fix-0003`. The published `v1.2.34-fix-0001` and
+`v1.2.34-fix-0002` tags remain immutable.
+
+Pinned upstream inputs are unchanged:
+
+* Codex++ upstream tag `v1.2.34`, commit
+  `c1360294d43fce06116428555cbcf812902aced5`.
+* `codex-desktop-linux` upstream commit
+  `60fbcf0e9288c570ecb4742b557c04f4e3c8bab3`.
+* ChatGPT Desktop `26.707.31428` and Electron `42.1.0`.
+* Upstream DMG SHA256
+  `6f67af7e2f934093ab8afebcec11374d40c8db8f9100fb6620f24155401d8319`.
+
+The Codex++ binaries are byte-identical to the previously accepted Debian 10
+build. This hotfix changes the Codex Desktop ASAR and therefore rebuilds all
+three distribution formats.
+
+== Host failure
+
+The final `fix-0002` host acceptance opened `Settings -> Linux desktop` and
+reliably reached the React error boundary:
+
+[source,text]
+----
+TypeError: Cannot read properties of null (reading 'useState')
+----
+
+CDP and the on-disk payload showed that the browser was executing two
+different generations of the same fixed-name asset:
+
+* the cached response was 12,560 bytes and contained the older hook-based
+  `useLinuxSetting` implementation;
+* the installed and current HTTP response was 15,289 bytes and contained the
+  newer class-backed `LinuxToggle` implementation;
+* the historical response had been stored with
+  `Cache-Control: public, max-age=31536000, immutable`;
+* the current server returned `Cache-Control: no-store, max-age=0`.
+
+Changing the current response policy cannot invalidate an immutable response
+that Chromium has already stored. Clean Podman homes therefore passed while a
+real upgraded host could combine a stale generated module with current React
+chunks.
+
+This was not a Codex++ Fast-mode defect and was not introduced by the
+`fix-0002` Portable Manager. It was an upgrade compatibility defect in
+fixed-name generated Webview modules.
+
+== Content-versioned generated assets
+
+The new finalizer discovers every top-level Webview asset matching
+`*-linux.js`, sorts the names, normalizes existing adapter cache queries, and
+hashes each name and normalized content with SHA256. The first 16 hexadecimal
+characters become a shared query value:
+
+[source,text]
+----
+?codex-linux-cache=3c9d6b7f8424d3a7
+----
+
+The finalizer rewrites quoted static and dynamic imports in JavaScript assets.
+It runs in `extracted-app:post-webview` at order `1000000000`, after all other
+core and feature patches. A change to any generated Linux module rotates every
+related URL, so a route module cannot retain a reference to a stale member of
+the generated asset set.
+
+The hash calculation removes the existing query before hashing. Reapplying the
+patch is therefore idempotent instead of generating a new key on every run.
+
+The accepted payload contains six generated Linux assets and six canonical
+references. Recomputing the key from the installed files produced
+`3c9d6b7f8424d3a7`; normalizing the completed payload required zero changes.
+
+== Test-first evidence
+
+The regression was first expressed as a runner test. Its red run failed
+because generated asset imports had no `codex-linux-cache` query. The green
+test verifies three behaviors:
+
+* generated module references receive one 16-character key;
+* a second run is byte-idempotent;
+* changing one generated module rotates references to the entire set.
+
+Descriptor discovery tests also require the finalizer to remain in the
+post-Webview phase after the other post-Webview core patches.
+
+The focused Node runs passed 354 core tests and 479 feature tests. The final
+full regression passed:
+
+* adapter workflow, distribution workflow, and installer selftest;
+* 290 Codex++ core Rust tests;
+* 19 Codex++ provider-sync tests;
+* one Pure API Node contract;
+* 880 Codex Desktop Node tests;
+* the complete shell smoke suite and all 21 probe-equivalence scenarios.
+
+== Rejected build and source drift gate
+
+The first recovered build completed, but its patch report still contained 144
+records. Comparison with the installed `fix-0001` payload showed that the new
+cache finalizer had replaced, rather than accompanied, the required
+`linux-app-server-initialize-timeout` record.
+
+The container build source was missing exactly two source files from
+`fix-0001`:
+
+* `scripts/patches/core/all-linux/extracted-app/app-server/patch.js`;
+* `scripts/patches/impl/main-process/app-server.js`.
+
+That payload was rejected before packaging. The complete patch, feature,
+packaging, and test source trees were compared by relative path and SHA256,
+the missing files and two stale package/test files were synchronized, and the
+pinned build was run once more.
+
+The accepted payload records:
+
+* 23 enabled Linux features in both build-info documents;
+* 145 patches: 116 `applied` and 29 `already-applied`;
+* both `linux-app-server-initialize-timeout` and
+  `generated-webview-asset-cache-keys` as applied;
+* zero required failures and zero post-patch integrity findings.
+
+This check prevented the cache fix from silently regressing the previously
+released 120-second cold-start initialize timeout.
+
+== Payload and GUI acceptance
+
+All release forms contain the same critical files:
+
+[cols="2,3",options="header"]
+|===
+|File |SHA256
+
+|`resources/app.asar`
+|`a84c7e82d336a65b0edeafa76d39c44e759ff70075bc225b8054cea579fe78b6`
+
+|`codex-computer-use-x11`
+|`d89392da0812a5abfd35cd574dc01be6fda80a99c9b88bbe89ce7c2f8cd8e797`
+
+|`codex-plus-plus`
+|`e4328577352ad937782117a146b2e238c13641151b583b0310ae3367474b8bf7`
+
+|`codex-plus-plus-manager`
+|`91a023480799a52893037035f2e3183d8a59b724a4b6e1e51a2b70cf43e091ad`
+
+|`launch-codex-plus-plus`
+|`d6a7a257c882d587ec6e6659e653e39a29c1c1031a161a4365603fab774da776`
+|===
+
+The Debian 10 and AlmaLinux 9 containers first upgraded from `fix0001` through
+their normal package managers. Both then removed the application package and
+performed a clean `fix0003` installation. `dpkg -V` and `rpm -V` were clean,
+the RPM installed its CJK weak dependency, and all 44 x86-64 ELF files in the
+complete payload require at most `GLIBC_2.28`.
+
+On Debian 10, Xvfb acceptance exposed three Codex CDP pages. The main Webview
+rendered the ChatGPT sign-in page with the `Codex++ 1.2.34` injection marker.
+Importing the Linux Settings module through the live Webview produced:
+
+* URL
+  `linux-desktop-settings-linux.js?codex-linux-cache=3c9d6b7f8424d3a7`;
+* transfer size 15,729 bytes and decoded size 15,429 bytes;
+* `Cache-Control: no-store, max-age=0`;
+* module exports `LinuxDesktopSettings` and `default`;
+* no React error boundary.
+
+The WebKitGTK 4.0 Codex++ Manager opened on the same Debian 10 display and
+rendered its complete Chinese interface.
+
+The clean container was not signed in to ChatGPT. Linux Settings navigation,
+conversation hydration, and Fast/Standard interaction are therefore not
+claimed from that container. Those account-state checks remain mandatory on
+the existing host profile after the release is published and the host payload
+is atomically replaced.
+
+== Portable lifecycle acceptance
+
+The existing AlmaLinux 9 Portable test home started with the obsolete
+`codex-desktop-portable.desktop` entry. Updating through the current Manager:
+
+* replaced the 143-record older payload with the 145-record payload;
+* removed the generic iconless entry;
+* created only `codex-plus-plus.desktop` and
+  `codex-plus-plus-manager.desktop`;
+* assigned both entries the release icon and Portable ownership marker;
+* created the three relocatable user command symlinks;
+* left no incoming, work, or backup directory.
+
+Seven external Codex and Codex++ data paths had identical existence state,
+device number, inode, and type before and after the update. A subsequent
+preserve-data uninstall and clean install recreated the application and both
+menu entries while the same seven-path record remained byte-identical.
+
+== Release artifacts
+
+[cols="2,1,3",options="header"]
+|===
+|Artifact |Size |SHA256
+
+|`codex-desktop_1.2.34+fix0003_amd64.deb`
+|274,774,952
+|`0cf27205f49174440c14506d7b51d598650bf1e72bd6a09607a60a10fd5dda02`
+
+|`codex-desktop-1.2.34-fix0003.x86_64.rpm`
+|331,861,703
+|`4cbdc20e7bb0c496d46969e61068ef470210ab2357cacc201ca34b66c4395fe4`
+
+|`codex-desktop-portable-v1.2.34-fix-0003-linux-x86_64.7z`
+|276,778,827
+|`3cbf3e26ebfc0bfe20edb805682dadfbeb95d833818903c7b170374cf1400f2a`
+
+|`CodexDesktop-Portable-Manager-v1.2.34-fix-0003.ps1`
+|16,210
+|`0cfd2264d28ae7fd1d9bfb0b7d6bdc881c2381f00d8b5482310be56fb5e7cd61`
+|===
+
+The Portable archive passed its CRC test and records `Solid = -` with 10,560
+independent blocks. The standalone Manager is byte-identical to the copy in
+the archive.
+
+== Release relation and remaining host gate
+
+`v1.2.34-fix-0003` supersedes the application payloads from `fix-0001` and
+includes the current Portable Manager from `fix-0002`. Neither earlier tag is
+moved.
+
+The final host replacement must preserve the seven external data paths and
+reuse the existing Chromium cache. Acceptance is complete only after the host
+confirms Linux Settings without an error boundary, conversation hydration,
+Codex++ Fast/Standard switching, the Manager, and exactly the two owned menu
+entries.
