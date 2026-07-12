@@ -94,6 +94,9 @@ const {
   patchLinuxOwlFeatureBindingFallbackAssets,
 } = require("./patches/impl/main-process/misc.js");
 const {
+  applyLinuxAppServerInitializeTimeoutPatch,
+} = require("./patches/impl/main-process/app-server.js");
+const {
   applyLinuxHotkeyWindowPrewarmPatch,
   applyLinuxLaunchActionArgsPatch,
   applyLinuxSettingsPersistencePatch,
@@ -867,6 +870,7 @@ test("default core patch descriptors are grouped and unique", () => {
     "browser-use-node-repl-approval",
     "linux-browser-use-route-liveness",
     "linux-chrome-extension-status",
+    "linux-app-server-initialize-timeout",
     "linux-local-app-server-feature-enablement-handler",
     "linux-remote-control-config-preservation",
     "linux-app-updater-menu",
@@ -1936,6 +1940,59 @@ test("warns when upstream still strips remote_control but the guard shape drifts
 
   assert.equal(value, source);
   assert.match(warnings.join("\n"), /remote-control config stripper guard/);
+});
+
+test("extends the app-server initialize handshake timeout for cold plugin sync", () => {
+  const source =
+    "var hV=10*6e4,gV=1e3,_V=1e3,vV=2e3,yV=3e4,bV=3e4,xV=9e4,SV=`Codex app-server initialize handshake timed out`,CV={code:`login-required`}";
+  const first = applyLinuxAppServerInitializeTimeoutPatch(source);
+  const second = applyLinuxAppServerInitializeTimeoutPatch(first);
+
+  assert.match(
+    first,
+    /vV=2e3,yV=12e4,bV=3e4,xV=9e4,SV=`Codex app-server initialize handshake timed out`/,
+  );
+  assert.equal(second, first);
+});
+
+test("routes the app-server initialize timeout patch across extracted main-process chunks", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-app-server-timeout-"));
+  try {
+    const buildDir = path.join(tempRoot, ".vite", "build");
+    fs.mkdirSync(buildDir, { recursive: true });
+    fs.writeFileSync(path.join(buildDir, "main-test.js"), "var unrelated=3e4;", "utf8");
+    fs.writeFileSync(
+      path.join(buildDir, "src-test.js"),
+      "var yV=3e4,bV=3e4,xV=9e4,SV=`Codex app-server initialize handshake timed out`;setTimeout(()=>{throw Error(SV)},yV)",
+      "utf8",
+    );
+
+    const descriptor = corePatchDescriptors().find(
+      (patch) => patch.id === "linux-app-server-initialize-timeout",
+    );
+    assert.ok(descriptor, "app-server initialize timeout descriptor is registered");
+    assert.equal(descriptor.phase, "extracted-app:pre-webview");
+    assert.deepEqual(descriptor.apply(tempRoot, {}), { matched: 1, changed: 1 });
+    assert.match(
+      fs.readFileSync(path.join(buildDir, "src-test.js"), "utf8"),
+      /yV=12e4,bV=3e4,xV=9e4,SV=`Codex app-server initialize handshake timed out`/,
+    );
+    assert.equal(fs.readFileSync(path.join(buildDir, "main-test.js"), "utf8"), "var unrelated=3e4;");
+    assert.deepEqual(descriptor.apply(tempRoot, {}), { matched: 1, changed: 0 });
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("warns when the app-server initialize timeout signature drifts", () => {
+  const source =
+    "var yV=45e3,bV=3e4,xV=9e4,SV=`Codex app-server initialize handshake timed out`";
+  const { value, warnings } = captureWarns(() =>
+    applyLinuxAppServerInitializeTimeoutPatch(source),
+  );
+
+  assert.equal(value, source);
+  assert.match(warnings.join("\n"), /app-server initialize handshake timeout signature/);
 });
 
 test("registers local app-server feature enablement in internal and Electron handlers", () => {

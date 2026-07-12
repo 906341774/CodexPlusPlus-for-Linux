@@ -12,6 +12,18 @@ truthy() {
     esac
 }
 
+files_match() {
+    local left="$1"
+    local right="$2"
+
+    if command -v cmp >/dev/null 2>&1; then
+        cmp -s "$left" "$right"
+        return
+    fi
+    command -v cksum >/dev/null 2>&1 || return 1
+    [ "$(cksum <"$left")" = "$(cksum <"$right")" ]
+}
+
 if [ -z "${HOME:-}" ] || [ -z "${CODEX_LINUX_FEATURES_DIR:-}" ]; then
     warn "HOME or CODEX_LINUX_FEATURES_DIR is unavailable; skipping Omarchy template setup"
     exit 0
@@ -28,7 +40,7 @@ target_dir="$omarchy_home/themed"
 target_path="$target_dir/codex-desktop.css.tpl"
 generated_path="$omarchy_home/current/theme/codex-desktop.css"
 
-if [ -f "$target_path" ] && ! cmp -s "$source_path" "$target_path"; then
+if [ -f "$target_path" ] && ! files_match "$source_path" "$target_path"; then
     warn "$target_path already exists with local changes; leaving it untouched"
 elif [ ! -f "$target_path" ]; then
     if ! mkdir -p "$target_dir" || ! install -m 0644 "$source_path" "$target_path"; then

@@ -1,0 +1,238 @@
+= Codex++ v1.2.34-fix-0001 package and compatibility validation
+:toc:
+:toclevels: 2
+
+Date: 2026-07-12
+
+== Scope and tag policy
+
+This report records the post-baseline package and compatibility work for the
+immutable `v1.2.34` baseline. The fixes are published as the additive hotfix
+tag `v1.2.34-fix-0001`; the existing `v1.2.34` tag is not moved.
+
+Pinned inputs remain unchanged:
+
+* Codex++ upstream tag `v1.2.34`, commit
+  `c1360294d43fce06116428555cbcf812902aced5`.
+* Codex++ Linux adaptation commit
+  `f2b1ae2ef2de78dd832246d2552f613720c48432`.
+* `codex-desktop-linux` upstream commit
+  `60fbcf0e9288c570ecb4742b557c04f4e3c8bab3`.
+* ChatGPT Desktop `26.707.31428` and Electron `42.1.0`.
+* Upstream DMG SHA256
+  `6f67af7e2f934093ab8afebcec11374d40c8db8f9100fb6620f24155401d8319`.
+
+== Baseline regressions carried into the packages
+
+The package payload was rebuilt from the already validated `v1.2.34`
+adaptation. It therefore retains the three user-visible baseline fixes:
+
+* rollout-backed local conversations are cataloged, titled, preserved during
+  scans, hydrated before navigation, and no longer rendered as empty
+  conversation placeholders;
+* the direct PowerShell build writes a concrete Linux feature config, exports
+  both feature variables, enables every valid feature except `example-feature`
+  and `local`, and verifies both generated metadata files;
+* the Codex++ injected Fast/Standard control recognizes GPT-5.6 while retaining
+  explicit unsupported-model rejection, and the upstream Speed control remains
+  available.
+
+Both final build metadata files contain the same 23 feature ids. The final
+patch report contains 144 records: 115 `applied`, 29 `already-applied`, no
+required failures, and zero post-patch integrity findings.
+
+== Packaging failures and root causes
+
+=== Debian 10 native compatibility
+
+The first package payload was not genuinely Debian 10 compatible even though
+the Electron application itself could run there. Two bundled native tools had
+newer symbol requirements:
+
+* the prebuilt X11 Computer Use helper was built on a newer distribution;
+* the bundled browser-use `node_repl` executable retained GLIBC symbol versions
+  above the Debian 10 ceiling.
+
+`Build-CodexDesktopLinux.ps1` now resolves the X11 helper from a pinned source
+repository and exact commit, stores it in an isolated build-source cache, and
+passes the source path into the build. The Debian 10 build therefore compiles
+the helper against glibc 2.28 instead of accepting an opaque newer binary.
+
+The `node_repl` compatibility step is now a structured ELF patcher backed by a
+small native fallback object. It rejects unknown high-version symbols, keeps
+the supported fallback symbols weak, rewrites only their version bindings, and
+is idempotent. It does not perform a broad byte substitution.
+
+The release compatibility gate scans every x86-64 ELF file. The installed DEB
+and RPM payloads each contain 40 checked ELF files; the Portable payload
+contains 44 because it also carries the Manager runtime. Every checked file
+requires at most `GLIBC_2.28`.
+
+=== Codex++ Manager on stable distributions
+
+Current Codex++ Manager sources target WebKitGTK 4.1 and libsoup 3, which are
+not available on Debian 10 and are not the default ABI on the RHEL 9 package
+baseline used here. Merely changing package dependency names would leave the
+Manager unbuildable or dynamically unresolved.
+
+The installer now chooses the Manager ABI explicitly:
+
+* use native WebKitGTK 4.1 when all required development modules exist;
+* otherwise build through a verified WebKitGTK 4.0/libsoup 2.4 compatibility
+  bridge;
+* fail with a concrete dependency error when neither ABI is complete.
+
+The 4.0 path provides only the newer symbols used by the Manager, verifies the
+resulting ELF SONAMEs, installs its appindicator compatibility runtime beside
+the Manager, and sets a relative RUNPATH. Package metadata declares the actual
+WebKitGTK 4.0, JavaScriptCoreGTK 4.0, and libsoup 2.4 runtime dependencies.
+
+=== First-start app-server timeout
+
+In a genuinely clean home directory, the Codex CLI may synchronize its plugin
+marketplace before answering the Desktop initialize request. The original
+30-second Desktop timeout expired while that valid first synchronization was
+still running. Installing `git` removes the slower HTTP fallback, but the clean
+Debian 10 acceptance run still needed 36,776 ms for the initialize handshake.
+
+The packages now require `git`, and a `required-upstream` Desktop patch changes
+only the unique initialize timeout constant from 30 to 120 seconds. The patch
+is signature-guarded, idempotent, and fails closed if the upstream bundle shape
+becomes ambiguous. Adjacent 30-second and 90-second timeouts are untouched.
+
+=== RPM CJK rendering
+
+The AlmaLinux 9 minimal image has no CJK font by default. The Manager itself
+was healthy, but Chinese labels rendered as replacement boxes. The RPM now
+recommends `google-noto-sans-cjk-ttc-fonts`. A normal `dnf install` pulled the
+font package automatically, and the final Xvfb screenshot rendered the Chinese
+interface correctly.
+
+=== Runtime dependency cleanup
+
+Updater-disabled packages no longer retain packaging-only toolchain
+dependencies. The DEB builder removes `build-essential`, `dpkg`, `p7zip-full`,
+`unzip`, and policy-kit requirements when the local updater is disabled. The
+RPM keeps build tools behind the updater condition while retaining only the
+runtime dependencies needed by the installed payload.
+
+== Exact payload gate
+
+All three release forms were checked against the same expected payload. The
+critical file hashes are:
+
+[cols="2,3",options="header"]
+|===
+|File |SHA256
+
+|`resources/app.asar`
+|`e8baeb5894f475551eca7db3ff79a11dc4bdfa630f4d61237262570f264a0b01`
+
+|`codex-computer-use-x11`
+|`d89392da0812a5abfd35cd574dc01be6fda80a99c9b88bbe89ce7c2f8cd8e797`
+
+|`codex-plus-plus`
+|`e4328577352ad937782117a146b2e238c13641151b583b0310ae3367474b8bf7`
+
+|`codex-plus-plus-manager`
+|`91a023480799a52893037035f2e3183d8a59b724a4b6e1e51a2b70cf43e091ad`
+
+|`launch-codex-plus-plus`
+|`d6a7a257c882d587ec6e6659e653e39a29c1c1031a161a4365603fab774da776`
+|===
+
+The end-user Portable lifecycle manager has SHA256
+`ee6c6468124153c27a7447f6425c30a6e5bca7517f0988ad24acf1be82bcb006`.
+
+== Clean installation validation
+
+=== Debian 10 DEB
+
+A clean `debian:10` container installed the DEB through the normal package
+manager. Package ownership and integrity, exact payload hashes, 23-feature
+metadata, 144 patch records, GLIBC ceiling, and Codex++ entrypoints all passed.
+The cold GUI launch completed the 36,776 ms initialize handshake without a
+timeout and exposed the expected Codex windows. The WebKitGTK 4.0 Manager also
+launched successfully.
+
+=== AlmaLinux 9 RPM
+
+A fresh `almalinux:9-minimal` container installed the final RPM with `dnf`.
+The transaction installed the declared CJK weak dependency. RPM integrity and
+ownership, exact payload hashes, feature metadata, patch report, GLIBC ceiling,
+cold GUI launch, three Codex CDP pages, and the WebKitGTK 4.0 Manager all
+passed. Chinese labels were visually checked after the font fix.
+
+=== Portable 7z
+
+The Portable archive was validated as an ordinary `qa` user in a separate
+AlmaLinux 9 minimal container. The following lifecycle passed:
+
+* install into `$HOME/.local/opt/CodexDesktop` and create relocatable user
+  command and desktop integration;
+* launch Codex Desktop through the user-level symlink;
+* perform an atomic update while removing an application marker and preserving
+  user-data sentinels;
+* uninstall with the default preserve-data policy and verify that application,
+  symlinks, desktop entry, and manager state were removed while user data
+  remained;
+* reinstall, launch the Codex++ Manager on isolated Xvfb, and verify complete
+  Chinese rendering;
+* uninstall with `-PurgeUserData` and verify all application, integration,
+  config, state, cache, and user-data paths were absent.
+
+The disposable Portable validation container was removed after the final
+purge check. The Codex++ Manager screenshot is a GUI launch and rendering
+check; it is not a claim that account-dependent health checks pass in an empty
+test home.
+
+== Release artifacts
+
+[cols="2,1,3",options="header"]
+|===
+|Artifact |Size |SHA256
+
+|`codex-desktop_1.2.34+fix0001_amd64.deb`
+|274,724,688
+|`d2fdb50f6d01db115829bd18d9f6cb54bd439b5bddeedd29003507803de379a6`
+
+|`codex-desktop-1.2.34-fix0001.x86_64.rpm`
+|288,930,488
+|`6a4aa580de0c0d7a36eb27991b9a15a147d71ef290fceeb22abb68499c205f73`
+
+|`codex-desktop-portable-v1.2.34-fix-0001-linux-x86_64.7z`
+|276,807,179
+|`eb89b7f4d9d61943ef959a6c829495ffa91665bc3a87e33f7173a7a86af1cc24`
+|===
+
+The 7z archive uses maximum LZMA settings and is explicitly non-solid:
+`Solid = -`, with 10,560 independent blocks.
+
+== Regression gates
+
+The focused red/green tests cover the timeout signature and routing, X11
+source pinning, Manager ABI bridge and runtime, GLIBC ceiling, package runtime
+dependencies, CJK weak dependency, feature metadata, and Portable lifecycle.
+
+The final pre-publication rerun from the completed worktree passed:
+
+* adapter workflow, distribution workflow, and installer selftest;
+* 290 Codex++ core Rust tests;
+* 19 provider-sync Rust tests;
+* one Pure API Node contract test;
+* 879 Codex Desktop Node tests;
+* the complete Codex Desktop shell smoke suite, including all 21 behavioral
+  equivalence scenarios.
+
+The full log remains under the ignored adaptation evidence directory as
+`fix0001-final-regression.log`.
+
+== Known limits
+
+* The packages and archive are SHA256-identified but are not signed by a
+  distribution in this iteration.
+* Clean-container GUI checks use isolated Xvfb and an unauthenticated home;
+  account- and subscription-dependent remote services are outside this gate.
+* Host replacement is performed only after the tag and GitHub Release assets
+  are successfully published, so release failure cannot replace the working
+  host with an unpublished payload.

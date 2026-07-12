@@ -98,6 +98,15 @@ $ErrorActionPreference = "Stop"
 [ValidateSet("release", "debug")]
 [string]$BuildMode = "release"
 
+# Linux Manager WebKit build choices / Linux Manager WebKit 构建模式:
+#   auto: prefer WebKitGTK 4.1, then use the Debian 10-compatible 4.0 bridge
+#   4.1: require the current native WebKitGTK/libsoup ABI
+#   4.0: require WebKitGTK 4.0/libsoup 2.4 and build through the compatibility bridge
+[ValidateSet("auto", "4.1", "4.0")]
+[string]$LinuxManagerWebKitMode = "auto"
+[string]$LinuxManagerWebKitCompatibilityHelper = Join-Path $PSScriptRoot 'linux-manager-webkit4-compat.sh'
+$script:ResolvedLinuxManagerWebKitMode = $null
+
 # Runtime defaults / 运行默认值。
 [int]$DebugPort = 9229
 [int]$HelperPort = 57321
@@ -115,6 +124,7 @@ if ($env:CODEXPP_LINUX_RELEASE_PACKAGE) { $CodexPlusPlusReleasePackage = $env:CO
 if ($env:CODEXPP_LINUX_INSTALL_PATH) { $CodexPlusPlusInstallPath = $env:CODEXPP_LINUX_INSTALL_PATH }
 if ($env:CODEXPP_LINUX_DEPENDENCY_MODE) { $DependencyMode = $env:CODEXPP_LINUX_DEPENDENCY_MODE }
 if ($env:CODEXPP_LINUX_BUILD_MODE) { $BuildMode = $env:CODEXPP_LINUX_BUILD_MODE }
+if ($env:CODEXPP_LINUX_MANAGER_WEBKIT_MODE) { $LinuxManagerWebKitMode = $env:CODEXPP_LINUX_MANAGER_WEBKIT_MODE }
 if ($env:CODEXPP_LINUX_UPSTREAM_VERSION) {
     $CodexPlusPlusUpstreamVersion = $env:CODEXPP_LINUX_UPSTREAM_VERSION
     $CodexPlusPlusReleaseTag = "v$CodexPlusPlusUpstreamVersion"
@@ -1323,7 +1333,7 @@ function Invoke-ManagerFrontendBuild {
 
     Add-AdapterLog "Building manager frontend: $($buildInfo.BeforeBuildCommand)"
     if (Test-CommandAvailable 'sh') {
-        Invoke-External -FilePath 'sh' -Arguments @('-lc', $buildInfo.BeforeBuildCommand) -WorkingDirectory $ManagerDir | Out-Null
+        Invoke-External -FilePath 'sh' -Arguments @('-c', $buildInfo.BeforeBuildCommand) -WorkingDirectory $ManagerDir | Out-Null
     } elseif ($buildInfo.BeforeBuildCommand -match '^npm\s+run\s+([A-Za-z0-9:_-]+)$') {
         Invoke-External -FilePath 'npm' -Arguments @('run', $Matches[1]) -WorkingDirectory $ManagerDir | Out-Null
     } else {
@@ -1333,6 +1343,64 @@ function Invoke-ManagerFrontendBuild {
     if (-not (Test-Path $buildInfo.FrontendDist)) {
         throw "Manager frontend build did not create frontendDist: $($buildInfo.FrontendDist)"
     }
+}
+
+function Test-PkgConfigModules {
+    param([string[]]$Modules)
+
+    if (-not (Test-CommandAvailable 'pkg-config')) { return $false }
+    try {
+        & pkg-config --exists @Modules 2>$null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    }
+}
+
+function Resolve-LinuxManagerWebKitBuildMode {
+    $nativeModules = @('webkit2gtk-4.1', 'javascriptcoregtk-4.1', 'libsoup-3.0')
+    $compatibilityModules = @('webkit2gtk-4.0', 'javascriptcoregtk-4.0', 'libsoup-2.4')
+    $nativeAvailable = Test-PkgConfigModules $nativeModules
+    $compatibilityAvailable = Test-PkgConfigModules $compatibilityModules
+
+    switch ($LinuxManagerWebKitMode) {
+        '4.1' {
+            if (-not $nativeAvailable) {
+                throw "CODEXPP_LINUX_MANAGER_WEBKIT_MODE=4.1 requires pkg-config modules: $($nativeModules -join ', ')"
+            }
+            return '4.1'
+        }
+        '4.0' {
+            if (-not $compatibilityAvailable) {
+                throw "CODEXPP_LINUX_MANAGER_WEBKIT_MODE=4.0 requires pkg-config modules: $($compatibilityModules -join ', ')"
+            }
+            return '4.0'
+        }
+        'auto' {
+            if ($nativeAvailable) { return '4.1' }
+            if ($compatibilityAvailable) { return '4.0' }
+            throw "No supported Linux Manager WebKit development ABI is available. Install either $($nativeModules -join ', ') or $($compatibilityModules -join ', ')."
+        }
+        default {
+            throw "Unsupported CODEXPP_LINUX_MANAGER_WEBKIT_MODE value: $LinuxManagerWebKitMode"
+        }
+    }
+}
+
+function Get-LinuxManagerWebKitCompatibilityHelper {
+    if (-not (Test-Path -LiteralPath $LinuxManagerWebKitCompatibilityHelper -PathType Leaf)) {
+        throw "Linux Manager WebKitGTK 4.0 compatibility helper is missing: $LinuxManagerWebKitCompatibilityHelper"
+    }
+    return [System.IO.Path]::GetFullPath($LinuxManagerWebKitCompatibilityHelper)
+}
+
+function Join-AdapterEnvironmentPath {
+    param(
+        [string]$First,
+        [string]$Existing
+    )
+    if ([string]::IsNullOrWhiteSpace($Existing)) { return $First }
+    return $First + [System.IO.Path]::PathSeparator + $Existing
 }
 
 function Invoke-CodexPlusPlusBuild {
@@ -1353,9 +1421,40 @@ function Invoke-CodexPlusPlusBuild {
         Invoke-External -FilePath 'cargo' -Arguments @('test', '-p', 'codex-plus-core', '--test', 'cdp_bridge') -WorkingDirectory $SourceRoot | Out-Null
     }
     Invoke-ManagerFrontendBuild $managerDir
-    $buildArgs = @('build', '-p', 'codex-plus-launcher', '-p', 'codex-plus-manager')
-    if ($BuildMode -eq 'release') { $buildArgs += '--release' }
-    Invoke-External -FilePath 'cargo' -Arguments $buildArgs -WorkingDirectory $SourceRoot | Out-Null
+
+    # EN: Keep the non-GUI launcher outside the compatibility link environment.
+    # ZH: 非 GUI launcher 不应链接 Manager 的兼容对象，因此两个 Cargo 构建必须分开。
+    $launcherBuildArgs = @('build', '-p', 'codex-plus-launcher')
+    if ($BuildMode -eq 'release') { $launcherBuildArgs += '--release' }
+    Invoke-External -FilePath 'cargo' -Arguments $launcherBuildArgs -WorkingDirectory $SourceRoot | Out-Null
+
+    $resolvedWebKitMode = Resolve-LinuxManagerWebKitBuildMode
+    $script:ResolvedLinuxManagerWebKitMode = $resolvedWebKitMode
+    Add-AdapterLog "Linux Manager WebKit build mode: $resolvedWebKitMode"
+    $managerBuildArgs = @('build', '-p', 'codex-plus-manager')
+    if ($BuildMode -eq 'release') { $managerBuildArgs += '--release' }
+
+    if ($resolvedWebKitMode -eq '4.0') {
+        $helper = Get-LinuxManagerWebKitCompatibilityHelper
+        $compatibilityRoot = Join-Path $SourceRoot 'target/linux-manager-webkit4-compat'
+        Invoke-External -FilePath $helper -Arguments @('prepare', $compatibilityRoot) -WorkingDirectory $SourceRoot | Out-Null
+        $compatibilityObject = Join-Path $compatibilityRoot 'linux-manager-webkit4-compat.o'
+        $rustFlags = "-C link-arg=$compatibilityObject"
+        if (-not [string]::IsNullOrWhiteSpace($env:RUSTFLAGS)) {
+            $rustFlags = "$($env:RUSTFLAGS) $rustFlags"
+        }
+        $compatibilityEnvironment = @{
+            PKG_CONFIG_PATH = Join-AdapterEnvironmentPath (Join-Path $compatibilityRoot 'pkgconfig') $env:PKG_CONFIG_PATH
+            LIBRARY_PATH = Join-AdapterEnvironmentPath (Join-Path $compatibilityRoot 'lib') $env:LIBRARY_PATH
+            RUSTFLAGS = $rustFlags
+        }
+        Invoke-External -FilePath 'cargo' -Arguments $managerBuildArgs -WorkingDirectory $SourceRoot -Environment $compatibilityEnvironment | Out-Null
+        $profile = if ($BuildMode -eq 'release') { 'release' } else { 'debug' }
+        $builtManager = Join-Path $SourceRoot "target/$profile/codex-plus-plus-manager"
+        Invoke-External -FilePath $helper -Arguments @('verify', $builtManager) -WorkingDirectory $SourceRoot | Out-Null
+    } else {
+        Invoke-External -FilePath 'cargo' -Arguments $managerBuildArgs -WorkingDirectory $SourceRoot | Out-Null
+    }
 }
 
 function Quote-DesktopExecPath {
@@ -1454,6 +1553,30 @@ function Install-DesktopEntries {
     )
 }
 
+function New-CodexPlusPlusLauncherWrapperText {
+    $text = @'
+#!/bin/sh
+# Managed by CodexPlusPlus on Linux.
+resolve_script_dir() {
+    script_path=$0
+    while [ -L "$script_path" ]; do
+        link_dir=$(CDPATH= cd -P "$(dirname "$script_path")" && pwd) || return 1
+        link_target=$(readlink "$script_path") || return 1
+        case "$link_target" in
+            /*) script_path=$link_target ;;
+            *) script_path=$link_dir/$link_target ;;
+        esac
+    done
+    CDPATH= cd -P "$(dirname "$script_path")" && pwd
+}
+
+script_dir=$(resolve_script_dir) || exit 1
+app_dir=$(CDPATH= cd -P "$script_dir/../.." && pwd) || exit 1
+exec "$script_dir/codex-plus-plus" --app-path "$app_dir" "$@"
+'@
+    return "$text`n"
+}
+
 function Install-AdaptedBinaries {
     param(
         [string]$SourceRoot,
@@ -1482,21 +1605,22 @@ function Install-AdaptedBinaries {
         if (-not (Test-Path $manager)) { throw "Manager binary not found: $manager" }
     }
 
+    $managerRuntime = Join-Path $binDir 'manager-runtime'
+    if ($script:ResolvedLinuxManagerWebKitMode -eq '4.0') {
+        $helper = Get-LinuxManagerWebKitCompatibilityHelper
+        Invoke-External -FilePath $helper -Arguments @('install-runtime', $installedManager, $managerRuntime) | Out-Null
+    } elseif (-not $SkipBuild -and (Test-Path $managerRuntime)) {
+        Remove-Item -LiteralPath $managerRuntime -Recurse -Force
+    }
+
     $wrapper = Join-Path $binDir 'launch-codex-plus-plus'
-    $launcherQuoted = Quote-ShSingle ([System.IO.Path]::GetFullPath($installedLauncher))
-    $appQuoted = Quote-ShSingle ([System.IO.Path]::GetFullPath($CodexAppDir))
-    $wrapperText = @"
-#!/bin/sh
-# Managed by CodexPlusPlus on Linux.
-exec $launcherQuoted --app-path $appQuoted "`$@"
-"@
-    [System.IO.File]::WriteAllText($wrapper, $wrapperText)
+    [System.IO.File]::WriteAllText($wrapper, (New-CodexPlusPlusLauncherWrapperText))
     if (Test-CommandAvailable 'chmod') {
         Invoke-External -FilePath 'chmod' -Arguments @('+x', $installedLauncher, $installedManager, $wrapper) | Out-Null
     }
 
     $readme = Join-Path $binDir 'README-linux-adapter.txt'
-    [System.IO.File]::WriteAllText($readme, "Managed by CodexPlusPlus on Linux.`nLaunch with: $wrapper`n")
+    [System.IO.File]::WriteAllText($readme, "Managed by CodexPlusPlus on Linux.`nLaunch with: ./launch-codex-plus-plus`n")
 
     Assert-InstalledLinuxAdaptationApplied -InstallRoot $InstallRoot
 
@@ -1519,6 +1643,8 @@ function Uninstall-AdaptedCodexPlusPlus {
                 $path = Join-Path $binDir $name
                 if (Test-Path $path) { Remove-Item -LiteralPath $path -Force }
             }
+            $managerRuntime = Join-Path $binDir 'manager-runtime'
+            if (Test-Path $managerRuntime) { Remove-Item -LiteralPath $managerRuntime -Recurse -Force }
             Add-AdapterLog "Removed binaries and preserved user data: $InstallRoot"
         } else {
             Remove-Item -LiteralPath $InstallRoot -Recurse -Force
@@ -1672,6 +1798,53 @@ function Invoke-SelfTest {
         }
         if (-not $nestedInfo.Installed -or [System.IO.Path]::GetFullPath($nestedInfo.AppDir) -ne [System.IO.Path]::GetFullPath($nestedApp)) {
             throw 'Nested codex-app layout was not detected correctly.'
+        }
+
+        # EN: Release payloads may move from a build tree into /opt or a portable user directory.
+        # ZH: 发布 payload 会从构建树移动到 /opt 或用户便携目录，启动 wrapper 必须随目录移动。
+        $wrapperOriginalParent = Join-Path $layoutTestRoot 'launcher-original'
+        $wrapperOriginalRoot = Join-Path $wrapperOriginalParent 'CodexDesktop'
+        $wrapperInstallDir = Join-Path $wrapperOriginalRoot '.codex-plusplus/install'
+        [void][System.IO.Directory]::CreateDirectory($wrapperInstallDir)
+        $fakeLauncher = Join-Path $wrapperInstallDir 'codex-plus-plus'
+        $launcherWrapper = Join-Path $wrapperInstallDir 'launch-codex-plus-plus'
+        [System.IO.File]::WriteAllText(
+            $fakeLauncher,
+            "#!/bin/sh`n: `"`${CODEXPP_WRAPPER_TEST_OUTPUT:?}`"`nprintf '%s\n' `"`$@`" > `"`$CODEXPP_WRAPPER_TEST_OUTPUT`"`n"
+        )
+        [System.IO.File]::WriteAllText($launcherWrapper, (New-CodexPlusPlusLauncherWrapperText))
+        Invoke-External -FilePath 'chmod' -Arguments @('+x', $fakeLauncher, $launcherWrapper) | Out-Null
+
+        $wrapperRelocatedParent = Join-Path $layoutTestRoot 'launcher-relocated'
+        $wrapperRelocatedRoot = Join-Path $wrapperRelocatedParent 'CodexDesktop'
+        [void][System.IO.Directory]::CreateDirectory($wrapperRelocatedParent)
+        Move-Item -LiteralPath $wrapperOriginalRoot -Destination $wrapperRelocatedRoot
+        $relocatedWrapper = Join-Path $wrapperRelocatedRoot '.codex-plusplus/install/launch-codex-plus-plus'
+        $wrapperOutput = Join-Path $layoutTestRoot 'launcher-arguments.txt'
+        $oldWrapperTestOutput = $env:CODEXPP_WRAPPER_TEST_OUTPUT
+        try {
+            $env:CODEXPP_WRAPPER_TEST_OUTPUT = $wrapperOutput
+            & $relocatedWrapper '--probe' 'direct'
+            if ($LASTEXITCODE -ne 0) { throw "Relocated Codex++ launcher wrapper failed with exit code $LASTEXITCODE." }
+            $expectedDirectArgs = @('--app-path', [System.IO.Path]::GetFullPath($wrapperRelocatedRoot), '--probe', 'direct')
+            $actualDirectArgs = @(Get-Content -LiteralPath $wrapperOutput)
+            if (($actualDirectArgs -join "`n") -ne ($expectedDirectArgs -join "`n")) {
+                throw "Relocated Codex++ launcher wrapper used the wrong paths: $($actualDirectArgs -join ', ')"
+            }
+
+            $wrapperLinkDir = Join-Path $layoutTestRoot 'launcher-bin'
+            [void][System.IO.Directory]::CreateDirectory($wrapperLinkDir)
+            $wrapperLink = Join-Path $wrapperLinkDir 'codex-plus-plus'
+            New-Item -ItemType SymbolicLink -Path $wrapperLink -Target $relocatedWrapper | Out-Null
+            & $wrapperLink '--probe' 'symlink'
+            if ($LASTEXITCODE -ne 0) { throw "Symlinked Codex++ launcher wrapper failed with exit code $LASTEXITCODE." }
+            $expectedSymlinkArgs = @('--app-path', [System.IO.Path]::GetFullPath($wrapperRelocatedRoot), '--probe', 'symlink')
+            $actualSymlinkArgs = @(Get-Content -LiteralPath $wrapperOutput)
+            if (($actualSymlinkArgs -join "`n") -ne ($expectedSymlinkArgs -join "`n")) {
+                throw "Symlinked Codex++ launcher wrapper used the wrong paths: $($actualSymlinkArgs -join ', ')"
+            }
+        } finally {
+            $env:CODEXPP_WRAPPER_TEST_OUTPUT = $oldWrapperTestOutput
         }
 
         # EN: Relative Codex++ install paths are resolved from the detected app directory, not blindly from the outer root.

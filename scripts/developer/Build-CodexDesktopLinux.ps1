@@ -8,6 +8,10 @@ param(
 
     [string]$SourceRoot,
     [string]$InstallPath = '$HOME/opt/CodexDesktop',
+    [string]$BuildSourceCacheRoot,
+    [string]$X11ComputerUseRepository = 'https://github.com/AlekseiSeleznev/codex-computer-use-x11.git',
+    [string]$X11ComputerUseRef = 'v0.1.3',
+    [string]$X11ComputerUseCommit = '2c50ed6cd2c41e5f38627ef1208f2a65691d66dc',
     [switch]$NoLogoOutput
 )
 
@@ -17,6 +21,9 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSCommandPath))
 if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
     $SourceRoot = Join-Path $RepoRoot 'codex-desktop-linux/src'
+}
+if ([string]::IsNullOrWhiteSpace($BuildSourceCacheRoot)) {
+    $BuildSourceCacheRoot = Join-Path $RepoRoot '.cache/build-sources'
 }
 
 function Expand-BuildPath {
@@ -75,6 +82,85 @@ function Write-CodexLinuxFeaturesConfig {
     return $configPath
 }
 
+function Get-GitHeadCommit {
+    param([Parameter(Mandatory = $true)][string]$RepositoryPath)
+
+    $output = @(& git -C $RepositoryPath rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $output.Count -eq 0) { return '' }
+    return ($output -join '').Trim().ToLowerInvariant()
+}
+
+function Resolve-X11ComputerUseSource {
+    param(
+        [Parameter(Mandatory = $true)][string]$DesktopSourceRoot,
+        [Parameter(Mandatory = $true)][string[]]$FeatureIds
+    )
+
+    if ($FeatureIds -notcontains 'x11-ewmh-computer-use') { return $null }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:CODEX_X11_COMPUTER_USE_SOURCE)) {
+        $explicitSource = Expand-BuildPath $env:CODEX_X11_COMPUTER_USE_SOURCE
+        if (-not (Test-Path -LiteralPath (Join-Path $explicitSource 'Cargo.toml') -PathType Leaf)) {
+            throw "CODEX_X11_COMPUTER_USE_SOURCE lacks Cargo.toml: $explicitSource"
+        }
+        return $explicitSource
+    }
+
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        throw 'git is required to fetch the pinned X11 Computer Use source.'
+    }
+    if ([string]::IsNullOrWhiteSpace($X11ComputerUseRepository)) {
+        throw 'X11ComputerUseRepository must not be empty.'
+    }
+    if ([string]::IsNullOrWhiteSpace($X11ComputerUseRef)) {
+        throw 'X11ComputerUseRef must not be empty.'
+    }
+    if ($X11ComputerUseCommit -notmatch '^[0-9a-fA-F]{40}$') {
+        throw 'X11ComputerUseCommit must be a full 40-character Git commit.'
+    }
+
+    $expectedCommit = $X11ComputerUseCommit.ToLowerInvariant()
+    $cacheRoot = Join-Path (Expand-BuildPath $BuildSourceCacheRoot) 'codex-computer-use-x11'
+    $cachedSource = Join-Path $cacheRoot $expectedCommit
+    $cachedCargo = Join-Path $cachedSource 'Cargo.toml'
+    if (
+        (Test-Path -LiteralPath $cachedCargo -PathType Leaf) -and
+        (Get-GitHeadCommit -RepositoryPath $cachedSource) -eq $expectedCommit
+    ) {
+        Write-Host "Using cached X11 Computer Use source at $cachedSource"
+        return $cachedSource
+    }
+
+    New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
+    if (Test-Path -LiteralPath $cachedSource) {
+        Remove-Item -LiteralPath $cachedSource -Recurse -Force
+    }
+    $incoming = Join-Path $cacheRoot ".incoming-$PID-$([Guid]::NewGuid().ToString('N'))"
+    try {
+        $cloneOutput = @(
+            & git clone --quiet --single-branch --depth 1 --branch $X11ComputerUseRef -- $X11ComputerUseRepository $incoming 2>&1
+        )
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to clone pinned X11 Computer Use source: $($cloneOutput -join [Environment]::NewLine)"
+        }
+        $actualCommit = Get-GitHeadCommit -RepositoryPath $incoming
+        if ($actualCommit -ne $expectedCommit) {
+            throw "X11 Computer Use ref $X11ComputerUseRef resolved to $actualCommit instead of $expectedCommit."
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $incoming 'Cargo.toml') -PathType Leaf)) {
+            throw "Pinned X11 Computer Use source lacks Cargo.toml: $incoming"
+        }
+        Move-Item -LiteralPath $incoming -Destination $cachedSource
+    } finally {
+        if (Test-Path -LiteralPath $incoming) {
+            Remove-Item -LiteralPath $incoming -Recurse -Force
+        }
+    }
+
+    Write-Host "Fetched pinned X11 Computer Use source at $cachedSource"
+    return $cachedSource
+}
+
 function Assert-CodexDesktopPayload {
     param(
         [Parameter(Mandatory = $true)][string]$PayloadRoot,
@@ -109,11 +195,13 @@ function Invoke-CodexDesktopBuild {
     if (Test-Path -LiteralPath $payloadRoot) {
         Remove-Item -LiteralPath $payloadRoot -Recurse -Force
     }
+    $x11ComputerUseSource = Resolve-X11ComputerUseSource -DesktopSourceRoot $DesktopSourceRoot -FeatureIds $FeatureIds
     $configPath = Write-CodexLinuxFeaturesConfig -DesktopSourceRoot $DesktopSourceRoot -FeatureIds $FeatureIds
     $saved = @{
         CODEX_LINUX_FEATURES = $env:CODEX_LINUX_FEATURES
         CODEX_LINUX_FEATURES_CONFIG = $env:CODEX_LINUX_FEATURES_CONFIG
         CODEX_LINUX_DISABLE_FEATURES = $env:CODEX_LINUX_DISABLE_FEATURES
+        CODEX_X11_COMPUTER_USE_SOURCE = $env:CODEX_X11_COMPUTER_USE_SOURCE
         PACKAGE_WITH_UPDATER = $env:PACKAGE_WITH_UPDATER
         CODEX_BOOTSTRAP_NONINTERACTIVE = $env:CODEX_BOOTSTRAP_NONINTERACTIVE
         CODEX_LINUX_ENABLE_COMPUTER_USE_UI = $env:CODEX_LINUX_ENABLE_COMPUTER_USE_UI
@@ -125,6 +213,9 @@ function Invoke-CodexDesktopBuild {
         $env:PACKAGE_WITH_UPDATER = '0'
         $env:CODEX_BOOTSTRAP_NONINTERACTIVE = '1'
         $env:CODEX_LINUX_ENABLE_COMPUTER_USE_UI = '1'
+        if (-not [string]::IsNullOrWhiteSpace($x11ComputerUseSource)) {
+            $env:CODEX_X11_COMPUTER_USE_SOURCE = $x11ComputerUseSource
+        }
         Push-Location $DesktopSourceRoot
         try {
             & make build-app | Out-Host

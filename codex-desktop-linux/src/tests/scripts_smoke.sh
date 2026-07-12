@@ -1218,9 +1218,14 @@ SCRIPT
     assert_mode "$capture_dir/staging/opt/codex-desktop/start.sh" "755"
     assert_mode "$capture_dir/staging/opt/codex-desktop/content/webview/index.html" "644"
     assert_contains "$capture_dir/codex-desktop.spec" "%if 0"
+    assert_contains "$capture_dir/codex-desktop.spec" "Requires:       python3, curl, xdg-utils"
+    assert_contains "$capture_dir/codex-desktop.spec" "Requires:       /usr/bin/7z, polkit, unzip, gcc-c++, make"
+    [ "$(grep -c '^Requires:       /usr/bin/7z' "$capture_dir/codex-desktop.spec")" -eq 1 ] \
+        || fail "Expected 7z to remain updater-only in the rendered RPM spec"
     assert_contains "$capture_dir/codex-desktop.spec" "codex_elf_suffix ()(64bit)"
     assert_contains "$capture_dir/codex-desktop.spec" "libatk-bridge-2.0.so.0"
     assert_contains "$capture_dir/codex-desktop.spec" "libgbm.so.1"
+    assert_contains "$capture_dir/codex-desktop.spec" "Recommends:     google-noto-sans-cjk-ttc-fonts"
     assert_not_contains "$capture_dir/codex-desktop.spec" "at-spi2-atk"
     assert_not_contains "$capture_dir/codex-desktop.spec" "mesa-libgbm"
     assert_contains "$capture_dir/codex-desktop.spec" "codex_no_updater_cleanup_update_manager_service"
@@ -5977,17 +5982,41 @@ for (const [name, plugin] of byName) {
 NODE
 }
 
-test_browser_use_node_repl_glibc_pidfd_patch_static() {
-    info "Checking Browser Use node_repl glibc pidfd patch scope"
-    assert_contains "$REPO_DIR/scripts/lib/bundled-plugins.sh" "patch_browser_use_node_repl_glibc_pidfd_symbols"
+test_browser_use_node_repl_glibc_228_patch_static() {
+    info "Checking Browser Use node_repl glibc 2.28 compatibility patch"
+    local patcher="$REPO_DIR/scripts/lib/patch-node-repl-glibc.py"
+    local shim_source="$REPO_DIR/scripts/lib/node-repl-glibc-compat.c"
+    local workspace="$TMP_DIR/browser-use-node-repl-glibc-228"
+    local true_bin
+
+    assert_file_exists "$patcher"
+    assert_file_exists "$shim_source"
+    assert_contains "$REPO_DIR/scripts/lib/bundled-plugins.sh" "patch_browser_use_node_repl_glibc_228"
+    assert_contains "$REPO_DIR/scripts/lib/bundled-plugins.sh" "install_browser_use_node_repl_glibc_compat"
     assert_contains "$REPO_DIR/scripts/lib/bundled-plugins.sh" "is_browser_use_node_repl_ldd_output_compatible"
     assert_contains "$REPO_DIR/scripts/lib/bundled-plugins.sh" "install_browser_use_node_repl_executable_resource"
-    assert_contains "$REPO_DIR/scripts/lib/bundled-plugins.sh" "pidfd_spawnp"
-    assert_contains "$REPO_DIR/scripts/lib/bundled-plugins.sh" "pidfd_getpid"
-    assert_contains "$REPO_DIR/scripts/lib/bundled-plugins.sh" "GLIBC_2.39"
-    assert_contains "$REPO_DIR/scripts/lib/bundled-plugins.sh" "GLIBC_2.34"
-    assert_contains "$REPO_DIR/scripts/lib/bundled-plugins.sh" "non-pidfd GLIBC_2.39 references remain"
+    assert_contains "$REPO_DIR/scripts/lib/bundled-plugins.sh" "libcodex-node-repl-glibc-compat.so"
+    assert_contains "$REPO_DIR/scripts/lib/bundled-plugins.sh" 'libpthread.so.0'
+    assert_contains "$REPO_DIR/scripts/lib/bundled-plugins.sh" 'libdl.so.2'
+    assert_contains "$patcher" "GLIBC_2.28"
+    assert_contains "$patcher" "pidfd_spawnp"
+    assert_contains "$patcher" "posix_spawn_file_actions_addchdir_np"
+    assert_contains "$patcher" "pthread_getattr_np"
+    assert_contains "$patcher" "stat64"
+    assert_not_contains "$patcher" "removeprefix"
+    assert_contains "$shim_source" "fstat64"
+    assert_contains "$shim_source" "lstat64"
+    assert_contains "$shim_source" "stat64"
     assert_contains "$REPO_DIR/scripts/lib/bundled-plugins.sh" 'ldd "$destination"'
+
+    # The patcher must leave unrelated Linux executables byte-for-byte intact.
+    mkdir -p "$workspace"
+    true_bin="$(type -P true)"
+    cp "$true_bin" "$workspace/unrelated-elf"
+    [ "$(python3 "$patcher" "$workspace/unrelated-elf")" = "unchanged" ] \
+        || fail "Expected the node_repl patcher to ignore an unrelated ELF"
+    cmp -s "$true_bin" "$workspace/unrelated-elf" \
+        || fail "node_repl patcher changed an unrelated ELF"
 }
 
 test_browser_use_node_repl_ldd_output_compatibility() {
@@ -8370,6 +8399,47 @@ EOF
     )
 }
 
+test_feature_prelaunch_hooks_work_without_cmp() {
+    info "Checking feature prelaunch hooks on minimal systems without cmp"
+    local workspace="$TMP_DIR/feature-hooks-without-cmp"
+    local home_dir="$workspace/home"
+    local codex_home="$workspace/codex-home"
+    local minimal_bin="$workspace/bin"
+    local agent_target="$codex_home/skills/agent-workspace-linux/SKILL.md"
+    local omarchy_target="$home_dir/.config/omarchy/themed/codex-desktop.css.tpl"
+    local agent_log="$workspace/agent-workspace.log"
+    local omarchy_log="$workspace/omarchy-theme.log"
+    local command_name
+
+    mkdir -p "$(dirname "$agent_target")" "$(dirname "$omarchy_target")" "$minimal_bin"
+    cp "$REPO_DIR/linux-features/agent-workspace/skills/agent-workspace-linux/SKILL.md" "$agent_target"
+    cp "$REPO_DIR/linux-features/omarchy-theme/codex-desktop.css.tpl" "$omarchy_target"
+
+    for command_name in mkdir install cksum; do
+        ln -s "$(type -P "$command_name")" "$minimal_bin/$command_name"
+    done
+
+    HOME="$home_dir" \
+    CODEX_HOME="$codex_home" \
+    CODEX_LINUX_FEATURES_DIR="$REPO_DIR/linux-features" \
+    PATH="$minimal_bin" \
+        "$(type -P bash)" "$REPO_DIR/linux-features/agent-workspace/install-skill.sh" \
+        >"$agent_log" 2>&1
+
+    HOME="$home_dir" \
+    CODEX_LINUX_FEATURES_DIR="$REPO_DIR/linux-features" \
+    CODEX_OMARCHY_THEME_AUTO_REFRESH=0 \
+    PATH="$minimal_bin" \
+        "$(type -P bash)" "$REPO_DIR/linux-features/omarchy-theme/install-template.sh" \
+        >"$omarchy_log" 2>&1
+
+    assert_contains "$agent_log" "Agent Workspaces skill already current"
+    assert_not_contains "$agent_log" "command not found"
+    assert_not_contains "$agent_log" "Installed Agent Workspaces skill"
+    assert_not_contains "$omarchy_log" "command not found"
+    assert_not_contains "$omarchy_log" "already exists with local changes"
+}
+
 main() {
     test_common_helper_sourcing
     test_package_icon_source_resolution
@@ -8450,7 +8520,7 @@ main() {
     test_portable_bundled_plugin_validator_guards
     test_portable_bundled_plugin_stage_failures
     test_portable_bundled_plugin_marketplace_path_guard
-    test_browser_use_node_repl_glibc_pidfd_patch_static
+    test_browser_use_node_repl_glibc_228_patch_static
     test_browser_use_node_repl_ldd_output_compatibility
     test_chrome_plugin_staging
     test_chrome_browser_client_profile_root_variants
@@ -8492,6 +8562,7 @@ main() {
     test_user_local_prepare_build_repo_handles_deleted_overlay_paths
     test_user_local_prepare_build_repo_removes_rename_source_paths
     test_user_local_prepare_build_repo_skips_unmerged_overlay_paths
+    test_feature_prelaunch_hooks_work_without_cmp
     info "All script smoke tests passed"
 }
 

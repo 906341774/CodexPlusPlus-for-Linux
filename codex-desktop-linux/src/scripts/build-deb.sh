@@ -89,8 +89,12 @@ main() {
         "$CONTROL_TEMPLATE" > "$PKG_ROOT/DEBIAN/control"
     if ! package_with_updater_enabled; then
         sed -i \
+            -e 's/build-essential, //g' \
+            -e 's/dpkg, //g' \
+            -e 's/p7zip-full, //g' \
             -e 's/pkexec | policykit-1, //g' \
             -e 's/polkitd | policykit-1, //g' \
+            -e 's/unzip, //g' \
             -e '/Local auto-updates rebuild a Linux package/d' \
             -e '/use the bundled managed Node.js runtime plus the local packaging toolchain/d' \
             "$PKG_ROOT/DEBIAN/control"
