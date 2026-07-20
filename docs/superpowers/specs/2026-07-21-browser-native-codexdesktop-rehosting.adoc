@@ -1,0 +1,435 @@
+= Browser-Native Codex Desktop Rehosting
+:toc:
+:toclevels: 3
+
+Status: design approved by maintainer on 2026-07-21
+
+== Context
+
+The Linux Codex Desktop build already contains the original Codex React UI as
+web assets. The current Linux adaptation runs that UI inside Electron and uses
+Codex++ for injection, provider synchronization, and Linux compatibility.
+
+The next Linux enhancement is intended for headless servers. The server should
+continue to run Codex Desktop, Codex++, and the Codex app-server in an Xvfb
+session, while a user operates the original UI from a normal browser through an
+SSH port forward. The browser must render the original DOM and CSS directly so
+that its viewport controls the resolution. VNC, Xvnc, pixel streaming, and a
+new hand-written Codex web client are outside this design.
+
+The maintainer explicitly requires the browser client to reuse the server-side
+Electron/Codex authentication state. A browser-side second login is not an
+acceptable substitute.
+
+This document is a design boundary for the implementation. It does not freeze
+an upstream source revision; the implementation stage must fetch and freeze the
+latest observed `BigPizzaV3/CodexPlusPlus` and
+`ilysenko/codex-desktop-linux` revisions before creating the adaptation run.
+
+== Goals
+
+* Keep the original Codex Desktop web UI and its existing AppHost protocol.
+* Make the browser viewport, rather than an X11 display, determine the user
+  interface resolution.
+* Reuse both server-side ChatGPT OAuth session state and Codex++ Pure API/API
+  Key configuration where those modes support the relevant product operation.
+* Provide a secure, loopback-only browser gateway that is usable through SSH
+  forwarding.
+* Start the complete background instance in a dedicated tmux session.
+* Add Manager controls for starting, observing, changing the browser port, and
+  terminating the background instance.
+* Preserve the existing foreground and normal Codex++ launch paths.
+* Validate the feature in the Xvfb plus xdotool workflow, with browser-level
+  DOM and protocol checks added for the new surface.
+
+== Non-goals
+
+* Reimplementing the Codex React application or its data model.
+* Exposing the Electron remote-debugging port, raw CDP, preload APIs, cookies,
+  or API keys to the browser.
+* Supporting multiple independent browser controllers in the first release.
+* Making ChatGPT web account pages authenticate with an OpenAI API Key. An API
+  Key is not a ChatGPT web session credential.
+* Replacing the existing Xvfb and xdotool process-control workflow.
+* Enabling browser mode by default for existing installations.
+
+== Approved Architecture
+
+[source,text]
+----
+Browser: original Codex React DOM and CSS
+    |
+    | same-origin WebSocket, session token, exact AppHost strings
+    v
+Codex++ browser gateway
+    |                         \
+    | browser HTTP/WS proxy     | authenticated loopback relay channel
+    v                           v
+ChatGPT/Electron session   hidden Electron relay WebContents
+                                |
+                                | original preload and MessagePort
+                                v
+                         Electron main process
+                                |
+                                v
+                         Codex app-server / Codex++
+----
+
+The browser gateway and hidden relay are per-background-instance components.
+The gateway is the only externally reachable component and binds to
+`127.0.0.1` by default. The Electron remote-debugging port remains a private
+implementation and diagnostics detail; it is never the browser transport.
+
+=== Component ownership
+
+`codex-desktop-linux` owns the minimum Electron-side feature needed to create a
+hidden relay WebContents with the same session partition and preload contract
+as the normal Codex view. The relay must be an opt-in Linux feature and must
+not alter the normal window path.
+
+Codex++ owns the lifecycle manager, browser gateway, Manager commands, status
+state, tmux/Xvfb launch, and browser-side bridge asset. The gateway may use a
+small internal protocol module, but it must not become a second Codex protocol
+implementation.
+
+The browser loads the original web assets from a gateway-served webview root.
+A small same-origin bootstrap shim is loaded before the original application
+module. The shim supplies the browser implementation of `window.electronBridge`
+and the browser-to-gateway transport. The original React bundle remains the
+source of the visible application UI.
+
+=== AppHost and bridge transport
+
+The existing Electron preload already turns the renderer's
+`connect-app-host` MessagePort into an AppHost connection and forwards
+AppHost messages through the browser window's `message` event. The hidden relay
+uses this existing preload behavior unchanged.
+
+The browser shim performs these operations:
+
+* captures the transferred `MessagePort` from the original
+  `connect-app-host` message;
+* forwards AppHost string frames to the gateway;
+* forwards gateway AppHost frames to the browser MessagePort;
+* forwards `sendMessageFromView`, worker messages, and worker subscriptions;
+* provides build, theme, shared-object, and session metadata from a signed
+  per-instance bootstrap response;
+* keeps the wire format of AppHost messages unchanged.
+
+Only one browser controller is accepted for an instance. A second connection
+receives a deterministic `controller-in-use` error and cannot observe or send
+AppHost frames. Reconnection after a browser tab refresh is allowed through a
+short-lived lease, but a stale controller must be closed before a new one can
+take over.
+
+`showContextMenu` and `showApplicationMenu` cannot display a useful menu on the
+hidden Xvfb display. The shim therefore renders a browser-side menu using the
+provided menu model and returns the selected item through the same bridge
+promise. This is a presentation adapter only; menu command execution remains
+server-side. `startFileDrag` becomes a controlled browser download action.
+
+The current web UI already handles a browser without
+`getPathForFile`: file attachment code can fall back to reading the browser
+`File` and uploading it through the AppHost path. Browser mode returns `null`
+for a local filesystem path, never a guessed or synthetic server path. Any
+future file call site that requires a local path must add an explicit upload
+operation rather than weakening this rule.
+
+=== Authenticated session reuse
+
+The browser never receives Electron cookies, OAuth refresh material, bearer
+tokens, API keys, or the server's Codex home directory.
+
+The hidden relay uses the normal Electron session partition. Server-side HTTP
+requests to ChatGPT endpoints are issued by that session or by a relay page
+running in that session. Server-side WebSocket connections are also created in
+the session-bearing relay. The gateway forwards only the response body,
+streaming events, and an allowlisted subset of headers.
+
+The gateway's external HTTP and WebSocket proxy has an explicit allowlist for
+the current Codex Desktop endpoints. It must reject arbitrary upstream URLs,
+redirects to non-allowlisted origins, hop-by-hop headers, `Set-Cookie`, and
+requests that attempt to tunnel the Electron debugging interface.
+
+==== OAuth mode
+
+The normal Electron ChatGPT login flow remains authoritative. Manager exposes
+the server-side authentication state as a non-secret status. If login is
+required, the user starts the existing login flow in the server's Xvfb session;
+the browser does not perform a second login. After the Electron session is
+authenticated, the gateway and AppHost relay use the updated session.
+
+==== API Key and Pure API mode
+
+Codex++ and the Codex app-server continue to read the active API profile from
+the server-side configuration, including the existing `auth.json`, environment
+variables, and provider synchronization rules. The AppHost relay does not
+rewrite those files merely because a browser connects.
+
+The browser therefore retains API Key support for Codex operations routed
+through the app-server. The gateway must report the current non-secret auth
+mode so the UI and Manager can distinguish `chatgpt-oauth`, `pure-api`, and
+`not-authenticated` states.
+
+Pure API mode does not make ChatGPT account pages, subscription endpoints, or
+other ChatGPT-cookie-only features authenticate with the API Key. Existing
+Codex++ compatibility behavior for those UI areas remains the compatibility
+layer's responsibility. This limitation must be documented and tested rather
+than hidden by a fake OAuth state.
+
+=== Browser gateway protocol
+
+The gateway creates a high random listening port unless the user supplies a
+valid free port. Port selection must bind-test the candidate instead of merely
+scanning and then assuming availability. The port is stored in the instance
+state after the listener is active.
+
+The Manager issues a high-entropy per-instance session token. The token is read
+from the browser URL fragment or an equivalent one-time bootstrap mechanism,
+then sent in the first WebSocket authentication frame. It must not be placed
+in a query string, access log, clipboard diagnostic, or persistent browser
+storage. The gateway keeps only a hash or an in-memory verifier and rotates
+the token when the instance or browser port changes.
+
+Every browser request is checked for:
+
+* the active instance token;
+* an allowed `Origin` and loopback `Host`;
+* the expected WebSocket state and message type;
+* maximum frame, request-body, upload, and connection counts;
+* the single-controller lease.
+
+The gateway serves only the frozen webview root and its own explicitly named
+routes. It must not serve arbitrary paths from the filesystem. All status and
+error responses are JSON with stable error codes so the Manager and browser
+shim can display a useful failure without exposing sensitive diagnostics.
+
+The initial SSH usage model is:
+
+[source,shell]
+----
+ssh -L <local-port>:127.0.0.1:<server-port> user@server
+----
+
+The Manager should show the access URL and a copy action, while warning that
+the listener is loopback-only and should be reached through SSH. A future
+deployment may add TLS termination, but TLS is not part of this first local
+gateway release.
+
+=== Background lifecycle
+
+Starting browser mode creates a unique tmux session and records its name in the
+instance state. The session owns the Xvfb display, Codex Desktop, Codex++
+launcher/injection process, hidden relay, and gateway. The launch command must
+use explicit paths and an isolated instance environment so it cannot attach to
+or terminate an unrelated foreground Codex process.
+
+The state machine is:
+
+[cols="1,3"]
+|===
+|State | Meaning
+
+|`starting`
+|tmux, Xvfb, Electron, relay, or gateway readiness checks are in progress.
+
+|`running`
+|the gateway is listening, the relay is connected, and the Codex target is
+  responsive.
+
+|`degraded`
+|the process tree exists but a readiness check or relay connection is missing.
+
+|`reconfiguring`
+|the browser gateway is being replaced after a port change.
+
+|`stopping`
+|termination has begun and the manager is waiting for all owned processes.
+
+|`stopped`
+|all owned processes are gone and the tmux session has been removed.
+
+|`failed`
+|startup or recovery failed; the state includes a stable failure code and log
+  path.
+|===
+
+The status payload includes the state, instance id, tmux session name, access
+port, browser URL, auth mode, gateway PID, relay PID, Electron PID, and the
+complete owned PID list. The Manager initially shows only a summary PID. A
+click on the PID area opens the complete list in a bounded popover; it does not
+put the list into a permanent dense row.
+
+Changing the port starts a new gateway listener, waits for it to become ready,
+rotates the browser token, updates state atomically, and then retires the old
+listener. Codex Desktop and its authentication session do not restart for a
+port-only change. Existing browser connections are deliberately closed and
+must use the new URL.
+
+Stopping sends `TERM` to the owned process group and waits up to ten seconds.
+If any owned process remains, it sends `KILL` to the remaining owned process
+group and waits for reaping. It must verify process identity and ownership
+before every signal. The tmux session is killed only after all owned processes
+are confirmed gone. A failed termination leaves a `degraded` or `failed`
+state with the tmux name and PID evidence so the user can terminate the session
+manually.
+
+=== Manager experience
+
+The existing Codex++ Manager gains an opt-in browser-mode action near its
+current launch controls. The new status row follows the established Manager
+spacing, colors, typography, and button components. It contains:
+
+* background state;
+* summary PID with a click-to-open full PID popover;
+* access port and browser URL;
+* a port-change action that validates and applies a new port immediately;
+* a terminate action with a pending state while TERM/KILL handling runs;
+* an access URL copy action with a tooltip.
+
+The start action must not silently reuse an already running foreground launch.
+When an instance is already active, the Manager shows its state and offers
+reconnect, port change, and terminate actions instead of creating a second
+instance.
+
+Manager commands are narrow Tauri commands backed by a shared lifecycle
+module. They return the same JSON state used by the status poller. State is
+persisted atomically under the existing user-scoped Codex++ state area with
+permissions restricted to the current user. Crash recovery first checks the
+recorded tmux session and owned process identities before declaring an instance
+stopped.
+
+== Security and privacy boundaries
+
+* Bind external gateway listeners to loopback unless an explicit future feature
+  changes the policy.
+* Use random, per-instance session credentials and do not log them.
+* Keep Electron cookies and API Keys in their existing server-side stores.
+* Allowlist upstream origins and routes; never implement a general-purpose
+  proxy.
+* Validate every browser-to-gateway message before passing it to Electron or
+  the app-server.
+* Limit message sizes and upload sizes, and clean temporary uploads at session
+  shutdown and by age.
+* Never accept a browser-supplied local filesystem path as proof of a server
+  path.
+* Do not expose CDP, Electron IPC names, raw preload objects, or process
+  environment variables to browser JavaScript.
+* Include no secrets, cookies, authorization headers, or full sensitive URLs in
+  diagnostics, screenshots, release notes, or test fixtures.
+
+== Implementation boundaries and patch layout
+
+The exact patch numbers are assigned after the upstream baseline is frozen.
+The expected ownership is:
+
+* one opt-in `codex-desktop-linux` Linux feature for the hidden Electron relay
+  and the feature metadata/build workflow;
+* one Codex++ core module for instance state, port selection, process
+  ownership, token verification, and gateway protocol;
+* one launcher integration for tmux/Xvfb startup and relay readiness;
+* one Manager backend/UI change for lifecycle commands and the dynamic status
+  row;
+* focused white-box and black-box tests plus a release/evidence document.
+
+The existing normal `patch` and `relay` launch modes are left untouched unless
+the new feature requires a narrowly scoped shared helper. Browser mode is an
+additional explicit launch mode or action, not a default rewrite of existing
+settings.
+
+== Verification plan
+
+=== Unit and white-box checks
+
+Tests must cover:
+
+* high-port selection under occupied-port races;
+* token generation, rotation, expiry, and constant-time verification;
+* Origin and route allowlisting;
+* frame and upload size limits;
+* AppHost frame forwarding without payload mutation;
+* one-controller lease and reconnect behavior;
+* process identity checks, TERM wait, KILL fallback, and tmux cleanup order;
+* atomic state recovery after Manager or gateway restart;
+* API Key mode never crossing the browser boundary;
+* `getPathForFile` returning `null` and the existing browser upload fallback;
+* direct builds writing `linux-features/features.json`, both feature
+  environment variables, and non-empty feature metadata.
+
+=== Container checks
+
+Use the user-level XFS loop storage for Podman root, runroot, image layers, and
+build caches. Build and test the frozen baseline in both:
+
+* AlmaLinux 9 Minimal, for the older compatible tarball;
+* Fedora 43, for the newer-feature tarball.
+
+Container checks must cover a clean install, isolated HOME, feature metadata,
+Manager ELF and launcher compatibility, browser gateway binding, and release
+payload contents. The previous Debian 10 tarball path is not reused as the
+release baseline for this round.
+
+=== GUI and browser acceptance
+
+The existing Xvfb plus xdotool workflow remains the process and Manager
+validation path. Acceptance must demonstrate:
+
+* Manager starts one dedicated tmux instance;
+* the dynamic status row reaches `running` and reports the owned PIDs and port;
+* a browser opened through the forwarded port renders the original Codex UI;
+* browser resizing changes the DOM viewport without changing Xvfb dimensions;
+* AppHost requests and streamed responses work through the relay;
+* OAuth mode reuses the server-side signed-in session without a browser login;
+* Pure API/API Key mode submits a Codex task without exposing the key;
+* file attachment uses the browser fallback and does not require a local path;
+* port change closes the old browser connection and publishes the new URL;
+* TERM shutdown completes normally, while a controlled child that ignores TERM
+  demonstrates the ten-second KILL fallback;
+* the tmux session is removed only after the owned process tree is gone.
+
+GUI failures must be classified separately from feature failures. Missing
+Xvfb, broken xdotool, stale CDP targets, unavailable browser control, and
+unresponsive test displays are infrastructure failures and cannot justify a
+compatibility patch without independent application evidence.
+
+== Release gates
+
+The implementation may not replace the host installation or publish an
+upstream baseline tag until all of the following are true:
+
+. The exact upstream Codex++ and codex-desktop-linux revisions are recorded.
+. The clean-source patch replay and static/white-box checks pass.
+. AlmaLinux 9 and Fedora 43 builds pass their targeted container checks.
+. The browser gateway, OAuth reuse, API Key path, file fallback, and lifecycle
+  acceptance checks have evidence.
+. Both Codex Desktop build metadata files contain the expected Linux feature
+  ids and do not report `Enabled features: None`.
+. The release payloads are archived as maximum-compression, non-solid 7z files
+  under a documented project artifact path with checksums.
+. The baseline tag is pushed only after the maintainer-visible acceptance
+  report is complete. Later defects use a `-fix-000N` hotfix tag.
+. The host installation is replaced only after the validated artifact archive
+  is available and the prior installation can be restored.
+
+== Implementation sequence
+
+. Freeze the latest upstream revisions and create a persistent adaptation-run
+  state file.
+. Prepare clean source snapshots and replay existing patches without mutating
+  the dirty historical worktree.
+. Add failing protocol, lifecycle, and bridge tests and record the RED result.
+. Implement the relay/gateway contract and Manager controls in bounded stages.
+. Build and validate in the AlmaLinux 9 and Fedora 43 XFS-backed containers.
+. Run the Xvfb, xdotool, browser, OAuth-reuse, and API Key acceptance matrix.
+. Self-review the patch necessity, security boundary, and release payload.
+. Publish the frozen baseline tag and release artifacts only after acceptance.
+. Archive the final payloads and replace the host Codex Desktop installation as
+  the final operation.
+
+== Decision record
+
+The maintainer approved browser-native DOM rehosting and rejected pixel/VNC
+streaming. The maintainer also approved server-side authentication reuse. That
+means the first implementation must treat browser authentication as a view of
+the server session, not as an independent login product, and must preserve the
+existing Codex++ API Key path on the server.
