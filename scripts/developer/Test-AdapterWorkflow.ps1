@@ -156,6 +156,8 @@ Assert-TextContains 'scripts/developer/Build-CodexDesktopLinux.ps1' 'resources/c
 Assert-TextContains 'scripts/developer/New-PortableRelease.ps1' "'-mx=9'" 'portable package uses maximum 7z compression'
 Assert-TextContains 'scripts/developer/New-PortableRelease.ps1' "'-ms=off'" 'portable package disables 7z solid mode'
 Assert-TextContains 'scripts/normal_user/CodexDesktop-Portable-Manager.ps1' '[switch]$PurgeUserData' 'portable manager requires an explicit data purge switch'
+Assert-TextContains 'scripts/normal_user/CodexDesktop-Portable-Manager.ps1' 'Remove-LegacyCodexDesktopEntry' 'portable manager migrates the legacy iconless CodexDesktop menu entry'
+Assert-TextContains 'scripts/developer/Installer-and-Manager.ps1' 'Remove-LegacyCodexDesktopEntry' 'developer installer migrates the legacy iconless CodexDesktop menu entry'
 
 # EN: Documentation must point maintainers to the machine-checkable feature matrix.
 # ZH: 文档必须把维护者引向可机器检查的功能矩阵。

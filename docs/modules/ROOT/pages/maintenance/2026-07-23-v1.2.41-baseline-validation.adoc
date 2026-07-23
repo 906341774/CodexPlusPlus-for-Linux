@@ -197,6 +197,11 @@ bytes，SHA256 为
 * 宿主机覆盖必须在 Git tag 和 Release asset 发布后执行，避免未发布
   产物替换现有安装。
 
+发布后的宿主迁移发现旧文档流程可能留下无图标的
+`codex-desktop-linux.desktop`。该迁移问题不改变 Desktop、Codex++、DEB
+或 RPM payload；修复和验收证据见
+xref:maintenance/2026-07-23-v1.2.41-fix-0001-legacy-desktop-entry.adoc[`v1.2.41-fix-0001`]。
+
 == 固化位置
 
 运行时修复固定在：

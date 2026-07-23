@@ -18,4 +18,5 @@
 ** xref:snippets_zh-CN.adoc[Linux 适配片段]
 ** xref:maintenance-workflow_zh-CN.adoc[维护流程]
 ** xref:adapter-workflow_zh-CN.adoc[定期适配工作流]
+** xref:maintenance/2026-07-23-v1.2.41-fix-0001-legacy-desktop-entry.adoc[v1.2.41-fix-0001 旧菜单入口迁移]
 ** xref:maintenance/2026-07-23-v1.2.41-baseline-validation.adoc[v1.2.41 基线与发行包验收]

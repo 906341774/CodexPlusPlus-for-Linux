@@ -192,6 +192,21 @@ function Remove-PortableManagedDesktopEntry {
     }
 }
 
+function Remove-LegacyCodexDesktopEntry {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+    $lines = [System.IO.File]::ReadAllLines($Path)
+    $legacyMarkers = @(
+        'Name=Codex Desktop',
+        'Exec=codex-desktop-linux',
+        'TryExec=@HOME@/.local/bin/codex-desktop-linux'
+    )
+    if (@($legacyMarkers | Where-Object { $lines -notcontains $_ }).Count -eq 0) {
+        Remove-Item -LiteralPath $Path -Force
+    }
+}
+
 function New-PortableDesktopEntryText {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -233,6 +248,7 @@ function Set-PortableIntegration {
     }
 
     Remove-PortableManagedDesktopEntry -Path (Join-Path $applicationsRoot 'codex-desktop-portable.desktop')
+    Remove-LegacyCodexDesktopEntry -Path (Join-Path $applicationsRoot 'codex-desktop-linux.desktop')
     $icon = Join-Path $Destination '.codex-linux/codex-desktop.png'
     $desktopEntries = @(
         [ordered]@{

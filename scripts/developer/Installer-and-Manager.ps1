@@ -1526,6 +1526,21 @@ function Remove-DesktopEntryFiles {
     }
 }
 
+function Remove-LegacyCodexDesktopEntry {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+    $lines = [System.IO.File]::ReadAllLines($Path)
+    $legacyMarkers = @(
+        'Name=Codex Desktop',
+        'Exec=codex-desktop-linux',
+        'TryExec=@HOME@/.local/bin/codex-desktop-linux'
+    )
+    if (@($legacyMarkers | Where-Object { $lines -notcontains $_ }).Count -eq 0) {
+        Remove-Item -LiteralPath $Path -Force
+    }
+}
+
 function Install-DesktopEntries {
     param(
         [string]$InstallRoot,
@@ -1537,6 +1552,7 @@ function Install-DesktopEntries {
     $apps = Get-AdapterApplicationsDir
     [void][System.IO.Directory]::CreateDirectory($apps)
     Remove-DesktopEntryFiles $apps @('codex-plus-plus-linux.desktop', 'codex-plus-plus-manager-linux.desktop')
+    Remove-LegacyCodexDesktopEntry (Join-Path $apps 'codex-desktop-linux.desktop')
 
     $binDir = Join-Path $InstallRoot 'install'
     $wrapper = [System.IO.Path]::GetFullPath((Join-Path $binDir 'launch-codex-plus-plus'))

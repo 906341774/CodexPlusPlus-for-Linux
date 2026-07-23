@@ -1,0 +1,148 @@
+= v1.2.41-fix-0001 旧 CodexDesktop 菜单入口迁移
+:toc:
+:toclevels: 2
+
+== 结论
+
+`v1.2.41` 正式发布后的宿主替换前检查发现，用户级应用菜单仍有一个
+无图标 `Codex Desktop` 入口。它不是 OpenAI 合并 Codex 与 ChatGPT 后新增
+的产品入口，也不是 Codex++ 上游行为，而是旧版 Linux 安装文档复制的
+`codex-desktop-linux.desktop` 模板残留。
+
+干净容器没有这份历史文件，因此基线的 Portable 生命周期验收无法覆盖
+升级迁移。`v1.2.41-fix-0001` 为开发安装器和便携管理器补上相同的窄范围
+迁移规则，并重新打包便携 7z。CodexDesktop、Codex++、DEB 和 RPM 二进制
+payload 均未重新编译。
+
+== 复现与根因
+
+宿主遗留文件为：
+
+[source,text]
+----
+$HOME/.local/share/applications/codex-desktop-linux.desktop
+----
+
+其关键内容为：
+
+[source,ini]
+----
+Name=Codex Desktop
+Exec=codex-desktop-linux
+TryExec=@HOME@/.local/bin/codex-desktop-linux
+----
+
+`TryExec` 中未展开的 `@HOME@` 证明它来自旧模板流程。该入口创建于
+2026-06-06，最后修改于 2026-07-03；它没有图标字段，所以 KDE 显示一个
+额外的空白图标入口。
+
+v1.2.41 的便携管理器已能清理带
+`X-CodexDesktop-Portable-Managed=true` marker 的旧
+`codex-desktop-portable.desktop`，但不会触碰没有 ownership marker 的
+`codex-desktop-linux.desktop`。这对干净安装是正确的，却遗漏了项目旧文档
+自己产生的迁移输入。
+
+== 修复边界
+
+两个安装路径新增 `Remove-LegacyCodexDesktopEntry`：
+
+* `scripts/normal_user/CodexDesktop-Portable-Manager.ps1`；
+* `scripts/developer/Installer-and-Manager.ps1`。
+
+删除操作要求文件同时包含原模板的 `Name`、`Exec` 和未展开 `TryExec`
+三个精确行。只有文件名相同、内容由用户自定义的 desktop entry 会原样
+保留。这一边界既能清理已确认的项目遗留，也不会把文件名当成所有权证明。
+
+安装完成后，项目只维护两个带图标入口：
+
+* `codex-plus-plus.desktop`，显示名 `Codex++`；
+* `codex-plus-plus-manager.desktop`，显示名 `Codex++ Manager`。
+
+== 测试证据
+
+=== 红绿回归
+
+先在 `tests/Test-DistributionWorkflow.ps1` 中创建真实旧模板，再运行当前
+管理器。红灯准确失败为：
+
+[source,text]
+----
+Portable install retained the legacy iconless CodexDesktop menu entry.
+----
+
+实现迁移后，发行工作流验证：
+
+* 安装会删除三标记完全匹配的旧入口；
+* 更新不会删除或改写同名的自定义入口；
+* 两个标准入口仍有图标和 Portable ownership marker；
+* 默认卸载和显式 purge 语义不变。
+
+`Test-AdapterWorkflow.ps1` 还要求开发安装器和便携管理器都保留该迁移
+函数。两个门禁和 PowerShell AST 语法检查均通过。
+
+=== 完整回归
+
+第一次完整门禁在未改动的 Rust 用例
+`settings_get_includes_runtime_codex_app_version` 失败。该用例直接读取默认
+`~/.codex/config.toml`，宿主已启用 Fast，因而返回 `priority`；测试预期
+干净配置的空值。在隔离的 `HOME`、`CODEX_HOME` 和 XDG 路径中按上限重跑
+后，该用例和完整 Codex++ 门禁通过：
+
+* Codex++ core：333 passed；
+* provider sync：24 passed；
+* Pure API Node contract：1 passed；
+* CodexDesktop Node：1343 passed，0 failed，2 skipped。
+
+随后 shell smoke 首次在持续 NFS I/O 后耗时 10.77 秒刷新启动状态，超过
+首个 Electron 的等待门槛。日志显示 launcher 随后继续推进，没有代码断言
+失败。只重跑失败的 smoke 阶段一次后完整通过，包括 warm-start、父进程
+死亡锁释放和 21/21 webview probe 等价场景。
+
+== XFS Loop 实包验收
+
+验收使用 XFS Loop Podman 存储根和既有
+`codexpp-v141-portable-clean` 容器：
+
+. 使用原 v1.2.41 管理器安装真实基线 7z；
+. 写入与宿主相同的旧 desktop 模板和七类用户数据哨兵；
+. 使用修复管理器执行真实 `update`；
+. 用修复版 7z 内嵌的管理器再次执行同一迁移。
+
+两次更新均以退出码 0 完成。旧入口消失，只剩两个标准带图标入口；七个
+用户数据目录的存在状态、device、inode 和类型不变，全部哨兵内容保留。
+最终 ASAR 仍为：
+
+[source,text]
+----
+838ecef50ebe75f52a0667e34ae0241808c9a5dae4ef9c8bd749ccd2422cbe93
+----
+
+两个 build-info 文件字节一致，均记录 29 个 Linux features。
+
+== Hotfix 发行资产
+
+|===
+|文件 |大小（bytes） |SHA256
+
+|`CodexDesktop-Portable-Manager-v1.2.41-fix-0001.ps1`
+|16821
+|`62666a975cd99b4954aebbbacc5d6d9950ac9cea2490b67f0176d2da60d28cc3`
+
+|`codex-desktop-portable-v1.2.41-fix-0001-linux-x86_64.7z`
+|283852433
+|`e6dadc58e446b24511cc0ad1f17d04467e849e1cb65c5d878304097914de77e0`
+|===
+
+便携归档由原 v1.2.41 已验收 payload 在 XFS 容器内重新生成，使用 7-Zip
+最高压缩率、LZMA2 和非固实模式。`7zz t` 通过，`Solid = -`，共 10691
+个 blocks；内嵌管理器哈希与独立 Manager asset 一致。
+
+DEB 和 RPM 不包含 Portable Manager，也不改变本次用户级迁移逻辑，继续
+使用 v1.2.41 基线 Release 中已验收的包。hotfix 不伪造一次新的 Desktop
+或 Codex++ 编译。
+
+== 宿主验收
+
+按发布门禁，宿主覆盖在 `v1.2.41-fix-0001` tag 和 Release 完成后执行。
+最终宿主文件、菜单、会话和 GUI 结果将在发布后追加到本节，不移动已经
+发布的 tag。

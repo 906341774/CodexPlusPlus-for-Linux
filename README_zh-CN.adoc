@@ -118,6 +118,9 @@ pwsh ./scripts/developer/Installer-and-Manager.ps1 -Action install -CodexDesktop
 `$HOME/.local/share/applications/codex-plus-plus.desktop` 和
 `$HOME/.local/share/applications/codex-plus-plus-manager.desktop`。
 它们的显示名称为 `Codex++` 和 `Codex++ Manager`，会在可用时复用 Linux Codex Desktop 图标，并替换旧的适配器品牌 `*-linux.desktop` 入口。
+安装和更新还会迁移历史遗留的无图标 `codex-desktop-linux.desktop`
+模板，但只有名称、启动命令和未展开的 `@HOME@` `TryExec` 三个原始标记
+同时匹配时才会删除；仅文件名相同的自定义入口会被保留。
 
 脚本顶部有配置区。
 它支持 shell 风格路径值，例如 `$HOME/opt/CodexDesktop`、`${HOME}/opt/CodexDesktop`、`$env:HOME/opt/CodexDesktop` 和 `~/opt/CodexDesktop`。

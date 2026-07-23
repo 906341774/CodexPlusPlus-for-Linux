@@ -379,6 +379,17 @@ cp codex-app/.codex-linux/build-info.json codex-app/resources/codex-linux-build-
         $env:XDG_DATA_HOME = $xdgData
         $env:XDG_STATE_HOME = $xdgState
 
+        $portableApplications = Join-Path $xdgData 'applications'
+        New-Item -ItemType Directory -Force -Path $portableApplications | Out-Null
+        $legacyDirectEntry = Join-Path $portableApplications 'codex-desktop-linux.desktop'
+        [System.IO.File]::WriteAllText($legacyDirectEntry, @"
+[Desktop Entry]
+Type=Application
+Name=Codex Desktop
+Exec=codex-desktop-linux
+TryExec=@HOME@/.local/bin/codex-desktop-linux
+"@)
+
         [void](Invoke-CheckedPowerShell $PortableManager @(
             '-Action', 'install', '-ArchivePath', $archiveOne, '-InstallPath', $installRoot,
             '-NonInteractive', '-NoTui'
@@ -386,13 +397,13 @@ cp codex-app/.codex-linux/build-info.json codex-app/resources/codex-linux-build-
         Assert-PathIsFile (Join-Path $installRoot 'start.sh')
         Assert-PathIsFile (Join-Path $installRoot '.codex-plusplus/install/codex-plus-plus')
         Assert-True ((Get-Content -LiteralPath (Join-Path $installRoot 'version') -Raw).Trim() -eq '9.9.1') 'Portable install selected the wrong payload version.'
-        $portableApplications = Join-Path $xdgData 'applications'
         $portableLauncherEntry = Join-Path $portableApplications 'codex-plus-plus.desktop'
         $portableManagerEntry = Join-Path $portableApplications 'codex-plus-plus-manager.desktop'
         $legacyPortableEntry = Join-Path $portableApplications 'codex-desktop-portable.desktop'
         Assert-PathIsFile $portableLauncherEntry
         Assert-PathIsFile $portableManagerEntry
         Assert-True (-not (Test-Path -LiteralPath $legacyPortableEntry)) 'Portable install created the obsolete duplicate CodexDesktop menu entry.'
+        Assert-True (-not (Test-Path -LiteralPath $legacyDirectEntry)) 'Portable install retained the legacy iconless CodexDesktop menu entry.'
         foreach ($desktopEntry in @($portableLauncherEntry, $portableManagerEntry)) {
             $desktopText = [System.IO.File]::ReadAllText($desktopEntry)
             Assert-True ($desktopText.Contains("Icon=$installRoot/.codex-linux/codex-desktop.png")) "Portable menu entry has no release icon: $desktopEntry"
@@ -422,12 +433,15 @@ cp codex-app/.codex-linux/build-info.json codex-app/resources/codex-linux-build-
         $staleBackup = Join-Path (Split-Path -Parent $installRoot) '.codexdesktop-portable-backup-stale-test'
         New-Item -ItemType Directory -Force -Path $staleBackup | Out-Null
         [System.IO.File]::WriteAllText((Join-Path $staleBackup 'old-payload'), "stale`n")
+        $customDirectEntry = "[Desktop Entry]`nType=Application`nName=Custom Codex launcher`nExec=/opt/custom/codex`n"
+        [System.IO.File]::WriteAllText($legacyDirectEntry, $customDirectEntry)
         [void](Invoke-CheckedPowerShell $PortableManager @(
             '-Action', 'update', '-ArchivePath', $archiveTwo, '-InstallPath', $installRoot,
             '-NonInteractive', '-NoTui'
         ))
         Assert-True (-not (Test-Path -LiteralPath $staleBackup)) 'Portable update did not clean a deferred stale backup.'
         Assert-True ((Get-Content -LiteralPath (Join-Path $installRoot 'version') -Raw).Trim() -eq '9.9.2') 'Portable update did not replace the installed payload.'
+        Assert-True ([System.IO.File]::ReadAllText($legacyDirectEntry) -eq $customDirectEntry) 'Portable update removed or changed a custom desktop entry with the legacy filename.'
         foreach ($path in $userDataFiles) { Assert-PathIsFile $path }
 
         [void](Invoke-CheckedPowerShell $PortableManager @(

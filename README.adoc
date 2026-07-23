@@ -119,6 +119,10 @@ When desktop entries are enabled, the script creates the upstream-style user ent
 `$HOME/.local/share/applications/codex-plus-plus.desktop` and
 `$HOME/.local/share/applications/codex-plus-plus-manager.desktop`.
 They are named `Codex++` and `Codex++ Manager`, reuse the Linux Codex Desktop icon when available, and replace older adapter-branded `*-linux.desktop` entries.
+Install and update also remove the historical iconless
+`codex-desktop-linux.desktop` template only when its original name, command,
+and unexpanded `@HOME@` `TryExec` marker all match. A custom entry that merely
+uses the same filename is preserved.
 
 The script has a configuration block at the top.
 It supports shell-style path values such as `$HOME/opt/CodexDesktop`, `${HOME}/opt/CodexDesktop`, `$env:HOME/opt/CodexDesktop`, and `~/opt/CodexDesktop`.
