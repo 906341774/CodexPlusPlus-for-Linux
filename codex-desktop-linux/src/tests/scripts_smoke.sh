@@ -10201,6 +10201,13 @@ test_notification_actions_bridge_accepts_prebuilt_binary() {
     assert_mode "$target_binary" "755"
 }
 
+test_deb_control_recommends_cjk_fonts() {
+    info "Checking Debian package recommends CJK fonts for the Codex++ interface"
+    assert_contains \
+        "$REPO_DIR/packaging/linux/control" \
+        "Recommends: fonts-noto-cjk, zenity, kdialog"
+}
+
 main() {
     test_common_helper_sourcing
     test_package_icon_source_resolution
@@ -10210,6 +10217,7 @@ main() {
     test_extract_webview_requires_entrypoint
     test_package_layout_requires_webview_entrypoint
     test_package_payload_permission_normalization
+    test_deb_control_recommends_cjk_fonts
     test_deb_builder_smoke
     test_deb_builder_rebuilds_deleted_updater_source
     test_update_builder_preserves_enabled_linux_features_config

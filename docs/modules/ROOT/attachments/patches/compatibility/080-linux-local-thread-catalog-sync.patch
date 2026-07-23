@@ -1,5 +1,5 @@
 diff --git a/crates/codex-plus-data/src/provider_sync.rs b/crates/codex-plus-data/src/provider_sync.rs
-index 6cf5916..52d61b1 100644
+index 6cf5916..f27bb1e 100644
 --- a/crates/codex-plus-data/src/provider_sync.rs
 +++ b/crates/codex-plus-data/src/provider_sync.rs
 @@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
@@ -7,7 +7,7 @@ index 6cf5916..52d61b1 100644
  const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
  const BACKUP_KEEP_COUNT: usize = 5;
 +const LOCK_STALE_AFTER_SECS: u64 = 6 * 60 * 60;
- 
+
  #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
  #[serde(rename_all = "snake_case")]
 @@ -141,20 +142,42 @@ struct SqliteUpdateCounts {
@@ -16,13 +16,13 @@ index 6cf5916..52d61b1 100644
      cwd_rows: usize,
 +    local_catalog_rows: usize,
  }
- 
+
  impl SqliteUpdateCounts {
      fn total(&self) -> usize {
 -        self.provider_rows + self.user_event_rows + self.cwd_rows
 +        self.provider_rows + self.user_event_rows + self.cwd_rows + self.local_catalog_rows
      }
- 
+
      fn add(&mut self, other: Self) {
          self.provider_rows += other.provider_rows;
          self.user_event_rows += other.user_event_rows;
@@ -30,7 +30,7 @@ index 6cf5916..52d61b1 100644
 +        self.local_catalog_rows += other.local_catalog_rows;
      }
  }
- 
+
 +#[derive(Debug, Clone, PartialEq)]
 +struct LocalCatalogThread {
 +    thread_id: String,
@@ -114,7 +114,7 @@ index 6cf5916..52d61b1 100644
              let updated_workspace_roots =
                  apply_global_state_update(&home.join(".codex-global-state.json"))?;
 @@ -514,11 +566,72 @@ fn toml_string_value(raw: &str) -> Option<String> {
- 
+
  fn acquire_lock(path: &Path) -> std::io::Result<()> {
      fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))?;
 +    match create_lock(path) {
@@ -186,9 +186,19 @@ index 6cf5916..52d61b1 100644
 +fn process_is_running(_pid: u64) -> Option<bool> {
 +    None
  }
- 
+
  fn release_lock(path: &Path) -> std::io::Result<()> {
-@@ -1063,7 +1176,7 @@ fn create_backup(
+@@ -1011,6 +1124,9 @@ fn to_desktop_workspace_path(value: &str) -> Option<String> {
+     if stripped.starts_with(r"\\?\") {
+         return Some(stripped[4..].replace('\\', "/"));
+     }
++    if !cfg!(windows) && stripped.starts_with('\\') && !stripped.starts_with(r"\\") {
++        return Some(stripped.replace('\\', "/"));
++    }
+     Some(stripped.to_string())
+ }
+
+@@ -1063,7 +1179,7 @@ fn create_backup(
      }
      let db_dir = backup_dir.join("db");
      let mut db_files = Vec::new();
@@ -197,10 +207,10 @@ index 6cf5916..52d61b1 100644
          for source in codex_plus_core::codex_sqlite::codex_sqlite_sidecar_paths(&db_path) {
              if !source.exists() {
                  continue;
-@@ -1182,6 +1295,16 @@ fn table_columns(db: &Connection, table: &str) -> anyhow::Result<HashSet<String>
+@@ -1182,6 +1298,16 @@ fn table_columns(db: &Connection, table: &str) -> anyhow::Result<HashSet<String>
          .collect::<rusqlite::Result<HashSet<_>>>()?)
  }
- 
+
 +fn has_table(db: &Connection, table: &str) -> anyhow::Result<bool> {
 +    Ok(db
 +        .query_row(
@@ -214,10 +224,10 @@ index 6cf5916..52d61b1 100644
  fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
      if !path.exists() {
          return Ok(Vec::new());
-@@ -1204,42 +1327,243 @@ fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
+@@ -1204,42 +1330,243 @@ fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
      Ok(sorted_provider_ids(ids))
  }
- 
+
 +fn collect_local_catalog_threads(
 +    paths: &[PathBuf],
 +    target_provider: &str,
@@ -479,7 +489,7 @@ index 6cf5916..52d61b1 100644
      }
      Ok(total)
  }
-@@ -1249,6 +1573,7 @@ fn count_sqlite_updates_for_paths(
+@@ -1249,6 +1576,7 @@ fn count_sqlite_updates_for_paths(
      target_provider: &str,
      user_event_thread_ids: &HashSet<String>,
      cwd_by_thread_id: &HashMap<String, String>,
@@ -487,7 +497,7 @@ index 6cf5916..52d61b1 100644
  ) -> anyhow::Result<usize> {
      let mut total = 0;
      for path in paths {
-@@ -1257,6 +1582,7 @@ fn count_sqlite_updates_for_paths(
+@@ -1257,6 +1585,7 @@ fn count_sqlite_updates_for_paths(
              target_provider,
              user_event_thread_ids,
              cwd_by_thread_id,
@@ -495,7 +505,7 @@ index 6cf5916..52d61b1 100644
          )?;
      }
      Ok(total)
-@@ -1267,36 +1593,41 @@ fn apply_sqlite_update(
+@@ -1267,36 +1596,41 @@ fn apply_sqlite_update(
      target_provider: &str,
      user_event_thread_ids: &HashSet<String>,
      cwd_by_thread_id: &HashMap<String, String>,
@@ -557,7 +567,7 @@ index 6cf5916..52d61b1 100644
      }
      tx.commit()?;
      Ok(counts)
-@@ -1307,6 +1638,7 @@ fn apply_sqlite_update_for_paths(
+@@ -1307,6 +1641,7 @@ fn apply_sqlite_update_for_paths(
      target_provider: &str,
      user_event_thread_ids: &HashSet<String>,
      cwd_by_thread_id: &HashMap<String, String>,
@@ -565,7 +575,7 @@ index 6cf5916..52d61b1 100644
  ) -> anyhow::Result<SqliteUpdateCounts> {
      let mut total = SqliteUpdateCounts::default();
      for path in paths {
-@@ -1315,11 +1647,244 @@ fn apply_sqlite_update_for_paths(
+@@ -1315,11 +1650,244 @@ fn apply_sqlite_update_for_paths(
              target_provider,
              user_event_thread_ids,
              cwd_by_thread_id,
@@ -574,7 +584,7 @@ index 6cf5916..52d61b1 100644
      }
      Ok(total)
  }
- 
+
 +fn is_local_thread_catalog_db(db: &Connection) -> anyhow::Result<bool> {
 +    Ok(has_table(db, "local_thread_catalog")?
 +        && has_table(db, "local_thread_catalog_hosts")?
@@ -810,8 +820,8 @@ index 6cf5916..52d61b1 100644
  fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {
      if !path.exists() {
          return Ok(Map::new());
-@@ -1332,18 +1897,16 @@ fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {
- 
+@@ -1332,18 +1900,16 @@ fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {
+
  fn load_projectless_thread_ids(path: &Path) -> anyhow::Result<HashSet<String>> {
      let state = load_global_state(path)?;
 -    let mut ids = HashSet::new();
@@ -835,5 +845,5 @@ index 6cf5916..52d61b1 100644
 +        .map(str::to_string)
 +        .collect())
  }
- 
+
  fn normalized_global_state(state: &Map<String, Value>) -> Map<String, Value> {

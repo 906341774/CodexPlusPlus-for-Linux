@@ -1,0 +1,302 @@
+= v1.2.41-fix-0002 会话目录、Fast 切换与发行包修复验收
+:toc:
+:toclevels: 2
+
+== 结论
+
+`v1.2.41-fix-0002` 修复了两个可在真实 Linux 用户状态中复现的问题：
+
+* Codex++ 曾把 POSIX 工作区路径写成反斜杠形式，并留下 `rootPaths` 为空的
+  `local-projects`，导致对应项目侧栏持续显示“暂无对话”；
+* Codex++ 的 Fast/Standard 注入会无限等待新版 Desktop 中可能永久 pending
+  的 `setting-storage.n()`，最终无法获得当前模型并拒绝切换。
+
+本轮还复核并固定了 Linux features 的直接构建流程，重新生成 Debian 10
+兼容 DEB、RHEL 9 兼容 RPM 和便携 7z，并通过独立 Podman 容器中的
+`Xvfb + xdotool` GUI 验收。DEB 截图验收额外发现 Debian 10 最小环境缺少
+CJK 字体，因此包现在推荐安装 `fonts-noto-cjk`。
+
+最终发行 payload 的 Desktop ASAR 仍为已验收的 v1.2.41 基线 ASAR；
+未把陈旧 ASAR 或未达最终压缩参数的中间包混入 Release assets。
+
+== 固定输入与验收环境
+
+|===
+|组件 |版本或提交
+
+|Codex++ 上游
+|`v1.2.41`, `3dafffcafb2566a1e8bce4b35671656d6adb3eda`
+
+|`ilysenko/codex-desktop-linux` 上游快照
+|`main`, `0e51086c0ab06c31276dc9cc31a6990a5d87ae1f`
+
+|Desktop Linux 适配提交
+|`676adcc5b17ab048f52308c098453acb456b460f`
+
+|上游 Desktop 应用版本
+|`26.715.72028`
+
+|Electron
+|`42.3.0`
+|===
+
+构建、安装和 GUI 调试继续使用 XFS Loop 上的 Podman 存储根：
+
+[source,shell]
+----
+podman --root "$HOME/.local/share/containers/codexpp-test-root" \
+  --runroot "$HOME/.local/share/containers/codexpp-test-run"
+----
+
+最终包管理器验收容器为：
+
+* `codexpp-v141-fix0002-deb-validate`，Debian 10；
+* `codexpp-v141-fix0002-rpm-validate`，AlmaLinux 9。
+
+== “暂无对话”根因与修复
+
+=== 根因
+
+旧 `codex_app_state` 路径标准化无条件执行
+`replace('/', '\\')`。这对 Windows 路径成立，但在 Linux 上会把
+`/home/deck/project` 变成 `\home\deck\project`。
+
+Codex++ 随后以错误路径计算 `local-<sha256-prefix>` 项目 id，并在
+`.codex-global-state.json` 中留下如下不完整记录：
+
+[source,json]
+----
+{
+  "id": "local-...",
+  "name": "\\home\\deck\\project",
+  "rootPaths": []
+}
+----
+
+`local_thread_catalog` 和 Desktop 项目状态实际使用 POSIX 路径。错误项目 id、
+空 `rootPaths` 与正确 catalog 行无法关联，因此项目入口存在，但侧栏只能
+显示“暂无对话”。provider sync 也会保留已有的单反斜杠 POSIX 路径，不能
+自行收敛这类历史状态。
+
+=== 修复边界
+
+`085-linux-workspace-state-paths.patch` 现在：
+
+* 在非 Windows 平台保留 `/`，只把已确认的单前导反斜杠 POSIX 遗留路径
+  转回 `/`；
+* 继续正确处理 Windows drive、UNC 和 `\\?\` 路径；
+* 只修复同时满足错误 id 与 `name` 哈希一致、`rootPaths` 为空、对应正确
+  POSIX 路径已存在于 saved roots 的 `local-projects`；
+* 以正确 POSIX 路径重新计算项目 id，填回 `rootPaths`，同步替换
+  `project-order` 和本地 `selected-project`；
+* 保留自定义项目、已有非空 roots、哈希不匹配记录和冲突目标，不做宽泛
+  猜测性迁移；
+* provider sync 同步把历史单反斜杠 POSIX cwd 转回 `/`。
+
+测试覆盖被修复项目、自定义项目、非空项目、哈希不匹配项目、引用更新和
+重复执行。宿主机另有一个已确认的工作区重命名，发布后只对该精确旧路径与
+新路径执行一次性映射；它不会被固化为通用自动重命名规则。
+
+== Fast/Standard 根因与修复
+
+新版 Desktop 的 `setting-storage` module 可以成功加载，但
+`settingStorage.n({ key: "default-service-tier" })` 在部分启动状态中永远
+保持 pending。旧注入代码在读取完成前不会进入后端 settings 或 config
+fallback，模型状态一直为空，点击 Fast/Standard 后显示“当前模型未获取”或
+“当前模型未读取”。
+
+注入现在为 Desktop storage read 设置 1500 ms 上限：
+
+* 正常返回时仍优先使用 Desktop setting storage；
+* 超时或读取失败时调用 Codex++ `/settings/get`，读取安全的
+  `codexDefaultServiceTier`；
+* helper 不可用时继续使用既有 `codexStateCall` fallback；
+* 模型支持列表保留 GPT-5.4、GPT-5.5、GPT-5.6 及三个 GPT-5.6 变体；
+* 官方 Desktop Fast 控件不被 Codex++ 清理逻辑移除。
+
+回归测试使用一个真实永久 pending 的 `setting-storage` module，证明超时后
+能得到 `priority`，并保护正常 storage、后端 settings、helper 超时与官方
+控件共存路径。
+
+包安装后的实际 `xdotool` 点击验收依次切换全局 Fast 和全局 Standard，
+状态文本正确，页面中没有“当前模型未获取”“当前模型未读取”或“无法切换”。
+
+== Linux features 构建结论
+
+`Enabled features: None` 不是 PowerShell 调用方完全没有传 feature list。
+根因是 `linux-features.js` 的无 config 直接构建路径没有把仅来自
+`CODEX_LINUX_FEATURES` 的列表稳定带入后续 metadata 生成。
+
+`Build-CodexDesktopLinux.ps1` 已把修复固定为标准流程：
+
+* 动态解析或接受显式 feature ids；
+* 写入 gitignored 的 `linux-features/features.json`；
+* 同时导出 `CODEX_LINUX_FEATURES` 与 `CODEX_LINUX_FEATURES_CONFIG`；
+* 让 config 环境变量指向刚写入的文件后再执行 `make build-app`；
+* 安装前检查 `.codex-linux/build-info.json` 与
+  `resources/codex-linux-build-info.json` 均记录相同的非空 feature list。
+
+最终 payload 的两份 metadata 字节一致，均记录 29 个 Linux features。
+
+== 包兼容性与 CJK 修复
+
+=== Debian 10 与 RHEL 9 ABI
+
+Codex++ Manager 上游源代码以 WebKitGTK 4.1/libsoup 3 为首选。稳定发行版
+构建流程会在完整 4.1 开发 ABI 可用时使用原生 4.1，否则使用已验证的
+WebKitGTK 4.0/libsoup 2.4 compatibility bridge。
+
+本轮 Debian 10 兼容 Manager 最终动态依赖为：
+
+[source,text]
+----
+libwebkit2gtk-4.0.so.37
+libjavascriptcoregtk-4.0.so.18
+libsoup-2.4.so.1
+RUNPATH=$ORIGIN/manager-runtime
+----
+
+DEB 和 RPM 中共检查 40 个 x86-64 ELF，最高 GLIBC 需求为
+`GLIBC_2.28`，无超限文件。RPM 兼容目标仍是 RHEL 9 及其兼容发行版，
+不把 Fedora 43 声明为兼容目标。
+
+=== Debian CJK 字体
+
+第一次 DEB GUI 截图中 Codex++ Manager 的中文标签显示为方框。应用和
+Manager 进程均正常，根因只是 Debian 10 最小容器没有 CJK 字体。
+
+先新增失败的 shell smoke 合同，要求 control 包含：
+
+[source,text]
+----
+Recommends: fonts-noto-cjk, zenity, kdialog
+----
+
+实现后完整 `scripts_smoke.sh` 通过。对候选 DEB 执行真实 remove 后的首次
+`apt install`，APT 自动下载并安装
+`fonts-noto-cjk 1:20170601+repack1-3+deb10u1`。新的 Xvfb 截图中中文正常
+渲染，Manager 窗口标题为 `Codex++ 管理工具`。
+
+== 构建产物选择与拒绝项
+
+最终三个格式均使用相同的已验收 Desktop ASAR：
+
+[source,text]
+----
+838ecef50ebe75f52a0667e34ae0241808c9a5dae4ef9c8bd749ccd2422cbe93
+----
+
+Debian 10 构建的 Codex++ 二进制为：
+
+|===
+|文件 |SHA256
+
+|`codex-plus-plus`
+|`deeebb9a3de2bb3f72ed8c1e6b49f9be395286d91cd8371919763c37ec0a05dd`
+
+|`codex-plus-plus-manager`
+|`2e1edc0faf58059af15edbe59220cf117ae835e67df7485514a8d2efe12a479f`
+|===
+
+第一次 fix-0002 DEB 错误地从陈旧容器 payload 取到 ASAR
+`a2bedc19115199040fafd2c364fbbfaa8653e8b70519a30b025d32e900547853`。
+该包 SHA256 为
+`5327d76dcfa15891ee59b9a9b997adef53152a29ba91cfd3c99d5fd5ca5079a6`，
+已移动到 `/work/v141/rejected/fix0002-old-asar/`，不得发布。
+
+RPM 的早期 T4 压缩包同样移入 release staging 的 `rejected/`。Release
+只接受最终 zstd 19T8 RPM。便携 7z 使用最高压缩率和非固实模式，
+`Solid = -`，共 10691 个 blocks，并通过 `7zz t`。
+
+== 验收结果
+
+=== 自动回归
+
+* `cargo fmt --check`、JavaScript syntax、feature matrix JSON 解析通过；
+* 定向 Rust 回归为 `cdp_bridge 96/96`、`codex_app_state 7/7`、
+  `provider_sync 25/25`；
+* 隔离 HOME/XDG 后的串行 `cargo test --workspace -- --test-threads=1`
+  全部通过；
+* 首次未隔离执行读取了宿主真实 `service_tier = "priority"`，使一个期待
+  干净配置 `null` 的旧测试失败。空 `CODEX_HOME` 单测和正式隔离回归均
+  通过，确认这是测试环境泄漏，不是产品回归；
+* `Test-AdapterWorkflow.ps1`、Installer selftest 和完整
+  `scripts_smoke.sh` 通过；
+* 从上游 `v1.2.41` 干净 clone 重放 `010` 至 `900` 的 11 个 snippets
+  全部成功，40 个补丁目标文件与当前适配源码逐字节一致。
+
+=== 包与 GUI
+
+DEB 静态门禁结果：
+
+[source,text]
+----
+DEB_STATIC_VALIDATION_OK features=29 elf=40 max_glibc=GLIBC_2.28
+----
+
+DEB 与 RPM 的最终 Xvfb/xdotool 验收结果：
+
+[source,text]
+----
+DEB-CJK_GUI_VALIDATION_OK injected=6 app_window=ChatGPT manager_window=Codex++ 管理工具
+RPM_GUI_VALIDATION_OK injected=6 app_window=ChatGPT manager_window=Codex++ 管理工具
+----
+
+两种包均通过包管理器完整性校验、关键 payload hash、29 features、双份
+metadata、Fast/Standard 实际点击和 Manager 新 X11 窗口检测。
+
+== Release assets
+
+|===
+|文件 |大小（bytes） |SHA256
+
+|`CodexDesktop-Portable-Manager-v1.2.41-fix-0002.ps1`
+|16210
+|`0cfd2264d28ae7fd1d9bfb0b7d6bdc881c2381f00d8b5482310be56fb5e7cd61`
+
+|`codex-desktop-portable-v1.2.41-fix-0002-linux-x86_64.7z`
+|284284817
+|`e6edfd54026fede15d60c13aca2d9e4c050b267cc22eb618f543df57ffbdfc8d`
+
+|`codex-desktop_1.2.41+fix0002_amd64.deb`
+|279374360
+|`66fd1b3d74b9f2f53389c08ab7b285994c8e94ae4b957d3018d509b3a9dcd84f`
+
+|`codex-desktop-1.2.41-fix0002.x86_64.rpm`
+|339729448
+|`b7646f4036357fc00bc3ac97513cb958612c0b6e08b125fbdeef14824e029985`
+
+|`SHA256SUMS-v1.2.41-fix-0002.txt`
+|450
+|`13d098482bb56ccc635179d535e3f087315abeb36c3a68b20503f51ee273ee5a`
+|===
+
+`SHA256SUMS-v1.2.41-fix-0002.txt` 对四个可安装下载文件执行
+`sha256sum -c` 全部通过。包和归档仍只提供 SHA256，不提供发行签名。
+
+== 宿主迁移边界
+
+发布 tag 和 GitHub Release 完成前不覆盖宿主安装。发布后将：
+
+. 停止 CodexDesktop 与 Codex++；
+. 备份当前 `.codex-global-state.json` 和 latest safe snapshot；
+. 仅对已确认的旧、新竞赛目录执行精确重命名映射；
+. 让新 launcher 自动修复其余五个错误 POSIX local projects；
+. 使用原子替换保留现有用户数据目录的 device、inode 和哨兵；
+. 重新启动并确认项目侧栏不再显示错误的“暂无对话”，Fast/Standard 可切换，
+  两个菜单入口有图标且 Manager 正常。
+
+宿主最终证据将在 Release 发布并完成上述步骤后追加到本文档；已经发布的
+`v1.2.41-fix-0002` tag 不会移动。
+
+== 固化位置
+
+本轮修复固定在：
+
+* `docs/modules/ROOT/attachments/patches/compatibility/060-renderer-linux-compatibility.patch`；
+* `docs/modules/ROOT/attachments/patches/compatibility/080-linux-local-thread-catalog-sync.patch`；
+* `docs/modules/ROOT/attachments/patches/compatibility/085-linux-workspace-state-paths.patch`；
+* `docs/modules/ROOT/attachments/patches/compatibility/900-regression-tests.patch`；
+* `scripts/developer/Build-CodexDesktopLinux.ps1`；
+* `codex-desktop-linux/src/packaging/linux/control`；
+* `codex-desktop-linux/src/tests/scripts_smoke.sh`。

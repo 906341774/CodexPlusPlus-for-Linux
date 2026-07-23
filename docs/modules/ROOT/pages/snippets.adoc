@@ -170,7 +170,7 @@ The manager script extracts the JSON block between the markers below.
       "assets/inject/upstream/cidala-tiger/macos/renderer-inject.js",
       "assets/inject/upstream/dream-skin/macos/renderer-inject.js"
     ],
-    "purpose": "Patch Linux renderer compatibility for marketplace requests/details, Pure API account reads, delete and menu behavior, and GPT-5.6 Fast/Standard switching while preserving official Fast controls and refusing legacy plugin-entry auth spoofing."
+    "purpose": "Patch Linux renderer compatibility for marketplace requests/details, Pure API account reads, delete and menu behavior, and GPT-5.6 Fast/Standard switching; bound stalled Desktop setting-storage reads before fallback while preserving official Fast controls and refusing legacy plugin-entry auth spoofing."
   },
   {
     "id": "070-linux-user-scripts-compatibility",
@@ -193,7 +193,18 @@ The manager script extracts the JSON block between the markers below.
       "crates/codex-plus-core/src/codex_sqlite.rs",
       "crates/codex-plus-data/src/provider_sync.rs"
     ],
-    "purpose": "Backfill Codex Desktop local_thread_catalog rows from rollout-backed sessions with real titles, exclude projectless threads, and keep unchanged syncs idempotent; companion CodexDesktop snapshot patches preserve and hydrate those rows."
+    "purpose": "Backfill Codex Desktop local_thread_catalog rows from rollout-backed sessions with real titles, normalize legacy backslash POSIX workspace paths, exclude projectless threads, and keep unchanged syncs idempotent; companion CodexDesktop snapshot patches preserve and hydrate those rows."
+  },
+  {
+    "id": "085-linux-workspace-state-paths",
+    "required": true,
+    "defaultEnabled": true,
+    "kind": "production",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/085-linux-workspace-state-paths.patch",
+    "targets": [
+      "crates/codex-plus-core/src/codex_app_state.rs"
+    ],
+    "purpose": "Preserve POSIX separators in Codex Desktop state and narrowly repair legacy Codex++ local-project records whose hashed backslash path and empty rootPaths caused project sidebars to show no conversations."
   },
   {
     "id": "100-browser-native-rehosting",
@@ -230,6 +241,7 @@ The manager script extracts the JSON block between the markers below.
       "apps/codex-plus-manager/src/relay-config-contract.test.mjs",
       "crates/codex-plus-core/tests/bridge_routes.rs",
       "crates/codex-plus-core/tests/cdp_bridge.rs",
+      "crates/codex-plus-core/tests/codex_app_state.rs",
       "crates/codex-plus-core/tests/codex_sqlite.rs",
       "crates/codex-plus-core/tests/installers.rs",
       "crates/codex-plus-core/tests/launcher.rs",
@@ -238,7 +250,7 @@ The manager script extracts the JSON block between the markers below.
       "crates/codex-plus-core/tests/watcher.rs",
       "crates/codex-plus-data/tests/provider_sync.rs"
     ],
-    "purpose": "Add regression tests for all production patches, including GPT-5.6 Fast variants, official Fast control coexistence, Linux user-script URL aliasing, real-title catalog backfill, idempotent catalog sync, and projectless exclusion."
+    "purpose": "Add regression tests for all production patches, including bounded Fast setting-storage fallback, GPT-5.6 variants, official Fast control coexistence, Linux workspace-state path repair, real-title catalog backfill, idempotent catalog sync, and projectless exclusion."
   }
 ]
 ----
@@ -310,6 +322,14 @@ include::attachment$patches/compatibility/070-linux-user-scripts-compatibility.p
 [source,diff]
 ----
 include::attachment$patches/compatibility/080-linux-local-thread-catalog-sync.patch[]
+----
+
+[#snippet-085-linux-workspace-state-paths]
+=== 085 Linux workspace-state paths
+
+[source,diff]
+----
+include::attachment$patches/compatibility/085-linux-workspace-state-paths.patch[]
 ----
 
 [#snippet-100-browser-native-rehosting]

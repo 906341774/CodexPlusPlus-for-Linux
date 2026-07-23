@@ -1,0 +1,232 @@
+diff --git a/crates/codex-plus-core/src/codex_app_state.rs b/crates/codex-plus-core/src/codex_app_state.rs
+index 0ab3a0f..0eae165 100644
+--- a/crates/codex-plus-core/src/codex_app_state.rs
++++ b/crates/codex-plus-core/src/codex_app_state.rs
+@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
+
+ use anyhow::Context;
+ use serde_json::{Map, Value, json};
++use sha2::{Digest, Sha256};
+
+ const GLOBAL_STATE_FILE: &str = ".codex-global-state.json";
+ const GLOBAL_STATE_BACKUP_FILE: &str = ".codex-global-state.json.bak";
+@@ -105,10 +106,11 @@ pub fn sync_app_state_after_provider_switch(home: &Path) -> anyhow::Result<AppSt
+     let original = Value::Object(state.clone());
+     let mut changed_keys = BTreeSet::new();
+
+-    normalize_current_state(&mut state, &mut changed_keys);
++    let project_id_replacements = normalize_current_state(&mut state, &mut changed_keys);
+     if let Some(snapshot) = load_snapshot(home)? {
+         merge_safe_snapshot(&mut state, &snapshot, &mut changed_keys);
+     }
++    replace_local_project_references(&mut state, &project_id_replacements, &mut changed_keys);
+
+     let next = Value::Object(state);
+     if next == original {
+@@ -377,7 +379,10 @@ fn safe_snapshot_from_state(state: &Map<String, Value>) -> Value {
+     })
+ }
+
+-fn normalize_current_state(state: &mut Map<String, Value>, changed: &mut BTreeSet<String>) {
++fn normalize_current_state(
++    state: &mut Map<String, Value>,
++    changed: &mut BTreeSet<String>,
++) -> Vec<(String, String)> {
+     for key in WORKSPACE_PATH_ARRAY_KEYS {
+         if let Some(value) = state.get(*key).cloned() {
+             let next = json!(dedupe_paths(path_array(&value)));
+@@ -424,6 +429,7 @@ fn normalize_current_state(state: &mut Map<String, Value>, changed: &mut BTreeSe
+             changed,
+         );
+     }
++    repair_malformed_posix_local_projects(state, changed)
+ }
+
+ fn merge_safe_snapshot(
+@@ -683,13 +689,183 @@ fn normalize_desktop_path(value: &str) -> Option<String> {
+     if trimmed.is_empty() {
+         return None;
+     }
+-    let mut path = trimmed.replace('/', r"\");
+-    while path.len() > 3 && path.ends_with('\\') {
+-        path.pop();
++    let lower = trimmed.to_ascii_lowercase();
++    if lower.starts_with(r"\\?\unc\") {
++        return normalize_desktop_path(&format!(r"\\{}", &trimmed[8..]));
++    }
++    if trimmed.starts_with(r"\\?\") {
++        return normalize_desktop_path(&trimmed[4..]);
++    }
++    if !cfg!(windows) && is_legacy_posix_backslash_path(trimmed) {
++        let mut path = trimmed.replace('\\', "/");
++        trim_posix_trailing_separators(&mut path);
++        return Some(path);
+     }
++    if is_windows_desktop_path(trimmed) {
++        let mut path = trimmed.replace('/', r"\");
++        while path.len() > 3 && path.ends_with('\\') {
++            path.pop();
++        }
++        return Some(path);
++    }
++    let mut path = trimmed.to_string();
++    trim_posix_trailing_separators(&mut path);
+     Some(path)
+ }
+
++fn is_legacy_posix_backslash_path(value: &str) -> bool {
++    value.starts_with('\\') && !value.starts_with(r"\\")
++}
++
++fn is_windows_desktop_path(value: &str) -> bool {
++    let bytes = value.as_bytes();
++    value.starts_with(r"\\")
++        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
++}
++
++fn trim_posix_trailing_separators(path: &mut String) {
++    while path.len() > 1 && path.ends_with('/') {
++        path.pop();
++    }
++}
++
++fn repair_malformed_posix_local_projects(
++    state: &mut Map<String, Value>,
++    changed: &mut BTreeSet<String>,
++) -> Vec<(String, String)> {
++    if cfg!(windows) {
++        return Vec::new();
++    }
++    let saved_roots = state
++        .get("electron-saved-workspace-roots")
++        .map(path_array)
++        .unwrap_or_default()
++        .into_iter()
++        .collect::<HashSet<_>>();
++    let Some(projects) = state.get("local-projects").and_then(Value::as_object) else {
++        return Vec::new();
++    };
++    let mut next_projects = projects.clone();
++    let mut replacements = Vec::new();
++
++    for (legacy_id, value) in projects {
++        let Some(project) = value.as_object() else {
++            continue;
++        };
++        let Some(name) = project.get("name").and_then(Value::as_str) else {
++            continue;
++        };
++        if project.get("id").and_then(Value::as_str) != Some(legacy_id)
++            || project
++                .get("rootPaths")
++                .and_then(Value::as_array)
++                .is_none_or(|roots| !roots.is_empty())
++            || !is_legacy_posix_backslash_path(name)
++            || local_project_id(name) != *legacy_id
++        {
++            continue;
++        }
++        let Some(normalized) = normalize_desktop_path(name) else {
++            continue;
++        };
++        if !saved_roots.contains(&normalized) {
++            continue;
++        }
++        let normalized_id = local_project_id(&normalized);
++        if let Some(existing) = next_projects.get(&normalized_id) {
++            if !local_project_matches_root(existing, &normalized_id, &normalized) {
++                continue;
++            }
++        } else {
++            let mut repaired = project.clone();
++            repaired.insert("id".to_string(), json!(normalized_id));
++            repaired.insert(
++                "name".to_string(),
++                json!(
++                    normalized
++                        .trim_end_matches('/')
++                        .rsplit('/')
++                        .next()
++                        .filter(|name| !name.is_empty())
++                        .unwrap_or(&normalized)
++                ),
++            );
++            repaired.insert("rootPaths".to_string(), json!([normalized]));
++            next_projects.insert(normalized_id.clone(), Value::Object(repaired));
++        }
++        next_projects.remove(legacy_id);
++        replacements.push((legacy_id.clone(), normalized_id));
++    }
++
++    if !replacements.is_empty() {
++        replace_if_changed(
++            state,
++            "local-projects",
++            Value::Object(next_projects),
++            changed,
++        );
++        replace_local_project_references(state, &replacements, changed);
++    }
++    replacements
++}
++
++fn local_project_id(path: &str) -> String {
++    let digest = format!("{:x}", Sha256::digest(path.as_bytes()));
++    format!("local-{}", &digest[..32])
++}
++
++fn local_project_matches_root(value: &Value, project_id: &str, root: &str) -> bool {
++    let Some(project) = value.as_object() else {
++        return false;
++    };
++    project.get("id").and_then(Value::as_str) == Some(project_id)
++        && project
++            .get("rootPaths")
++            .and_then(Value::as_array)
++            .is_some_and(|roots| roots.as_slice() == [Value::String(root.to_string())])
++}
++
++fn replace_local_project_references(
++    state: &mut Map<String, Value>,
++    replacements: &[(String, String)],
++    changed: &mut BTreeSet<String>,
++) {
++    if replacements.is_empty() {
++        return;
++    }
++    if let Some(value) = state.get("project-order") {
++        let next = string_array(value)
++            .into_iter()
++            .map(|item| replacement_project_id(&item, replacements).to_string())
++            .collect::<Vec<_>>();
++        replace_if_changed(state, "project-order", json!(dedupe_strings(next)), changed);
++    }
++    if let Some(selected) = state
++        .get("selected-project")
++        .and_then(Value::as_object)
++        .cloned()
++    {
++        let mut next = selected;
++        if next.get("type").and_then(Value::as_str) == Some("local") {
++            if let Some(project_id) = next.get("projectId").and_then(Value::as_str) {
++                let replacement = replacement_project_id(project_id, replacements);
++                next.insert("projectId".to_string(), json!(replacement));
++            }
++        }
++        replace_if_changed(state, "selected-project", Value::Object(next), changed);
++    }
++}
++
++fn replacement_project_id<'a>(
++    project_id: &'a str,
++    replacements: &'a [(String, String)],
++) -> &'a str {
++    replacements
++        .iter()
++        .find_map(|(legacy, normalized)| (legacy == project_id).then_some(normalized.as_str()))
++        .unwrap_or(project_id)
++}
++
+ fn create_backup(home: &Path, original: &Value) -> anyhow::Result<PathBuf> {
+     let root = home.join(BACKUP_ROOT).join(format!("{}", now_ms()));
+     fs::create_dir_all(&root)?;

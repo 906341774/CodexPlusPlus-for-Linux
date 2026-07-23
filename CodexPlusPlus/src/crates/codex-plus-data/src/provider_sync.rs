@@ -1124,6 +1124,9 @@ fn to_desktop_workspace_path(value: &str) -> Option<String> {
     if stripped.starts_with(r"\\?\") {
         return Some(stripped[4..].replace('\\', "/"));
     }
+    if !cfg!(windows) && stripped.starts_with('\\') && !stripped.starts_with(r"\\") {
+        return Some(stripped.replace('\\', "/"));
+    }
     Some(stripped.to_string())
 }
 

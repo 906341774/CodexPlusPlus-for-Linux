@@ -2152,6 +2152,7 @@
   };
   const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
   const codexServiceTierFallbackFastValue = "priority";
+  const codexServiceTierStorageReadTimeoutMs = 1500;
   const codexServiceTierModulePromises = new Map();
   const codexAppAssetTextPromises = new Map();
   const codexAppAssetFeatureFallbacks = {
@@ -2267,10 +2268,26 @@
     return module;
   }
 
+  async function codexServiceTierStorageValueWithTimeout() {
+    let timeoutId = 0;
+    try {
+      return await Promise.race([
+        codexSettingStorageModule().then((settingStorage) => settingStorage.n(codexDefaultServiceTierSetting)),
+        new Promise((_, reject) => {
+          timeoutId = setTimeout(
+            () => reject(new Error("Codex setting-storage 读取超时")),
+            codexServiceTierStorageReadTimeoutMs
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
   async function getCodexServiceTierSetting() {
     try {
-      const settingStorage = await codexSettingStorageModule();
-      return await settingStorage.n(codexDefaultServiceTierSetting);
+      return await codexServiceTierStorageValueWithTimeout();
     } catch (error) {
       const settings = await postJson("/settings/get", {});
       if (settings && Object.prototype.hasOwnProperty.call(settings, "codexDefaultServiceTier")) {
@@ -6057,6 +6074,8 @@
       setBackendStatus: (state = {}) => {
         codexPlusBackendStatus = { ...codexPlusBackendStatus, ...state };
       },
+      loadServiceTierState: () => loadCodexServiceTierState(),
+      serviceTierState: () => ({ ...codexServiceTierState }),
       backendBlocksLocalOverride: () => codexServiceTierBackendBlocksLocalOverride(),
       badgeState: () => codexServiceTierBadgeState(),
       setThreadState: (state = {}) => {

@@ -670,6 +670,71 @@ fn provider_sync_repairs_sqlite_when_rollout_provider_matches_and_normalizes_pat
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn provider_sync_repairs_legacy_backslash_posix_workspace_paths() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_rollout(
+        &home.join("archived_sessions/rollout-current.jsonl"),
+        "apigather",
+        "thread-1",
+        r"\home\deck\workspace",
+    );
+    create_state_db(&home.join("state_5.sqlite"));
+    fs::write(
+        home.join(".codex-global-state.json"),
+        json!({
+            "electron-saved-workspace-roots": [r"\home\deck\workspace"],
+            "project-order": [r"\home\deck\workspace"],
+            "active-workspace-roots": r"\home\deck\workspace",
+            "electron-workspace-root-labels": {
+                (r"\home\deck\workspace"): "Workspace"
+            },
+            "open-in-target-preferences": {
+                "perPath": {
+                    (r"\home\deck\workspace"): "terminal"
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+    let cwd: String = db
+        .query_row("SELECT cwd FROM threads WHERE id = 'thread-1'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(cwd, "/home/deck/workspace");
+    let state: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(home.join(".codex-global-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        state["electron-saved-workspace-roots"],
+        json!(["/home/deck/workspace"])
+    );
+    assert_eq!(state["project-order"], json!(["/home/deck/workspace"]));
+    assert_eq!(
+        state["active-workspace-roots"],
+        json!("/home/deck/workspace")
+    );
+    assert_eq!(
+        state["electron-workspace-root-labels"],
+        json!({"/home/deck/workspace": "Workspace"})
+    );
+    assert_eq!(
+        state["open-in-target-preferences"]["perPath"],
+        json!({"/home/deck/workspace": "terminal"})
+    );
+}
+
 #[test]
 fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
     let tmp = tempdir().unwrap();

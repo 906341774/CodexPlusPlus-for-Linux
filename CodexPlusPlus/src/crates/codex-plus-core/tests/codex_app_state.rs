@@ -3,6 +3,7 @@ use codex_plus_core::codex_app_state::{
     sync_app_state_after_provider_switch,
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 #[test]
 fn default_service_tier_prefers_safe_persisted_state_and_normalizes_fast() {
@@ -278,6 +279,125 @@ fn app_state_sync_normalizes_current_state_and_writes_backup_before_change() {
     assert_eq!(
         backup["electron-saved-workspace-roots"],
         json!(["C:/work/app", "C:\\work\\app\\"])
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn app_state_sync_repairs_codexpp_malformed_linux_local_projects() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let malformed = r"\home\deck\Projects\CaseSensitive";
+    let normalized = "/home/deck/Projects/CaseSensitive";
+    let protected_malformed = r"\home\deck\Projects\Protected";
+    let protected_normalized = "/home/deck/Projects/Protected";
+    let legacy_id = format!(
+        "local-{}",
+        &format!("{:x}", Sha256::digest(malformed.as_bytes()))[..32]
+    );
+    let normalized_id = format!(
+        "local-{}",
+        &format!("{:x}", Sha256::digest(normalized.as_bytes()))[..32]
+    );
+    let protected_id = format!(
+        "local-{}",
+        &format!("{:x}", Sha256::digest(protected_malformed.as_bytes()))[..32]
+    );
+    std::fs::write(
+        home.join(".codex-global-state.json"),
+        json!({
+            "electron-saved-workspace-roots": [
+                malformed,
+                normalized,
+                protected_malformed
+            ],
+            "project-order": [legacy_id, protected_id, "local-custom"],
+            "active-workspace-roots": [malformed],
+            "local-projects": {
+                (legacy_id.clone()): {
+                    "id": legacy_id,
+                    "name": malformed,
+                    "rootPaths": [],
+                    "createdAt": 10,
+                    "updatedAt": 20
+                },
+                (protected_id.clone()): {
+                    "id": protected_id,
+                    "name": protected_malformed,
+                    "rootPaths": ["/keep/custom"],
+                    "createdAt": 30,
+                    "updatedAt": 40
+                },
+                "local-custom": {
+                    "id": "local-custom",
+                    "name": malformed,
+                    "rootPaths": [],
+                    "createdAt": 50,
+                    "updatedAt": 60
+                }
+            },
+            "selected-project": {
+                "type": "local",
+                "projectId": legacy_id
+            },
+            "electron-completed-local-data-migration-ids": [
+                "2026-07-13-local-projects"
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let snapshot_dir = home.join("backups_state/app-state-sync");
+    std::fs::create_dir_all(&snapshot_dir).unwrap();
+    std::fs::write(
+        snapshot_dir.join("latest-safe-state.json"),
+        json!({
+            "version": 1,
+            "state": {
+                "electron-saved-workspace-roots": [malformed],
+                "project-order": [legacy_id],
+                "active-workspace-roots": [malformed]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let result = sync_app_state_after_provider_switch(home).unwrap();
+    let state: Value = serde_json::from_str(
+        &std::fs::read_to_string(home.join(".codex-global-state.json")).unwrap(),
+    )
+    .unwrap();
+
+    assert!(result.changed);
+    assert_eq!(
+        state["electron-saved-workspace-roots"],
+        json!([normalized, protected_normalized])
+    );
+    assert_eq!(state["active-workspace-roots"], json!([normalized]));
+    assert_eq!(
+        state["project-order"],
+        json!([normalized_id, protected_id, "local-custom"])
+    );
+    assert!(state["local-projects"].get(&legacy_id).is_none());
+    assert_eq!(
+        state["local-projects"][&normalized_id],
+        json!({
+            "id": normalized_id,
+            "name": "CaseSensitive",
+            "rootPaths": [normalized],
+            "createdAt": 10,
+            "updatedAt": 20
+        })
+    );
+    assert_eq!(
+        state["local-projects"][&protected_id]["rootPaths"],
+        json!(["/keep/custom"])
+    );
+    assert_eq!(state["local-projects"]["local-custom"]["name"], malformed);
+    assert_eq!(
+        state["selected-project"],
+        json!({"type": "local", "projectId": normalized_id})
     );
 }
 

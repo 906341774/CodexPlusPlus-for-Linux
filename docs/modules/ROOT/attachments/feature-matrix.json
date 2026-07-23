@@ -130,14 +130,16 @@
     {
       "id": "fast-button",
       "name": "Fast service-tier control in Linux composer footer",
-      "patchIds": ["030-linux-launcher-environment", "060-renderer-linux-compatibility"],
+      "patchIds": ["030-linux-launcher-environment", "060-renderer-linux-compatibility", "900-regression-tests"],
       "whiteBoxChecks": [
         "Source marker: codexServiceTierLinuxComposerFooters",
         "Source marker: codexServiceTierBackendBlocksLocalOverride",
         "Source marker: findCodexDispatcherClass",
         "Source marker: isCodexHotkeyWindowRoute",
         "Source marker: helperBridgeFallbackRoutes",
+        "Source marker: codexServiceTierStorageReadTimeoutMs",
         "Source marker: gpt-5.6",
+        "Regression test: injection_script_bounds_desktop_service_tier_storage_reads_before_helper_fallback",
         "Regression test: injection_script_keeps_official_fast_controls_outside_codex_plus_cleanup",
         "Regression test: linux_renderer_asset_loader_can_find_merged_codex_chunks_by_features",
         "Regression test: linux_renderer_service_tier_patch_finds_dispatcher_without_minified_export_name",
@@ -148,6 +150,7 @@
         "GPT-5.6, GPT-5.6[1M], localized GPT-5.6 labels, and the Linux composer footer can switch between Fast and Standard without the current-model error",
         "The Fast badge remains clickable during transient backend-checking states",
         "The official Codex Desktop Fast control remains present when Codex++ refreshes or cleans up its own injected badge",
+        "A Desktop setting-storage Promise that never settles falls back to the Codex++ helper within the bounded timeout",
         "Renderer diagnostics do not report missing setting-storage assets on current Linux Codex Desktop chunks",
         "Renderer diagnostics do not repeatedly report Codex dispatcher unavailable after current Linux Codex Desktop chunks load"
       ]
@@ -171,20 +174,24 @@
     {
       "id": "local-thread-catalog",
       "name": "Project sidebar visibility for existing local conversations",
-      "patchIds": ["080-linux-local-thread-catalog-sync", "900-regression-tests"],
+      "patchIds": ["080-linux-local-thread-catalog-sync", "085-linux-workspace-state-paths", "900-regression-tests"],
       "whiteBoxChecks": [
         "Regression test: provider_sync_backfills_local_catalog_with_nonempty_source_title",
         "Regression test: provider_sync_local_catalog_is_idempotent_when_source_is_unchanged",
         "Regression test: provider_sync_does_not_restore_cwd_for_projectless_threads",
+        "Regression test: provider_sync_repairs_legacy_backslash_posix_workspace_paths",
+        "Regression test: app_state_sync_repairs_codexpp_malformed_linux_local_projects",
         "Regression test: preserves provider-sync backfilled rollout catalog rows during full scans",
         "Source marker: local_thread_catalog",
         "Source marker: collect_local_catalog_threads",
+        "Source marker: repair_malformed_posix_local_projects",
         "Patch descriptor: linux-local-thread-catalog-preserve-backfill",
         "Patch descriptor: linux-local-thread-catalog-initial-snapshot"
       ],
       "blackBoxChecks": [
         "Codex++ Manager local sessions and Codex Desktop project sidebars agree on visible unarchived conversations",
-        "After provider sync, projects with legacy local threads no longer show the empty-state message for conversations"
+        "After provider sync, projects with legacy local threads no longer show the empty-state message for conversations",
+        "A backed-up Linux state whose Codex++ project id hashes a backslash POSIX path is repaired to the slash-path id without altering unrelated or nonempty-root projects"
       ]
     },
     {

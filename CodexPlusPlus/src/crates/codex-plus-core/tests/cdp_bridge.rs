@@ -1060,6 +1060,16 @@ fn injection_script_falls_back_to_helper_settings_for_service_tier() {
 }
 
 #[test]
+fn injection_script_bounds_desktop_service_tier_storage_reads_before_helper_fallback() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("codexServiceTierStorageReadTimeoutMs"));
+    assert!(script.contains("Codex setting-storage 读取超时"));
+    assert!(script.contains("codexServiceTierStorageValueWithTimeout"));
+    assert!(script.contains(r#"await postJson("/settings/get", {})"#));
+}
+
+#[test]
 fn injection_script_exposes_fast_service_tier_control() {
     let script = assets::injection_script(57321);
 
@@ -1246,12 +1256,24 @@ fn injection_script_applies_fast_service_tier_contract() {
     );
     assert_eq!(cases["dispatcherFromSingleton"], true);
     assert_eq!(cases["dispatcherFromClass"], true);
+    assert_eq!(cases["stalledStorageFallback"]["status"], "ok");
+    assert_eq!(cases["stalledStorageFallback"]["serviceTier"], "priority");
 }
 
 fn run_service_tier_contract_harness() -> serde_json::Value {
     let temp = tempfile::tempdir().expect("temp dir should be created");
     let script_path = temp.path().join("renderer-inject.js");
     let harness_path = temp.path().join("service-tier-harness.cjs");
+    let assets_path = temp.path().join("assets");
+    let storage_module_path = assets_path.join("setting-storage-hanging.js");
+    std::fs::create_dir_all(&assets_path).expect("harness assets should be created");
+    std::fs::write(assets_path.join("package.json"), r#"{"type":"module"}"#)
+        .expect("harness package metadata should be written");
+    std::fs::write(
+        &storage_module_path,
+        "export const n = () => new Promise(() => {});\nexport const s = () => {};\n",
+    )
+    .expect("hanging setting-storage module should be written");
     std::fs::write(&script_path, assets::injection_script(57321))
         .expect("injection script should be written");
     let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
@@ -1313,7 +1335,7 @@ function node() {{
 globalThis.window = globalThis;
 window.__CODEX_PLUS_TEST_SERVICE_TIER__ = true;
 globalThis.document = {{
-  scripts: [],
+  scripts: [{{ src: {storage_module_url} }}],
   documentElement: node(),
   body: node(),
   createElement: () => node(),
@@ -1332,7 +1354,11 @@ globalThis.location = {{ href: "https://codex.test/thread/thread-12345678", path
 window.location = globalThis.location;
 globalThis.navigator = {{ userAgent: "node-test" }};
 globalThis.performance = {{ getEntriesByType: () => [] }};
+window.__codexSessionDeleteBridge = async (path) => path === "/settings/get"
+  ? {{ codexDefaultServiceTier: "priority" }}
+  : {{ status: "ok" }};
 require(scriptPath);
+(async () => {{
 const api = window.__codexPlusServiceTierTest;
 api.setServiceTierState({{ serviceTier: "priority", fastTierValue: "priority" }});
 api.setModelCatalog({{ status: "ok", model: "gpt-5.4", default_model: "gpt-5.4", models: ["gpt-5.4", "gpt-5.5"] }});
@@ -1441,6 +1467,10 @@ class DispatcherClass {{
   dispatchMessage() {{}}
 }}
 const dispatcherFromClass = api.dispatcherFromModule({{ current: DispatcherClass }}) === DispatcherClass.instance;
+const stalledStorageFallback = await Promise.race([
+  api.loadServiceTierState().then(() => api.serviceTierState()),
+  new Promise((resolve) => setTimeout(() => resolve({{ status: "timed-out" }}), 3000)),
+]);
 
 process.stdout.write(JSON.stringify({{
   supportedFast,
@@ -1460,10 +1490,20 @@ process.stdout.write(JSON.stringify({{
   solDescriptor,
   dispatcherFromSingleton,
   dispatcherFromClass,
+  stalledStorageFallback,
 }}));
+}})().catch((error) => {{
+  console.error(error?.stack || error);
+  process.exitCode = 1;
+}});
 "#,
         script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
-            .expect("script path should serialize")
+            .expect("script path should serialize"),
+        storage_module_url = serde_json::to_string(&format!(
+            "file://{}",
+            storage_module_path.to_string_lossy()
+        ))
+        .expect("storage module URL should serialize")
     )
     .expect("harness should be written");
     drop(harness);
