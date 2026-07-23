@@ -1,0 +1,211 @@
+= v1.2.41 基线适配、运行时修复与发行包验收
+:toc:
+:toclevels: 2
+
+== 结论
+
+`v1.2.41` 已完成基线适配、Linux Desktop 构建、Codex++ 注入验收以及
+Debian 10 DEB、RHEL 9 RPM 和便携 7z 三种发行产物的验证。
+最终 Desktop ASAR、两个 build metadata 文件和三个发行包来自同一份
+Debian 10 兼容构建产物。
+
+本轮在最终 GUI 验收中定位并修复了一个会直接破坏 Desktop 启动的运行时
+补丁缺陷。修复已经同步到仓库纳管的 `codex-desktop-linux/src` 源码快照，
+并由独立回归测试覆盖。未绕过 patch enforcement，也没有把未验证的
+Desktop 改动伪装成 Codex++ snippet。
+
+== 固定输入
+
+|===
+|组件 |版本或提交
+
+|Codex++ 上游
+|`v1.2.41`, `3dafffcafb2566a1e8bce4b35671656d6adb3eda`
+
+|Codex++ Linux 适配提交
+|`9aba222777a91bd84a459ab3f449ed8ee781df21`
+
+|`ilysenko/codex-desktop-linux` 上游快照
+|`main`, `0e51086c0ab06c31276dc9cc31a6990a5d87ae1f`
+
+|Desktop Linux 适配提交
+|`676adcc5b17ab048f52308c098453acb456b460f`
+
+|Electron
+|`42.3.0`
+
+|上游 Desktop 应用版本
+|`26.715.72028`
+|===
+
+构建和 GUI 调试使用 XFS Loop 上的 Podman 存储根：
+
+[source,shell]
+----
+podman --root "$HOME/.local/share/containers/codexpp-test-root" \
+  --runroot "$HOME/.local/share/containers/codexpp-test-run" \
+  --storage-driver=vfs --events-backend=file
+----
+
+主要验收容器为 `codexpp-v141-deb-final-validate`、
+`codexpp-v141-rpm-final-validate` 和 `codexpp-v141-portable-clean`。
+GUI 定点验收遵循 `Xvfb + xdotool` 流程。
+
+== 根因与修复
+
+=== Desktop 窗口在 bootstrap 阶段被销毁
+
+最终 ASAR 的诊断错误为：
+
+[source,text]
+----
+TypeError: (0 , r.join) is not a function
+at codexLinuxChromeNativeHostRuntimeFile(...)
+----
+
+`scripts/patches/impl/chrome-plugin.js` 原先使用 `requireName()` 从当前
+压缩 bundle 选择 `node:path` 和 `node:fs` 的短别名，再把 helper 字符串
+插入另一个词法作用域。上游重排或压缩后，helper 捕获了早先无关作用域的
+别名，导致 `join` 调用对象不是 Node path API。Electron 主进程随后退出
+或窗口被销毁，表现为 Desktop 空白、窗口消失以及无法继续观察正常的
+Conversation UI。
+
+修复内容：
+
+* helper 使用直接的 `require("node:path")` 和 `require("node:fs")`，不再
+  依赖外部 minifier alias；
+* 对已经生成的旧 alias helper 提供迁移逻辑；
+* 迁移保持幂等，已修复 ASAR 再执行时不会重复插入 helper；
+* 新增 lexical-scope collision、旧 helper migration 和重复执行测试。
+
+完整 patch replay 在已接受的 ASAR 上会被 titlebar idempotency 检查正确
+拒绝，因为该 ASAR 的既有 drift 不是本轮两个迁移的输入。流程没有关闭
+`--enforce-critical` 或跳过检查，而是从已验收 ASAR 开始，只执行两个已
+测试的迁移。
+
+=== 导出的 Bash function 污染子进程环境
+
+宿主 shell 曾把 `BASH_FUNC_which%%` 作为环境变量导出。该变量被合并到
+登录 shell 环境后，会让 `/usr/bin/sh` 报语法警告，并污染 Codex CLI 和
+Desktop 子进程的启动日志。
+
+`scripts/patches/impl/main-process/misc.js` 现在在 CLI 环境和登录 shell
+结果两个边界删除 `BASH_FUNC_*%%`。已有旧环境 helper 也会被迁移；回归
+测试确认正常 PATH、LD_LIBRARY_PATH 状态和 shell 环境仍被保留。
+
+=== Linux features metadata
+
+`Build-CodexDesktopLinux.ps1` 的直接 `make build-app` 路径现在会写入
+gitignored 的 `linux-features/features.json`，同时导出
+`CODEX_LINUX_FEATURES` 与 `CODEX_LINUX_FEATURES_CONFIG`，并在构建前让
+后者指向该文件。两个 metadata 文件都必须列出启用 feature ids；若出现
+`Enabled features: None`，流程会在构建阶段失败而不会继续安装。
+
+=== 本地会话目录
+
+Codex++ 的 local catalog、初始快照保留和 direct-route hydration 适配
+随本轮基线一起构建。回归测试覆盖真实标题回填、无项目线程排除、无变化
+同步幂等和点击后直接加载。空账户的干净容器只能证明 UI 与存储路径合同，
+不能证明远程账号历史数据可用。
+
+== 构建与验收证据
+
+=== Desktop 与 patch report
+
+最终 payload 的两个 metadata 文件均记录 Desktop 修复提交
+`676adcc5b17ab048f52308c098453acb456b460f`、Debian 10 target、Electron
+`42.3.0` 和 29 个启用的 Linux features。patch report 有 170 条记录，
+状态为 132 `applied`、23 `already-applied`、7 `skipped-disabled` 和 8
+`skipped-optional`；post-patch integrity finding count 为 0。
+
+最终 ASAR SHA256：
+
+`838ecef50ebe75f52a0667e34ae0241808c9a5dae4ef9c8bd749ccd2422cbe93`
+
+独立 Desktop Node 测试套件结果：408 passed，0 failed。
+
+=== 包管理器安装
+
+* Debian 10 容器通过 `apt` 安装 DEB，`dpkg -V`、payload hash、build
+  metadata、GLIBC 2.28 上限、Codex++ entrypoints 和 Xvfb/xdotool GUI
+  全部通过；
+* AlmaLinux 9 容器通过 `dnf` 安装 RPM，`rpm -V`、依赖、payload hash、
+  build metadata、GLIBC 上限、Manager、ChatGPT 和 3 个 CDP 注入目标
+  全部通过；
+* WebKitGTK 4.0、JavaScriptCoreGTK 4.0 和 libsoup 2.4 的运行时解析在
+  Debian 10 和 AlmaLinux 9 均通过；
+* Debian 10 ELF gate：`violations=0`，最高需求为 `GLIBC_2.28`。
+
+RPM 的兼容目标是 RHEL 9 及其兼容发行版。Fedora 43 不在本次支持范围内：
+其仓库不能提供包所需的 `libwebkit2gtk-4.0.so.37`、
+`libjavascriptcoregtk-4.0.so.18` 和 `libsoup-2.4.so.1` ABI。没有使用
+`--nodeps` 强行安装，也不把 Fedora 43 声明为 RPM 兼容目标。
+
+=== 便携包生命周期
+
+在 `codexpp-v141-portable-clean` 中，从发行 7z 内取出随包管理器，以
+普通 `qa` 用户完成：
+
+* 安装到 `$HOME/.local/opt/CodexDesktop`，创建用户级命令和带图标的
+  Codex++、Codex++ Manager desktop entries；
+* 通过 `codex-plus-plus` 启动 ChatGPT，`xdotool` 识别 ChatGPT 和
+  Codex++ Manager 窗口，诊断日志确认 3 个注入目标；
+* 原子更新并确认应用 marker 被替换、七类用户数据保留；
+* 默认卸载并确认安装目录、命令、desktop entry 和 manager state 删除，
+  七类用户数据保留；
+* 重装后使用 `-PurgeUserData`，确认七类路径全部删除。
+
+GUI 测试 HOME 预置与 v1.2.41 验收容器相同的 `codex-cli 0.144.1`，
+SHA256 为 `a96f944d1a596dbfb7fdd84f482be5c50e34b04bb371126840d873e4ebf26902`。
+便携发行包不捆绑 Codex CLI；普通用户首次使用时仍遵循 Desktop 的 CLI
+安装或已有 CLI 路径发现流程。
+
+== 发行产物
+
+|===
+|文件 |大小（bytes） |SHA256
+
+|`codex-desktop_1.2.41_amd64.deb`
+|279334888
+|`6bbeccbc80956463b6fb55814b16a5888f08ede8971cb2593f9ebaab29af15f6`
+
+|`codex-desktop-1.2.41-1.x86_64.rpm`
+|337988694
+|`30be70eee424016376fddeb489c318df6eb438253de09376ed58cdfa7afe9759`
+
+|`codex-desktop-portable-v1.2.41-linux-x86_64.7z`
+|283853015
+|`0144411f78d8d8f8a15815bb4d22a4d80f3f8a1d29b1eaa4160a71fa197ea9000d`
+|===
+
+7z 使用最高压缩率、LZMA2、非固实模式：`Solid = -`，独立 block 数为
+`10691`。发行目录中的临时诊断目录、容器缓存和测试日志不属于发布
+资产。
+
+项目目录归档为
+`dist/v1.2.41/CodexPlusPlus-for-Linux-v1.2.41-build-artifacts.7z`，包含上述
+四个 Release assets 和 `SHA256SUMS-v1.2.41.txt`。归档大小为 806870451
+bytes，SHA256 为
+`79864ae8d98ef0ad90a7a8f0cb434a1b48eac87b8746ca0ef70b108e00c5664b`；
+归档本身同样为非固实模式，共 5 个 blocks，并通过 `7z t`。
+
+== 尚未纳入支持承诺的事项
+
+* 包和归档当前只提供 SHA256，不提供发行签名；
+* 账号登录、订阅状态和远程服务不在干净容器门禁内；
+* RPM 目标为 RHEL 9，不承诺 Fedora 43；
+* 宿主机覆盖必须在 Git tag 和 Release asset 发布后执行，避免未发布
+  产物替换现有安装。
+
+== 固化位置
+
+运行时修复固定在：
+
+* `codex-desktop-linux/src/scripts/patches/impl/chrome-plugin.js`；
+* `codex-desktop-linux/src/scripts/patches/impl/main-process/misc.js`；
+* `codex-desktop-linux/src/scripts/patch-linux-window-ui.test.js`。
+
+Codex++ 的兼容性补丁继续由
+`docs/modules/ROOT/attachments/patches/compatibility/` 管理，并由
+`snippets.adoc` 和 `snippets_zh-CN.adoc` 的 manifest 驱动。Desktop 快照
+修复不作为错误目标的 Codex++ snippet 执行。

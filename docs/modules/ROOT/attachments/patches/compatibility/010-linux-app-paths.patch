@@ -1,8 +1,8 @@
 diff --git a/crates/codex-plus-core/src/app_paths.rs b/crates/codex-plus-core/src/app_paths.rs
-index 0cf1995..da51c60 100644
+index 3d571a1..ec692c4 100644
 --- a/crates/codex-plus-core/src/app_paths.rs
 +++ b/crates/codex-plus-core/src/app_paths.rs
-@@ -208,6 +208,12 @@ pub fn resolve_codex_app_dir_with_saved(
+@@ -328,6 +328,12 @@ pub fn resolve_codex_app_dir_with_saved(
              return Some(path);
          }
      }
@@ -14,8 +14,19 @@ index 0cf1995..da51c60 100644
 +    }
      resolve_codex_app_dir(None)
  }
-
-@@ -257,6 +263,10 @@ pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
+ 
+@@ -350,6 +356,10 @@ pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
+         return Some(path.to_path_buf());
+     }
+ 
++    if cfg!(target_os = "linux") && path.is_dir() && path.join("start.sh").is_file() {
++        return Some(path.to_path_buf());
++    }
++
+     if path.is_file() {
+         // 任意普通文件不再视为应用根；仅当父目录已是合法 Codex 目录时取父路径
+         let parent = path.parent()?;
+@@ -420,6 +430,10 @@ pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
          }
          return macos_dir.join("Codex");
      }
@@ -26,23 +37,7 @@ index 0cf1995..da51c60 100644
      if let Some(executable) = executable_in_dir(app_dir) {
          return executable;
      }
-@@ -270,6 +280,15 @@ pub fn codex_app_version(app_dir: &Path) -> Option<String> {
-     if app_dir.extension() == Some(OsStr::new("app")) {
-         return macos_app_version(app_dir);
-     }
-+    if cfg!(target_os = "linux") {
-+        let version_file = app_dir.join("version");
-+        if let Ok(version) = std::fs::read_to_string(version_file) {
-+            let version = version.trim();
-+            if !version.is_empty() {
-+                return Some(version.to_string());
-+            }
-+        }
-+    }
-     let package_dir = if app_dir
-         .file_name()
-         .and_then(OsStr::to_str)
-@@ -459,3 +478,158 @@ fn strip_prefix_ignore_ascii_case<'a>(value: &'a str, prefix: &str) -> Option<&'
+@@ -672,3 +686,158 @@ fn strip_prefix_ignore_ascii_case<'a>(value: &'a str, prefix: &str) -> Option<&'
      let (head, rest) = value.split_at(prefix.len());
      head.eq_ignore_ascii_case(prefix).then_some(rest)
  }

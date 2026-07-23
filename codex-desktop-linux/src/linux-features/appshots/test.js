@@ -2,7 +2,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { execFileSync } = require("node:child_process");
+const { execFileSync, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -18,7 +18,6 @@ const {
   applyLinuxAppshotMainProcessPatch,
   applyLinuxAppshotSettingsHotkeyPatch,
   descriptors,
-  findMessageForViewSendFunction,
 } = require("./patch.js");
 
 function applyPatchTwice(patchFn, source) {
@@ -53,12 +52,10 @@ function appshotAvailabilityAtomBundleFixture() {
 
 function appshotMainProcessBundleFixture() {
   return [
-    "var Ts=`codex_desktop:message-from-view`,F=`codex_desktop:message-for-view`,eS=new Map;",
-    "function tS({origin:n,requestId:r,subscribeComputerUseCaptureWorkerEvent:a}){let l=a(`update`,e=>{e.requestId===r&&nS(e.requestId,e.update)});eS.set(r,{origin:n,unsubscribe:l})}",
-    "function nS(e,t){let n=eS.get(e);n!=null&&(rS(n.origin,{requestId:e,type:`computer-use-capture-updated`,update:t}),(t.type===`completed`||t.type===`failed`)&&iS(e,n))}",
-    "function rS(e,t){e.isDestroyed()||e.send(F,t)}",
+    "var FO=new Map;",
+    "function HO(e,t){let n=FO.get(e);n!=null&&(n.windowManager.sendInlineMessageForView(n.origin,{requestId:e,type:`computer-use-capture-updated`,update:t}),done(e,n))}",
     "\"computer-use-frontmost-window\":async()=>process.platform===`darwin`?Xo():null,",
-    "\"computer-use-start-capture\":async({animationDestination:e,bundleIdentifier:t,origin:n,requestId:r})=>{if(process.platform!==`darwin`||this.requestComputerUseCaptureWorker==null||this.subscribeComputerUseCaptureWorkerEvent==null)return null;let i=GO({backgroundColor:e.backgroundColor,cornerRadius:e.cornerRadius,primaryTextColor:e.primaryTextColor,viewportFrame:e.viewportFrame,webContents:n});return i==null?null:eS({animationTarget:i,bundleIdentifier:t,origin:n,requestComputerUseCaptureWorker:this.requestComputerUseCaptureWorker,requestId:r,subscribeComputerUseCaptureWorkerEvent:this.subscribeComputerUseCaptureWorkerEvent})}",
+    "\"computer-use-start-capture\":async({animationDestination:e,bundleIdentifier:t,origin:n,requestId:r})=>{if(process.platform!==`darwin`||this.requestComputerUseCaptureWorker==null||this.subscribeComputerUseCaptureWorkerEvent==null)return null;let i=GO({backgroundColor:e.backgroundColor,cornerRadius:e.cornerRadius,primaryTextColor:e.primaryTextColor,viewportFrame:e.viewportFrame,webContents:n});return i==null?null:VO({animationTarget:i,bundleIdentifier:t,origin:n,requestComputerUseCaptureWorker:this.requestComputerUseCaptureWorker,requestId:r,subscribeComputerUseCaptureWorkerEvent:this.subscribeComputerUseCaptureWorkerEvent,windowManager:this.windowManager})}",
   ].join("");
 }
 
@@ -139,16 +136,16 @@ test("appshots availability descriptor matches the current bundle", () => {
   );
 
   assert.equal(descriptor.pattern.test("appshot-availability-BoK-Z77O.js"), false);
-  assert.ok(
-    descriptor.pattern.test(
-      "app-initial~app-main~new-thread-panel-page~appgen-library-page~hotkey-window-thread-page~ho~iufn7mg3-MXsOJYYa.js",
-    ),
-  );
   assert.equal(
     descriptor.pattern.test(
-      "app-initial~app-main~new-thread-panel-page~appgen-library-page~hotkey-window-thread-page~ho~glxlkd48-Bty5T9_s.js",
+      "app-initial~app-main~page-CMpPiY3-.js",
     ),
     false,
+  );
+  assert.ok(
+    descriptor.pattern.test(
+      "app-initial~app-main~settings-command-menu-section-items~new-thread-panel-page~settings-pag~unq8yzli-twtaboLE.js",
+    ),
   );
 });
 
@@ -175,28 +172,98 @@ test("stages the Linux bare modifier monitor helper and Wayland portal hook", ()
     },
   });
   assert.equal(electronArgsSource.trim(), "--enable-features=GlobalShortcutsPortal");
-  assert.match(helperSource, /xinput test "\$device_id"/);
+  assert.match(helperSource, /xinput test-xi2 --root/);
   assert.match(helperSource, /stdbuf -oL/);
   assert.doesNotMatch(helperSource, /\bmktemp\s+-u\b/);
-  assert.match(
-    helperSource,
-    /event_dir="\$\(mktemp -d "\$\{TMPDIR:-\/tmp\}\/codex-bare-modifier\.XXXXXX"\)"/,
-  );
-  assert.match(helperSource, /event_fifo="\$event_dir\/events"/);
-  assert.match(helperSource, /mkfifo "\$event_fifo"/);
-  assert.match(helperSource, /rmdir "\$event_dir" 2>\/dev\/null \|\| true/);
-  assert.match(helperSource, /exec 4<>"\$event_fifo"/);
-  assert.match(helperSource, /pkill -TERM -P "\$pid"/);
-  assert.match(helperSource, /while read -r pending code <&3; do/);
-  assert.match(helperSource, /\) >"\$event_fifo" 2>\/dev\/null &/);
+  assert.doesNotMatch(helperSource, /xinput list --short/);
+  assert.doesNotMatch(helperSource, /xinput test "\$device_id"/);
+  assert.doesNotMatch(helperSource, /mkfifo/);
+  assert.match(helperSource, /parent_pid="\$PPID"/);
+  assert.match(helperSource, /kill -0 "\$parent_pid"/);
+  assert.match(helperSource, /read -r -t 1 -u "\$event_fd" line/);
+  assert.match(helperSource, /kill "\$monitor_pid"/);
   assert.match(helperSource, /doublealt\|doubleoption\|alt\+alt/);
   assert.match(helperSource, /doubleshift\|shift\+shift\|leftshift\+rightshift/);
   assert.match(helperSource, /Shift_L Shift_R/);
   assert.match(helperSource, /last_tap_code=""/);
   assert.match(helperSource, /\[ "\$code" != "\$last_tap_code" \]/);
   assert.doesNotMatch(helperSource, /while IFS= read -r pending code/);
-  assert.doesNotMatch(helperSource, /test-xi2 --root/);
   execFileSync("bash", ["-n", path.join(__dirname, "bin", "bare-modifier-monitor")]);
+});
+
+test("bare modifier monitor emits one transition from one XInput2 stream", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "appshots-xinput2-"));
+  const binDir = path.join(tempDir, "bin");
+  const helper = path.join(__dirname, "bin", "bare-modifier-monitor");
+  fs.mkdirSync(binDir);
+  fs.writeFileSync(
+    path.join(binDir, "xmodmap"),
+    "#!/bin/sh\nprintf '%s\\n' 'keycode 50 = Shift_L' 'keycode 62 = Shift_R'\n",
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(binDir, "xinput"),
+    [
+      "#!/bin/sh",
+      "[ \"$1 $2\" = \"test-xi2 --root\" ] || exit 2",
+      "printf '%s\\n' \\",
+      "  'EVENT type 13 (RawKeyPress)' '    detail: 50' \\",
+      "  'EVENT type 14 (RawKeyRelease)' '    detail: 50' \\",
+      "  'EVENT type 13 (RawKeyPress)' '    detail: 62' \\",
+      "  'EVENT type 14 (RawKeyRelease)' '    detail: 62'",
+      "sleep 0.25",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+
+  try {
+    const result = spawnSync(helper, ["--key", "DoubleShift", "--immediate"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DISPLAY: ":99",
+        PATH: `${binDir}:${process.env.PATH}`,
+      },
+      timeout: 2_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.stdout.trim().split("\n"), ["ready", "down", "up"]);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("bare modifier monitor fails before ready when XInput2 exits during startup", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "appshots-xinput2-startup-"));
+  const binDir = path.join(tempDir, "bin");
+  const helper = path.join(__dirname, "bin", "bare-modifier-monitor");
+  fs.mkdirSync(binDir);
+  fs.writeFileSync(
+    path.join(binDir, "xmodmap"),
+    "#!/bin/sh\nprintf '%s\\n' 'keycode 50 = Shift_L' 'keycode 62 = Shift_R'\n",
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(binDir, "xinput"),
+    "#!/bin/sh\n[ \"$1 $2\" = \"test-xi2 --root\" ] || exit 2\nexit 2\n",
+    { mode: 0o755 },
+  );
+
+  try {
+    const result = spawnSync(helper, ["--key", "DoubleShift", "--immediate"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DISPLAY: ":99",
+        PATH: `${binDir}:${process.env.PATH}`,
+      },
+      timeout: 2_000,
+    });
+    assert.notEqual(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "permission-denied\n");
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("enables AppShots availability atom on Linux", () => {
@@ -212,12 +279,9 @@ test("enables AppShots availability atom on Linux", () => {
   assert.match(patched, /requirements\?\.allowAppshots!==!1/);
 });
 
-test("finds only the raw renderer message sender", () => {
-  assert.equal(findMessageForViewSendFunction(appshotMainProcessBundleFixture()), "rS");
-  assert.equal(
-    findMessageForViewSendFunction("var F=`codex_desktop:message-for-view`;function nS(e,t){}"),
-    null,
-  );
+test("rejects the obsolete raw renderer message sender shape", () => {
+  const obsolete = "var F=`codex_desktop:message-for-view`;function nS(e,t){e.send(F,t)}";
+  assert.equal(applyLinuxAppshotMainProcessPatch(obsolete), obsolete);
 });
 
 test("routes AppShots capture through the self-contained Linux feature", () => {
@@ -232,7 +296,7 @@ test("routes AppShots capture through the self-contained Linux feature", () => {
   );
   assert.match(
     patched,
-    /if\(process\.platform===`linux`\)return codexLinuxAppshotStartCapture\(\{origin:n,requestId:r,bundleIdentifier:t\}\);/,
+    /if\(process\.platform===`linux`\)return codexLinuxAppshotStartCapture\(\{origin:n,requestId:r,bundleIdentifier:t,windowManager:this\.windowManager\}\);/,
   );
   assert.match(patched, /function codexLinuxAppshotBackendPath/);
   assert.match(patched, /codexLinuxAppshotBackendJson\(\[`windows`\],5000\)/);
@@ -257,17 +321,17 @@ test("routes AppShots capture through the self-contained Linux feature", () => {
   assert.doesNotMatch(patched, /bare-modifier-monitor/);
   assert.match(
     patched,
-    /function codexLinuxAppshotSend\(e,t,n\)\{try\{rS\(e,\{requestId:t,type:`computer-use-capture-updated`,update:n\}\)\}catch\{\}\}/,
+    /function codexLinuxAppshotSend\(e,t,n,r\)\{try\{e\.sendInlineMessageForView\(t,\{requestId:n,type:`computer-use-capture-updated`,update:r\}\)\}catch\{\}\}/,
   );
   assert.doesNotMatch(
     patched,
-    /function codexLinuxAppshotSend\(e,t,n\)\{try\{nS\(e,\{requestId:t,type:`computer-use-capture-updated`,update:n\}\)\}catch\{\}\}/,
+    /codex_desktop:message-for-view/,
   );
   assert.match(patched, /transitionSnapshotHeight:140/);
-  assert.match(patched, /type:`metadata`,app:\{bundleIdentifier:i\.bundleIdentifier/);
-  assert.match(patched, /type:`axText`,text:o/);
-  assert.match(patched, /type:`screenshot`,screenshotDataURL:s\.dataURL/);
-  assert.match(patched, /type:`completed`,transitionSnapshotDataURL:s\.dataURL/);
+  assert.match(patched, /type:`metadata`,app:\{bundleIdentifier:a\.bundleIdentifier/);
+  assert.match(patched, /type:`axText`,text:s/);
+  assert.match(patched, /type:`screenshot`,screenshotDataURL:c\.dataURL/);
+  assert.match(patched, /type:`completed`,transitionSnapshotDataURL:c\.dataURL/);
 });
 
 test("AppShots capture uses and removes its private temporary directory", async () => {

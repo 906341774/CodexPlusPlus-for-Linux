@@ -4,8 +4,192 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const {
+  escapeRegExp,
   requireName,
 } = require("../../lib/minified-js.js");
+
+function applyLinuxBundledPluginCopyPermissionsPatch(currentSource) {
+  const helperName = "codexLinuxMakeBundledPluginTreeWritable";
+  if (currentSource.includes(`async function ${helperName}(`)) {
+    return currentSource;
+  }
+
+  const pathVar = requireName(currentSource, "node:path");
+  if (pathVar == null) {
+    if (currentSource.includes("verbatimSymlinks")) {
+      console.warn(
+        "WARN: Could not find node:path binding — skipping Linux plugin permissions patch",
+      );
+    }
+    return currentSource;
+  }
+
+  const copyBranchRegex =
+    /if\(([A-Za-z_$][\w$]*)\.default\.platform!==`win32`\)\{await ([A-Za-z_$][\w$]*)\.default\.cp\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*),\{recursive:!0,verbatimSymlinks:!0\}\);return\}/;
+  let patchedCopyBranch = false;
+  const patchedSource = currentSource.replace(
+    copyBranchRegex,
+    (_match, platformVar, fsPromisesVar, sourceVar, targetVar) => {
+      patchedCopyBranch = true;
+      return `if(${platformVar}.default.platform!==\`win32\`){await ${fsPromisesVar}.default.cp(${sourceVar},${targetVar},{recursive:!0,verbatimSymlinks:!0});if(process.platform===\`linux\`)await ${helperName}(${targetVar},${fsPromisesVar}.default);return}`;
+    },
+  );
+  if (!patchedCopyBranch) {
+    if (currentSource.includes("verbatimSymlinks")) {
+      console.warn(
+        "WARN: Could not find bundled plugin copy branch — skipping Linux plugin permissions patch",
+      );
+    }
+    return currentSource;
+  }
+
+  const helper =
+    `async function ${helperName}(e,t){let n=await t.lstat(e);if(n.isSymbolicLink())return;await t.chmod(e,n.mode|128);if(n.isDirectory())for(let n of await t.readdir(e))await ${helperName}((0,${pathVar}.join)(e,n),t)}`;
+  const strictDirective = '"use strict";';
+  const helperInsertionIndex = currentSource.startsWith(strictDirective)
+    ? strictDirective.length
+    : 0;
+  return (
+    patchedSource.slice(0, helperInsertionIndex) +
+    helper +
+    patchedSource.slice(helperInsertionIndex)
+  );
+}
+
+function applyLinuxBundledPluginReconcileStaleSnapshotPatch(currentSource) {
+  const marker = "/*codex-linux-skip-stale-bundled-plugin-reconcile*/";
+  if (currentSource.includes(marker)) {
+    return currentSource;
+  }
+
+  const reconcilerStartRegex =
+    /([A-Za-z_$][\w$]*)=\(\{force:([A-Za-z_$][\w$]*),reason:([A-Za-z_$][\w$]*)\}\)=>\{if\(([A-Za-z_$][\w$]*)==null\)return [A-Za-z_$][\w$]*\(\)\.info\(`bundled_plugins_reconcile_skipped_features_unavailable`/;
+  const match = currentSource.match(reconcilerStartRegex);
+  if (match == null || match.index == null) {
+    if (currentSource.includes("bundled_plugins_reconcile_skipped_features_unavailable")) {
+      console.warn(
+        "WARN: Could not find bundled plugin reconcile queue — skipping stale snapshot patch",
+      );
+    }
+    return currentSource;
+  }
+
+  const featureSnapshotVar = match[4];
+  const escapedFeatureSnapshotVar = escapeRegExp(featureSnapshotVar);
+  const reconcilerPrefix = currentSource.slice(match.index);
+  const snapshotMatch = reconcilerPrefix.match(
+    new RegExp(`;let ([A-Za-z_$][\\w$]*)=${escapedFeatureSnapshotVar}(?:,|;)`),
+  );
+  const reconcileLogIndex = reconcilerPrefix.indexOf(
+    "bundled_plugins_reconcile_started",
+  );
+  if (snapshotMatch == null || snapshotMatch.index == null || reconcileLogIndex < 0) {
+    console.warn(
+      "WARN: Could not find bundled plugin reconcile snapshot — skipping stale snapshot patch",
+    );
+    return currentSource;
+  }
+
+  const capturedSnapshotVar = snapshotMatch[1];
+  const hashMatch = reconcilerPrefix.match(
+    new RegExp(
+      `;if\\(!${escapeRegExp(match[2])}&&([A-Za-z_$][\\w$]*)===([A-Za-z_$][\\w$]*)\\)return`,
+    ),
+  );
+  if (hashMatch == null) {
+    console.warn(
+      "WARN: Could not find bundled plugin reconcile semantic hash — skipping stale snapshot patch",
+    );
+    return currentSource;
+  }
+
+  const latestHashVar = hashMatch[1];
+  const capturedHashVar = hashMatch[2];
+  const reconcileCallMatch = reconcilerPrefix.match(
+    new RegExp(
+      `await ([A-Za-z_$][\\w$]*)\\(\\{desktopFeatureAvailability:${escapeRegExp(capturedSnapshotVar)},`,
+    ),
+  );
+  if (reconcileCallMatch == null) {
+    console.warn(
+      "WARN: Could not find bundled plugin reconcile worker — skipping stale snapshot patch",
+    );
+    return currentSource;
+  }
+
+  const reconcileWorkerVar = reconcileCallMatch[1];
+  const workerDefinitionRegex = new RegExp(
+    `${escapeRegExp(reconcileWorkerVar)}=async ([A-Za-z_$][\\w$]*)=>\\{`,
+    "g",
+  );
+  const workerDefinitionMatches = [...reconcilerPrefix.matchAll(workerDefinitionRegex)];
+  if (
+    workerDefinitionMatches.length !== 1 ||
+    workerDefinitionMatches[0].index == null
+  ) {
+    console.warn(
+      "WARN: Expected one bundled plugin reconcile worker definition — skipping stale snapshot patch",
+    );
+    return currentSource;
+  }
+  const workerDefinitionMatch = workerDefinitionMatches[0];
+
+  const workerArgumentVar = workerDefinitionMatch[1];
+  const workerPrefix = reconcilerPrefix.slice(workerDefinitionMatch.index);
+  const destructiveReconcileRegex =
+    /try\{([A-Za-z_$][\w$]*)=await ([A-Za-z_$][\w$]*)\(\{appServerConnection:/;
+  const destructiveReconcileMatch = workerPrefix.match(destructiveReconcileRegex);
+  if (destructiveReconcileMatch == null || destructiveReconcileMatch.index == null) {
+    console.warn(
+      "WARN: Could not find bundled plugin destructive reconcile boundary — skipping stale snapshot patch",
+    );
+    return currentSource;
+  }
+
+  const insertionIndex =
+    match.index +
+    workerDefinitionMatch.index +
+    destructiveReconcileMatch.index +
+    "try{".length;
+  const reconcileCallIndex = match.index + reconcileCallMatch.index;
+  const reconcileCallPrefix = `await ${reconcileWorkerVar}({`;
+  const reconcilePropertyIndex = reconcileCallIndex + reconcileCallPrefix.length;
+  const hashAssignment = `${latestHashVar}=${capturedHashVar};`;
+  const hashAssignmentIndex = reconcilerPrefix.indexOf(hashAssignment);
+  if (hashAssignmentIndex < 0) {
+    console.warn(
+      "WARN: Could not find bundled plugin reconcile hash assignment — skipping stale snapshot patch",
+    );
+    return currentSource;
+  }
+  const globalHashInsertionIndex =
+    match.index + hashAssignmentIndex + hashAssignment.length;
+  if (
+    !(
+      globalHashInsertionIndex < reconcilePropertyIndex &&
+      reconcilePropertyIndex < insertionIndex
+    )
+  ) {
+    console.warn(
+      "WARN: Bundled plugin reconcile insertion order drifted — skipping stale snapshot patch",
+    );
+    return currentSource;
+  }
+
+  const guardedSource =
+    currentSource.slice(0, insertionIndex) +
+    `if(${workerArgumentVar}.codexLinuxReconcileSnapshot!==globalThis.__codexLinuxBundledPluginReconcileSnapshot)return;${marker}` +
+    currentSource.slice(insertionIndex);
+  const propertySource =
+    guardedSource.slice(0, reconcilePropertyIndex) +
+    `codexLinuxReconcileSnapshot:${capturedHashVar},` +
+    guardedSource.slice(reconcilePropertyIndex);
+  return (
+    propertySource.slice(0, globalHashInsertionIndex) +
+    `globalThis.__codexLinuxBundledPluginReconcileSnapshot=${capturedHashVar};` +
+    propertySource.slice(globalHashInsertionIndex)
+  );
+}
 
 function applyBrowserUseNodeReplApprovalPatch(currentSource) {
   let patchedSource = currentSource;
@@ -187,6 +371,64 @@ function applyLinuxBrowserUseRouteLivenessPatch(currentSource) {
   return currentSource.replace(original, replacement);
 }
 
+function applyLinuxBrowserUseSocketDirectoryPatch(currentSource) {
+  const helperName = "codexLinuxBrowserUseSocketDir";
+  const socketModeMarker = "/*codexLinuxBrowserUseSocketMode*/";
+  const hasHelper = currentSource.includes(`function ${helperName}(`);
+  const hasSocketModePatch = currentSource.includes(socketModeMarker);
+  if (hasHelper && hasSocketModePatch) {
+    return currentSource;
+  }
+  if (hasHelper || hasSocketModePatch) {
+    console.warn(
+      "WARN: Browser Use socket directory patch is only partially present — leaving main bundle unchanged",
+    );
+    return currentSource;
+  }
+
+  const socketDirectoryPattern =
+    /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)=>\2===`win32`\?(`(?:\\.|[^`\\])*codex-browser-use`):`\/tmp\/codex-browser-use`/g;
+  const socketDirectoryMatches = [...currentSource.matchAll(socketDirectoryPattern)];
+  const socketListenPattern =
+    /this\.server\.listen\(this\.pipePath,\(\)=>\{this\.server\.off\(`error`,([A-Za-z_$][\w$]*)\),([A-Za-z_$][\w$]*)\(\)\}\)/g;
+  const socketListenMatches = [...currentSource.matchAll(socketListenPattern)];
+  if (socketDirectoryMatches.length !== 1 || socketListenMatches.length !== 1) {
+    if (currentSource.includes("codex-browser-use")) {
+      console.warn(
+        `WARN: Expected one Browser Use socket directory and listener, found ${socketDirectoryMatches.length}/${socketListenMatches.length} — skipping Linux IAB socket alignment patch`,
+      );
+    }
+    return currentSource;
+  }
+
+  const [directoryTarget, resolverName, platformName, windowsSocket] =
+    socketDirectoryMatches[0];
+  const [listenTarget, errorHandlerName, resolveName] = socketListenMatches[0];
+  const helper =
+    `function ${helperName}(){let e=process.env.CODEX_BROWSER_USE_SOCKET_DIR,t=typeof e===\`string\`&&e.length>0?e:null,n=typeof process.getuid===\`function\`?process.getuid():null;` +
+    `if(t==null){if(!Number.isInteger(n)||n<0)throw Error(\`Browser Use cannot resolve a per-user Linux socket directory\`);t=\`/tmp/codex-browser-use-\${n}\`}` +
+    `let r=require(\`node:fs\`);r.mkdirSync(t,{recursive:!0,mode:448});let i=r.lstatSync(t);` +
+    `if(i.isSymbolicLink()||!i.isDirectory())throw Error(\`Browser Use socket directory is not a directory\`);` +
+    `if(Number.isInteger(n)&&i.uid!==n)throw Error(\`Browser Use socket directory is not owned by the current user\`);` +
+    `r.chmodSync(t,448);return t}`;
+  const directoryReplacement = `${resolverName}=${platformName}=>${platformName}===\`win32\`?${windowsSocket}:${helperName}()`;
+  const listenReplacement =
+    `this.server.listen(this.pipePath,()=>{if(process.platform===\`linux\`)try{require(\`node:fs\`).chmodSync(this.pipePath,384)}catch(e){this.server.off(\`error\`,${errorHandlerName}),this.server.close(()=>{}),${errorHandlerName}(e);return}${socketModeMarker}` +
+    `this.server.off(\`error\`,${errorHandlerName}),${resolveName}()})`;
+
+  let patchedSource = currentSource.replace(directoryTarget, directoryReplacement);
+  patchedSource = patchedSource.replace(listenTarget, listenReplacement);
+  const strictDirective = '"use strict";';
+  const helperInsertionIndex = patchedSource.startsWith(strictDirective)
+    ? strictDirective.length
+    : 0;
+  return (
+    patchedSource.slice(0, helperInsertionIndex) +
+    helper +
+    patchedSource.slice(helperInsertionIndex)
+  );
+}
+
 function applyLinuxChromeExtensionStatusPatch(currentSource) {
   if (currentSource.includes("codexLinuxChromeProfileRoots")) {
     return currentSource;
@@ -329,7 +571,10 @@ function applyLinuxExternalOpenEnvPatch(currentSource) {
 module.exports = {
   applyBrowserUseNodeReplApprovalPatch,
   applyBrowserUseNodeReplApprovalAssets,
+  applyLinuxBundledPluginCopyPermissionsPatch,
+  applyLinuxBundledPluginReconcileStaleSnapshotPatch,
   applyLinuxExternalOpenEnvPatch,
   applyLinuxBrowserUseRouteLivenessPatch,
+  applyLinuxBrowserUseSocketDirectoryPatch,
   applyLinuxChromeExtensionStatusPatch,
 };

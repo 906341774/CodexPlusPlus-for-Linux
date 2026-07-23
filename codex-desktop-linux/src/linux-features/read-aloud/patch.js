@@ -44,12 +44,12 @@ function applyMainBundlePatch(source) {
     return source;
   }
 
-  const childProcessVar = requireName(source, "node:child_process") ?? requireName(source, "child_process");
+  const childProcessVar = "require(`node:child_process`)";
   const fsVar = requireName(source, "node:fs");
   const pathVar = requireName(source, "node:path");
   const osVar = requireName(source, "node:os") ?? requireName(source, "os");
-  if (childProcessVar == null || fsVar == null || pathVar == null || osVar == null) {
-    warn("Could not find node:child_process/node:fs/node:path/node:os dependencies", "read aloud main-bundle patch");
+  if (fsVar == null || pathVar == null || osVar == null) {
+    warn("Could not find node:fs/node:path/node:os dependencies", "read aloud main-bundle patch");
     return source;
   }
 
@@ -793,7 +793,7 @@ module.exports = {
       phase: "webview-asset",
       order: 20620,
       ciPolicy: "optional",
-      pattern: /^app-initial~app-main~onboarding-page-[A-Za-z0-9_-]+\.js$/,
+      pattern: /^app-initial~app-main~onboarding-page~hotkey-window-thread-page~quick-chat-window-page~chatg~c33rimzq-[^.]+\.js$/,
       missingDescription: "current primary thread assistant bundle",
       skipDescription: "read aloud assistant runtime patch",
       apply: applyWebviewPatch,

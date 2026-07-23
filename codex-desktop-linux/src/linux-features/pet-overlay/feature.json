@@ -21,6 +21,8 @@
     "skipTaskbar": true,
     "lockPosition": false,
     "mode": "interactive",
-    "hyprland": true
+    "hyprland": true,
+    "kwin": true,
+    "niri": true
   }
 }

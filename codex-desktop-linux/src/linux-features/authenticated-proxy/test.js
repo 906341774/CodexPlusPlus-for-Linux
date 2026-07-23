@@ -63,6 +63,7 @@ function runHook(env, args = []) {
   const result = spawnSync("bash", [hookPath, ...args], {
     encoding: "utf8",
     env: {
+      HOME: process.env.HOME ?? os.homedir(),
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       ...env,
     },
@@ -490,6 +491,23 @@ test("routes current authenticated proxy desktop fetch shape through ClientReque
   assert.equal(authenticatedResponse.status, 200);
   assert.equal(await authenticatedResponse.text(), "request");
   assert.deepEqual(credentials, { username: "user", password: "p@ss" });
+});
+
+test("routes latest desktop fetch variable layout through ClientRequest", () => {
+  const source = [
+    "let l=require(`electron`);",
+    "async function boot(){await l.app.whenReady()}",
+    "class Fetcher{",
+    "async performDesktopFetch(){let e=null,t={},r=`GET`,i=null,o=`https://chatgpt.com/wham/usage`,s={},c=true,h=()=>null,n=this.cloneHeaders(t);let p=i==null?await l.net.fetch(o,{method:r,headers:n,body:h(),signal:s,credentials:c?`include`:`same-origin`}):await this.performProgressRequest({body:h(),headers:n,method:r,onUploadProgress:i,resolvedUrl:o,signal:s,useSessionCookies:c});return p}",
+    "performProgressRequest({body:e,headers:t,method:n,onUploadProgress:r,resolvedUrl:i,signal:a,useSessionCookies:o}){return new Promise((s,c)=>{let u=l.net.request({method:n,url:i,headers:t,useSessionCookies:o}),d=-1,f=()=>{let e=u.getUploadProgress();!e.started||e.current===d||(d=e.current,r({loaded:e.current,total:e.total}))}})}",
+    "cloneHeaders(e){return e}",
+    "}",
+  ].join("");
+
+  const patched = applyPatchTwiceWithoutWarnings(applyAuthenticatedProxyPatch, source);
+
+  assert.match(patched, /i==null&&!codexLinuxProxyAuthEntry\(\)\?await l\.net\.fetch/);
+  assert.match(patched, /codexLinuxAttachProxyAuthToRequest\(u\)/);
 });
 
 test("authenticated-proxy tests fail when current desktop fetch shape drifts", () => {

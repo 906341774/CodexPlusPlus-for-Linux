@@ -8,6 +8,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const {
+  enabledLinuxFeatureIds,
   stageEnabledLinuxFeatureInstall,
 } = require("./linux-features.js");
 
@@ -28,6 +29,33 @@ function stageFeature(root, featuresRoot) {
     featuresRoot,
   });
 }
+
+test("Linux feature selection falls back to CODEX_LINUX_FEATURES without a config file", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-feature-env-selection-"));
+  const previousFeaturesRoot = process.env.CODEX_LINUX_FEATURES_ROOT;
+  const previousFeaturesConfig = process.env.CODEX_LINUX_FEATURES_CONFIG;
+  const previousFeatures = process.env.CODEX_LINUX_FEATURES;
+  t.after(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    if (previousFeaturesRoot == null) delete process.env.CODEX_LINUX_FEATURES_ROOT;
+    else process.env.CODEX_LINUX_FEATURES_ROOT = previousFeaturesRoot;
+    if (previousFeaturesConfig == null) delete process.env.CODEX_LINUX_FEATURES_CONFIG;
+    else process.env.CODEX_LINUX_FEATURES_CONFIG = previousFeaturesConfig;
+    if (previousFeatures == null) delete process.env.CODEX_LINUX_FEATURES;
+    else process.env.CODEX_LINUX_FEATURES = previousFeatures;
+  });
+
+  const { featuresRoot } = makeFeatureRoot(root, {
+    id: "unsafe-link",
+    title: "Unsafe Link",
+  });
+  fs.rmSync(path.join(featuresRoot, "features.json"));
+  process.env.CODEX_LINUX_FEATURES_ROOT = featuresRoot;
+  delete process.env.CODEX_LINUX_FEATURES_CONFIG;
+  process.env.CODEX_LINUX_FEATURES = "unsafe-link";
+
+  assert.deepEqual(enabledLinuxFeatureIds(), ["unsafe-link"]);
+});
 
 function writeStagedManifest(appDir, manifest) {
   const manifestPath = path.join(appDir, ".codex-linux", "linux-features-staged.json");

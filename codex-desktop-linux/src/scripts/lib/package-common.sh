@@ -54,6 +54,20 @@ package_node_binary() {
     command -v node
 }
 
+linux_feature_enabled() {
+    local feature_id="$1"
+    local helper="$REPO_DIR/scripts/lib/linux-features.js"
+    local node_bin
+    local enabled_output
+
+    [ -f "$helper" ] || error "Missing Linux features helper: $helper"
+    node_bin="$(package_node_binary)"
+    if ! enabled_output="$("$node_bin" "$helper" --enabled)"; then
+        error "Failed to discover enabled Linux features"
+    fi
+    grep -Fxq "$feature_id" <<<"$enabled_output"
+}
+
 stage_update_builder_linux_features_config() {
     local update_builder_root="$1"
     local helper="$REPO_DIR/scripts/lib/linux-features.js"
@@ -80,6 +94,17 @@ if (config.enabled.length === 0) {
 fs.mkdirSync(path.dirname(targetPath), { recursive: true });
 fs.writeFileSync(targetPath, `${JSON.stringify(config, null, 2)}\n`);
 NODE
+}
+
+stage_update_builder_global_dictation_source() {
+    local update_builder_root="$1"
+    local source_root="$REPO_DIR/global-dictation-linux"
+    local target_root="$update_builder_root/global-dictation-linux"
+
+    mkdir -p "$target_root/src"
+    cp "$source_root/Cargo.toml" "$target_root/Cargo.toml"
+    cp "$source_root/Cargo.lock" "$target_root/Cargo.lock"
+    cp -R "$source_root/src/." "$target_root/src/"
 }
 
 linux_features_root_path() {
@@ -223,7 +248,7 @@ resolve_package_icon_source() {
         while IFS= read -r -d '' candidate; do
             candidates+=("$candidate")
         done < <(
-            find "$icon_dir" -maxdepth 1 -type f -name '*.png' ! -name '*-tray.png' -print0 |
+            find "$icon_dir" -maxdepth 1 -type f -name '*.png' -print0 |
                 sort -z
         )
     fi
@@ -719,7 +744,7 @@ stage_common_package_files() {
     cp -aT "$APP_DIR" "$app_root"
     mkdir -p "$app_root/.codex-linux"
     cp "$ICON_SOURCE" "$app_root/.codex-linux/$PACKAGE_NAME.png"
-    cp "$(resolve_tray_icon_source "$app_root")" "$app_root/.codex-linux/$PACKAGE_NAME-tray.png"
+    cp "$REPO_DIR/launcher/cli-launch-path.py" "$app_root/.codex-linux/cli-launch-path.py"
     render_desktop_entry_doctor_helper "$app_root/.codex-linux/codex-desktop-entry-doctor.sh"
     render_desktop_entry "$root/usr/share/applications/$PACKAGE_NAME.desktop"
     cp "$ICON_SOURCE" "$root/usr/share/icons/hicolor/256x256/apps/$PACKAGE_NAME.png"
@@ -735,31 +760,6 @@ stage_common_package_files() {
             "$app_root/.codex-linux/codex-no-updater-transition-cleanup.sh"
     fi
     render_packaged_runtime_helper "$app_root/.codex-linux/codex-packaged-runtime.sh"
-}
-
-resolve_tray_icon_source() {
-    local app_root="$1"
-    local assets_dir="$app_root/content/webview/assets"
-    local -a candidates=()
-    local candidate
-
-    if [ -d "$assets_dir" ]; then
-        while IFS= read -r -d '' candidate; do
-            candidates+=("$candidate")
-        done < <(find "$assets_dir" -maxdepth 1 -type f -name 'app-*.png' -print0 | sort -z)
-    fi
-
-    if [ "${#candidates[@]}" -eq 1 ]; then
-        printf '%s\n' "${candidates[0]}"
-        return 0
-    fi
-
-    if [ "${#candidates[@]}" -gt 1 ]; then
-        warn "Multiple tray icon candidates found in $assets_dir; falling back to package icon"
-    else
-        warn "Could not resolve a unique tray icon in $assets_dir; falling back to package icon"
-    fi
-    printf '%s\n' "$ICON_SOURCE"
 }
 
 stage_update_builder_bundle() {
@@ -779,10 +779,12 @@ stage_update_builder_bundle() {
     cp "$REPO_DIR/install.sh" "$update_builder_root/install.sh"
     cp "$REPO_DIR/CHANGELOG.md" "$update_builder_root/CHANGELOG.md"
     cp "$REPO_DIR/launcher/start.sh.template" "$update_builder_root/launcher/start.sh.template"
+    cp "$REPO_DIR/launcher/cli-launch-path.py" "$update_builder_root/launcher/cli-launch-path.py"
     cp "$REPO_DIR/launcher/webview-server.py" "$update_builder_root/launcher/webview-server.py"
     cp "$REPO_DIR/Cargo.toml" "$update_builder_root/Cargo.toml"
     cp "$REPO_DIR/Cargo.lock" "$update_builder_root/Cargo.lock"
     cp -r "$REPO_DIR/computer-use-linux" "$update_builder_root/computer-use-linux"
+    cp -r "$REPO_DIR/notification-actions-linux" "$update_builder_root/notification-actions-linux"
     cp -r "$REPO_DIR/record-replay-linux" "$update_builder_root/record-replay-linux"
     cp -r "$REPO_DIR/read-aloud-linux" "$update_builder_root/read-aloud-linux"
     cp -r "$REPO_DIR/updater" "$update_builder_root/updater"
@@ -795,6 +797,7 @@ stage_update_builder_bundle() {
     cp "$REPO_DIR/scripts/build-rpm.sh" "$update_builder_root/scripts/build-rpm.sh"
     cp "$REPO_DIR/scripts/build-pacman.sh" "$update_builder_root/scripts/build-pacman.sh"
     cp "$REPO_DIR/scripts/rebuild-candidate.sh" "$update_builder_root/scripts/rebuild-candidate.sh"
+    cp "$REPO_DIR/scripts/validate-upstream-dmg.js" "$update_builder_root/scripts/validate-upstream-dmg.js"
     cp "$REPO_DIR/scripts/patch-linux-window-ui.js" "$update_builder_root/scripts/patch-linux-window-ui.js"
     cp -r "$REPO_DIR/scripts/patches/." "$update_builder_root/scripts/patches/"
     cp "$REPO_DIR/scripts/lib/package-common.sh" "$update_builder_root/scripts/lib/package-common.sh"
@@ -808,11 +811,19 @@ stage_update_builder_bundle() {
     cp "$REPO_DIR/scripts/lib/asar-patch.sh" "$update_builder_root/scripts/lib/asar-patch.sh"
     cp "$REPO_DIR/scripts/lib/webview-install.sh" "$update_builder_root/scripts/lib/webview-install.sh"
     cp "$REPO_DIR/scripts/lib/bundled-plugins.sh" "$update_builder_root/scripts/lib/bundled-plugins.sh"
+    cp "$REPO_DIR/scripts/lib/notification-actions.sh" "$update_builder_root/scripts/lib/notification-actions.sh"
+    cp "$REPO_DIR/scripts/lib/patch-browser-client-iab-socket-scope.js" \
+        "$update_builder_root/scripts/lib/patch-browser-client-iab-socket-scope.js"
     cp "$REPO_DIR/scripts/lib/linux-features.js" "$update_builder_root/scripts/lib/linux-features.js"
     cp "$REPO_DIR/scripts/lib/linux-features.sh" "$update_builder_root/scripts/lib/linux-features.sh"
     cp "$REPO_DIR/scripts/lib/linux-target-context.js" "$update_builder_root/scripts/lib/linux-target-context.js"
     cp "$REPO_DIR/scripts/lib/linux-update-bridge-patch.js" "$update_builder_root/scripts/lib/linux-update-bridge-patch.js"
     cp "$REPO_DIR/scripts/lib/patch-report.js" "$update_builder_root/scripts/lib/patch-report.js"
+    cp "$REPO_DIR/scripts/lib/patch-validation.js" "$update_builder_root/scripts/lib/patch-validation.js"
+    cp "$REPO_DIR/scripts/lib/upstream-dmg-acceptance.js" "$update_builder_root/scripts/lib/upstream-dmg-acceptance.js"
+    cp "$REPO_DIR/scripts/lib/upstream-dmg-release-profile.js" "$update_builder_root/scripts/lib/upstream-dmg-release-profile.js"
+    cp "$REPO_DIR/scripts/lib/candidate-install.sh" "$update_builder_root/scripts/lib/candidate-install.sh"
+    cp "$REPO_DIR/scripts/lib/candidate-promotion.py" "$update_builder_root/scripts/lib/candidate-promotion.py"
     cp "$REPO_DIR/scripts/lib/rebuild-report.sh" "$update_builder_root/scripts/lib/rebuild-report.sh"
     cp "$REPO_DIR/scripts/lib/build-info.js" "$update_builder_root/scripts/lib/build-info.js"
     cp "$REPO_DIR/scripts/lib/build-info.sh" "$update_builder_root/scripts/lib/build-info.sh"
@@ -833,6 +844,9 @@ stage_update_builder_bundle() {
     cp "$REPO_DIR/packaging/linux/codex-update-manager.prerm" "$update_builder_root/packaging/linux/codex-update-manager.prerm"
     stage_update_builder_linux_features_tree "$update_builder_root"
     stage_update_builder_linux_features_config "$update_builder_root"
+    if linux_feature_enabled "global-dictation"; then
+        stage_update_builder_global_dictation_source "$update_builder_root"
+    fi
     cp "$REPO_DIR/packaging/linux/codex-update-manager.postrm" "$update_builder_root/packaging/linux/codex-update-manager.postrm"
     cp "$REPO_DIR/assets/codex.png" "$update_builder_root/assets/codex.png"
     cp "$REPO_DIR/assets/codex-linux.png" "$update_builder_root/assets/codex-linux.png"

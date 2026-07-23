@@ -137,6 +137,7 @@ test("main bundle patch adds a Linux read aloud handler", () => {
   assert.match(patched, /source===`button`/);
   assert.match(patched, /codexLinuxReadAloudSpeak\(e\.text,\{requireEnabled:!1\}\)/);
   assert.match(patched, /constants\.X_OK/);
+  assert.match(patched, /require\(`node:child_process`\)\.spawn/);
   assert.match(patched, /kokoro-stdin/);
   assert.match(patched, /kokoro-v1\.0\.onnx/);
   assert.match(patched, /huggingface\.co\/zijuncheng\/kokoro_model_v1\.0\/resolve\/main\/kokoro-v1\.0\.onnx/);
@@ -151,6 +152,18 @@ test("main bundle patch adds a Linux read aloud handler", () => {
   // parentheses any custom voice forced the Hebrew espeak voice.
   assert.match(patched, /let espeakVoice=voice\|\|\(hasHebrew\?`he`:`en-us`\);/);
   assert.doesNotThrow(() => new Function("require", "process", patched));
+});
+
+test("main handler does not capture a function-local child-process alias from another feature", () => {
+  const source = [
+    'function injectedFeature(){let __codexChild=require(`node:child_process`);return __codexChild}',
+    'let e=require(`node:child_process`),f=require(`node:fs`),p=require(`node:path`),o=require(`node:os`);',
+    'var h={handlers:{"set-vs-context":async()=>{},"native-desktop-apps":async()=>({apps:[]})}};',
+  ].join("");
+  const patched = applyMainBundlePatch(source);
+
+  assert.match(patched, /require\(`node:child_process`\)\.spawn\(command,args/);
+  assert.doesNotMatch(patched, /let child=__codexChild\.spawn\(command,args/);
 });
 
 test("main bundle helper preserves the core Electron binding across patch reruns", () => {
@@ -1000,7 +1013,7 @@ test("assistant runtime descriptor targets current shared assistant bundles", ()
   assert.ok(descriptor);
   assert.equal(
     descriptor.pattern.test(
-      "app-initial~app-main~onboarding-page-zcfEkMl-.js",
+      "app-initial~app-main~onboarding-page~hotkey-window-thread-page~quick-chat-window-page~chatg~c33rimzq-BQp6onv9.js",
     ),
     true,
   );
@@ -1021,7 +1034,7 @@ test("assistant runtime descriptor fails soft and atomically when the current re
     fs.mkdirSync(assetsDir, { recursive: true });
     const assetPath = path.join(
       assetsDir,
-      "app-initial~app-main~onboarding-page-zcfEkMl-.js",
+      "app-initial~app-main~onboarding-page~hotkey-window-thread-page~quick-chat-window-page~chatg~c33rimzq-current.js",
     );
     const source = "console.log(`assistant render contract moved`);";
     fs.writeFileSync(assetPath, source);
@@ -1049,7 +1062,7 @@ test("assistant runtime descriptor reports applied then already-applied for the 
     fs.mkdirSync(assetsDir, { recursive: true });
     const assetPath = path.join(
       assetsDir,
-      "app-initial~app-main~onboarding-page-zcfEkMl-.js",
+      "app-initial~app-main~onboarding-page~hotkey-window-thread-page~quick-chat-window-page~chatg~c33rimzq-current.js",
     );
     fs.writeFileSync(
       assetPath,

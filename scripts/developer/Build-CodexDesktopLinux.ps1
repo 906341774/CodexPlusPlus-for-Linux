@@ -9,6 +9,7 @@ param(
     [string]$SourceRoot,
     [string]$InstallPath = '$HOME/opt/CodexDesktop',
     [string]$BuildSourceCacheRoot,
+    [string[]]$EnabledFeatureIds,
     [string]$X11ComputerUseRepository = 'https://github.com/AlekseiSeleznev/codex-computer-use-x11.git',
     [string]$X11ComputerUseRef = 'v0.1.3',
     [string]$X11ComputerUseCommit = '2c50ed6cd2c41e5f38627ef1208f2a65691d66dc',
@@ -68,6 +69,36 @@ function Get-CodexLinuxFeatureIds {
     $result = @($ids | Sort-Object -Unique)
     if ($result.Count -eq 0) { throw "No usable Linux features were discovered under $featuresRoot" }
     return $result
+}
+
+function Resolve-CodexLinuxFeatureIds {
+    param(
+        [Parameter(Mandatory = $true)][string]$DesktopSourceRoot,
+        [string[]]$ExplicitFeatureIds
+    )
+
+    $available = @(Get-CodexLinuxFeatureIds -DesktopSourceRoot $DesktopSourceRoot)
+    $requested = @()
+    if ($null -ne $ExplicitFeatureIds) {
+        $requested = @($ExplicitFeatureIds)
+    }
+    if ($requested.Count -eq 0 -and -not [string]::IsNullOrWhiteSpace($env:CODEX_LINUX_FEATURES)) {
+        $requested = @($env:CODEX_LINUX_FEATURES -split ',')
+    }
+    if ($requested.Count -eq 0) {
+        return $available
+    }
+
+    $normalized = @($requested | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+    foreach ($id in $normalized) {
+        if ($id -notmatch '^[a-z0-9][a-z0-9-]*$') {
+            throw "Invalid Linux feature id: $id"
+        }
+        if ($available -notcontains $id) {
+            throw "Requested Linux feature is not present under linux-features: $id"
+        }
+    }
+    return @($normalized | Sort-Object -Unique)
 }
 
 function Write-CodexLinuxFeaturesConfig {
@@ -263,7 +294,7 @@ function Install-CodexDesktopPayload {
 
 $sourceRootFull = Expand-BuildPath $SourceRoot
 $installPathFull = Expand-BuildPath $InstallPath
-$features = @(Get-CodexLinuxFeatureIds -DesktopSourceRoot $sourceRootFull)
+$features = @(Resolve-CodexLinuxFeatureIds -DesktopSourceRoot $sourceRootFull -ExplicitFeatureIds $EnabledFeatureIds)
 
 switch ($Action) {
     'discover-features' {

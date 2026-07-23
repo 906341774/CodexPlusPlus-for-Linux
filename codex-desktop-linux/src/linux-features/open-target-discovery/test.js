@@ -55,7 +55,7 @@ const currentAppOpenInCommandBundle =
 const currentAppOpenInAvailabilityBundle =
   `${currentAppOpenTargetPrelude}async function WN(e,t){let n=await Promise.all(HN(e).map(async n=>{let r=UN(e,n.id),[i,a]=await Promise.all([t({method:\`get-target-command\`,params:r}).then(e=>e.command).catch(e=>(zN().error(\`Failed to detect open target\`,{safe:{},sensitive:{id:n.id,error:e}}),null)),process.platform===\`win32\`?t({method:\`load-target-icon\`,params:r}).then(e=>e.icon).catch(e=>(zN().warning(\`Failed to resolve open target icon\`,{safe:{},sensitive:{id:n.id,error:e}}),n.icon)):n.icon]);return{command:i,metadata:{...n,icon:a}}}));return{allAvailableTargets:n.flatMap(({command:e,metadata:t})=>e==null?[]:[t.id]),targetMetadata:n.map(({metadata:e})=>e)}}`;
 const currentAppOpenInBridgeBundle =
-  `${currentAppOpenTargetPrelude}class App{constructor(e,t){this.settingsStore=e;this.requestOpenInWorker=t}async detectTarget({target:e}){if(this.requestOpenInWorker==null)throw Error(\`Open in worker unavailable\`);let{command:t}=await this.requestOpenInWorker({method:\`get-target-command\`,params:UN(this.settingsStore,e)});return{available:t!=null}}}`;
+  `${currentAppOpenTargetPrelude}class App{constructor(e,t){this.settingsStore=e;this.requestOpenInWorker=t}#n(){return this.requestOpenInWorker}async detectTarget({target:e}){let{command:t}=await this.#n()({method:\`get-target-command\`,params:UN(this.settingsStore,e)});return{available:t!=null}}}`;
 const currentAppOpenInTargetsBundle =
   '"open-in-targets":async({cwd:e,deferEnrichment:t=!1,hostId:r,nativeBrowserDiscovery:i=`scan`,path:a})=>{let o=this.getRequestAppServerClient(r??void 0),s=this.getSettingsStore();if(t&&a==null){let t=XN(s,e);return{preferredTarget:t,availableTargets:[],mode:`editor`,targets:uj(HN(s),o.hostConfig)}}let{allAvailableTargets:c,targetMetadata:l}=await WN(s,this.getOpenInWorker()),u=a?.replace(/^([ab])[\\\\/]/,``)??null,d=u!=null&&xF(u)&&!n.eo(o.hostConfig),f=u==null||d||n.eo(o.hostConfig)?null:this.resolveOpenFilePath(u,e),p=lj(o.hostConfig,c,l),m=new Set(p),h=YN(s,e,m),g=d||f!=null&&n.ys(f),_=f!=null&&KA(f),v=f!=null&&JA(f),y=g?await yF(i):_?await vF({filePath:f}):[];return{preferredTarget:h,availableTargets:Array.from(m),mode:g||v?`native`:`editor`,targets:l}}';
 const currentAppOpenTargetSelectionBundle =
@@ -432,7 +432,7 @@ const tryExecCases = [
   [false, "sh -c '! command -v cursor >/dev/null 2>&1'", ["sh", "cursor"]],
   [false, "sh -c 'which /bin/ls >/dev/null 2>&1'", ["sh"]],
   [false, "bash", []],
-  [true, "sh -c 'exec /bin/true && false'", ["sh"]],
+  [true, "sh -c 'exec true && false'", ["sh", "true"]],
   [false, "sh -c 'exec /missing/cursor || true'", ["sh"]],
   [false, "missing-wrapper bash -lc 'command -v cursor >/dev/null 2>&1'", ["bash", "cursor"]],
   [false, "fish -C 'hash cursor >/dev/null 2>&1'", ["fish", "cursor"]],
@@ -643,6 +643,8 @@ test("open-target discovery sanitizes desktop launch environment", async () => {
         PATH: `${binDir}:${path.dirname(editorCommand)}`,
         XDG_DATA_HOME: dataHome,
         XDG_DATA_DIRS: path.join(tmp, "empty"),
+        LD_LIBRARY_PATH: "/codex/electron/lib",
+        LD_PRELOAD: "/codex/electron/lib/libhook.so",
         CHROME_DESKTOP: "codex-open-target-launchers.desktop",
         ELECTRON_RENDERER_URL: "http://127.0.0.1:5203/",
         CODEX_ELECTRON_USER_DATA_DIR: path.join(
@@ -662,6 +664,8 @@ test("open-target discovery sanitizes desktop launch environment", async () => {
 
     assert.equal(spawnRecorder.calls[0].command, gio);
     assert.equal(spawnRecorder.calls[0].options.cwd, tmp);
+    assert.equal(spawnRecorder.calls[0].options.env.LD_LIBRARY_PATH, undefined);
+    assert.equal(spawnRecorder.calls[0].options.env.LD_PRELOAD, undefined);
     assert.equal(spawnRecorder.calls[0].options.env.CHROME_DESKTOP, undefined);
     assert.equal(spawnRecorder.calls[0].options.env.ELECTRON_RENDERER_URL, undefined);
     assert.equal(spawnRecorder.calls[0].options.env.CODEX_ELECTRON_USER_DATA_DIR, undefined);
@@ -1213,6 +1217,29 @@ test("open-target discovery inserts shared Linux registry command helper", async
   assert.equal(command, "/usr/bin/kate");
 });
 
+test("open-target discovery inserts registry helper in the registry module scope", async () => {
+  const source =
+    `function codexLinuxPatchExternalOpen(){async function __codexOpenExternal(){}}` +
+    currentAppOpenTargetPrelude;
+  const patched = applyPatchTwice(applyOpenInTargetRegistryCommandPatch, source);
+  const settingsStore = currentAppSettingsStore([
+    {
+      id: "kate",
+      detect: async () => "/usr/bin/kate",
+    },
+  ]);
+  const command = await new Function(
+    "process",
+    `${patched};return codexLinuxOpenTargetRegistryCommand(arguments[1], 'kate');`,
+  )({ platform: "linux" }, settingsStore);
+
+  assert.match(
+    patched,
+    /async function codexLinuxOpenTargetRegistryCommand[\s\S]*?function QN\(e\)/,
+  );
+  assert.equal(command, "/usr/bin/kate");
+});
+
 test("open-target discovery reports missing current registry once per main patch", () => {
   const source =
     mainBundlePrefix +
@@ -1373,12 +1400,28 @@ test("open-target discovery targets only the current native selector bundle", ()
 
   assert.ok(descriptor);
   assert.match(
-    "app-initial~app-main~pull-request-code-review~onboarding-page~hotkey-window-thread-page~cha~b76hmflu-y0KJWbm3.js",
+    "app-initial~artifact-tab-content.electron~notebook-preview-panel~app-main~pull-request-rout~ns5rw1zk-CI7AKGww.js",
+    descriptor.pattern,
+  );
+  assert.doesNotMatch(
+    "app-initial~app-main~onboarding-page~hotkey-window-thread-page~quick-chat-window-page~chatg~gwqc41kz-CnQKtQ6U.js",
+    descriptor.pattern,
+  );
+  assert.doesNotMatch(
+    "app-initial~app-main~quick-chat-window-page~work-home-page~chatgpt-conversation-page-BqLP6EDd.js",
+    descriptor.pattern,
+  );
+  assert.doesNotMatch(
+    "app-initial~app-main~new-thread-panel-page~appgen-library-page~hotkey-window-thread-page~ho~iufn7mg3-MXsOJYYa.js",
+    descriptor.pattern,
+  );
+  assert.doesNotMatch(
+    "app-initial~app-main~new-thread-panel-page~onboarding-page~appgen-library-page~hotkey-windo~nrw3o0ql-CI1_Z0oj.js",
     descriptor.pattern,
   );
   assert.doesNotMatch("open-target-selection-legacy.js", descriptor.pattern);
   assert.doesNotMatch(
-    "app-initial~app-main~onboarding-page~hotkey-window-thread-page~quick-chat-window-page~chatg~k0ede4gb-current.js",
+    "app-initial~app-main~pull-request-code-review~onboarding-page~hotkey-window-thread-page~cha~b76hmflu-y0KJWbm3.js",
     descriptor.pattern,
   );
 });

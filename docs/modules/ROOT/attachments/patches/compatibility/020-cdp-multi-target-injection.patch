@@ -1,20 +1,8 @@
-diff --git a/Cargo.lock b/Cargo.lock
-index 0db99bd..fdb748a 100644
---- a/Cargo.lock
-+++ b/Cargo.lock
-@@ -426,6 +426,7 @@ dependencies = [
-  "tokio-tungstenite",
-  "toml 0.8.2",
-  "toml_edit 0.22.27",
-+ "url",
-  "uuid",
-  "windows 0.58.0",
-  "zip",
 diff --git a/apps/codex-plus-launcher/src/main.rs b/apps/codex-plus-launcher/src/main.rs
-index 2fafb69..9bf871a 100644
+index 81b9bb1..046b2d9 100644
 --- a/apps/codex-plus-launcher/src/main.rs
 +++ b/apps/codex-plus-launcher/src/main.rs
-@@ -517,6 +517,10 @@ impl LauncherRuntimeService {
+@@ -516,6 +516,10 @@ impl LauncherRuntimeService {
      fn set_websocket_url(&self, websocket_url: &str) {
          *self.websocket_url.lock().unwrap() = Some(websocket_url.to_string());
      }
@@ -23,9 +11,9 @@ index 2fafb69..9bf871a 100644
 +        self.websocket_url.lock().unwrap().clone()
 +    }
  }
-
+ 
  #[async_trait::async_trait]
-@@ -659,10 +663,21 @@ async fn inject_with_context(
+@@ -649,10 +653,21 @@ async fn inject_with_context(
      runtime: Arc<LauncherRuntimeService>,
  ) -> anyhow::Result<()> {
      let mut last_error = None;
@@ -48,7 +36,7 @@ index 2fafb69..9bf871a 100644
                  last_error = Some(error);
                  tokio::time::sleep(std::time::Duration::from_millis(500)).await;
              }
-@@ -678,12 +693,10 @@ async fn try_inject_with_context(
+@@ -668,12 +683,10 @@ async fn try_inject_with_context(
      runtime: Arc<LauncherRuntimeService>,
  ) -> anyhow::Result<()> {
      let targets = codex_plus_core::cdp::list_targets(debug_port).await?;
@@ -65,7 +53,7 @@ index 2fafb69..9bf871a 100644
      let settings = codex_plus_core::settings::SettingsStore::default()
          .load()
          .unwrap_or_default();
-@@ -697,18 +710,63 @@ async fn try_inject_with_context(
+@@ -687,18 +700,61 @@ async fn try_inject_with_context(
      } else {
          vec![script, user_bundle]
      };
@@ -126,9 +114,7 @@ index 2fafb69..9bf871a 100644
 +                    }),
 +                );
 +            }
-+            Err(error) => {
-+                last_error = Some(error);
-+            }
++            Err(error) => last_error = Some(error),
 +        }
 +    }
 +    if main_injected {
@@ -139,39 +125,27 @@ index 2fafb69..9bf871a 100644
 +    }
 +    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Codex injection failed")))
  }
-
+ 
  fn default_codex_db_path() -> PathBuf {
-diff --git a/crates/codex-plus-core/Cargo.toml b/crates/codex-plus-core/Cargo.toml
-index 2e5609e..370d132 100644
---- a/crates/codex-plus-core/Cargo.toml
-+++ b/crates/codex-plus-core/Cargo.toml
-@@ -23,6 +23,7 @@ tokio = { workspace = true, features = ["net"] }
- tokio-tungstenite.workspace = true
- toml.workspace = true
- toml_edit.workspace = true
-+url.workspace = true
- uuid.workspace = true
- zip.workspace = true
-
 diff --git a/crates/codex-plus-core/src/cdp.rs b/crates/codex-plus-core/src/cdp.rs
-index 9a442f0..6af5458 100644
+index 86bdfe7..9d903f5 100644
 --- a/crates/codex-plus-core/src/cdp.rs
 +++ b/crates/codex-plus-core/src/cdp.rs
-@@ -1,8 +1,11 @@
- use anyhow::{Context, bail};
+@@ -2,8 +2,11 @@ use anyhow::{Context, bail};
  use serde::Deserialize;
+ use std::net::IpAddr;
  use std::time::Duration;
 +use url::{Host, Url};
-
+ 
  const CDP_HTTP_TIMEOUT: Duration = Duration::from_secs(3);
 +const LINUX_CODEX_WEBVIEW_PORT_START: u16 = 5176;
 +const LINUX_CODEX_WEBVIEW_PORT_END: u16 = 5185;
-
+ 
  #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
  pub struct CdpTarget {
-@@ -58,35 +61,50 @@ async fn query_targets_url(client: &reqwest::Client, url: &str) -> anyhow::Resul
+@@ -157,35 +160,34 @@ pub fn validate_cdp_websocket_url(url: &str, expected_port: u16) -> anyhow::Resu
  }
-
+ 
  pub fn pick_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
 -    let mut first_page = None;
 -    for target in targets
@@ -179,35 +153,29 @@ index 9a442f0..6af5458 100644
 -        .filter(|target| is_injectable_page_target(target))
 -    {
 -        first_page.get_or_insert(target);
--        if is_codex_page_target(target) {
+-        if is_primary_codex_page_target(target) {
 -            return Ok(target.clone());
 -        }
 -    }
+-
+-    if let Some(target) = first_page {
+-        return Ok(target.clone());
+-    }
+-
+-    bail!("No injectable page target found")
 +    injectable_page_targets(targets)
 +        .first()
 +        .cloned()
 +        .ok_or_else(|| anyhow::anyhow!("No injectable page target found"))
-+}
-
--    if let Some(target) = first_page {
--        return Ok(target.clone());
--    }
-+pub fn pick_injectable_codex_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
-+    injectable_page_targets(targets)
-+        .into_iter()
-+        .find(is_codex_page_target)
-+        .ok_or_else(|| anyhow::anyhow!("No injectable Codex page target found"))
-+}
-
--    bail!("No injectable page target found")
-+pub fn pick_primary_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
-+    injectable_page_targets(targets)
-+        .into_iter()
-+        .find(is_primary_codex_window)
-+        .ok_or_else(|| anyhow::anyhow!("No injectable Codex page target found"))
  }
-
--pub fn pick_injectable_codex_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
+ 
+ pub fn pick_injectable_codex_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
++    injectable_page_targets(targets)
++        .into_iter()
++        .find(is_primary_codex_page_target)
++        .ok_or_else(|| anyhow::anyhow!("No injectable Codex page target found"))
++}
++
 +pub fn injectable_page_targets(targets: &[CdpTarget]) -> Vec<CdpTarget> {
 +    let mut codex_pages = Vec::new();
 +    let mut fallback_pages = Vec::new();
@@ -215,29 +183,22 @@ index 9a442f0..6af5458 100644
          .iter()
          .filter(|target| is_injectable_page_target(target))
      {
-         if is_codex_page_target(target) {
+-        if is_primary_codex_page_target(target) {
 -            return Ok(target.clone());
++        if is_codex_page_target(target) {
 +            codex_pages.push(target.clone());
 +        } else {
 +            fallback_pages.push(target.clone());
          }
      }
+-
+-    bail!("No injectable Codex page target found")
 +    codex_pages.extend(fallback_pages);
 +    codex_pages
-+}
-
--    bail!("No injectable Codex page target found")
-+pub fn is_primary_codex_window(target: &CdpTarget) -> bool {
-+    let url = target.url.to_lowercase();
-+    let title = target.title.to_lowercase();
-+    !url.contains("initialroute=%2fhotkey-window")
-+        && !url.contains("initialroute=/hotkey-window")
-+        && !title.contains("initialroute=%2fhotkey-window")
-+        && !title.contains("initialroute=/hotkey-window")
  }
-
+ 
  pub fn is_injectable_page_target(target: &CdpTarget) -> bool {
-@@ -102,7 +120,9 @@ pub fn is_codex_page_target(target: &CdpTarget) -> bool {
+@@ -201,13 +203,27 @@ pub fn is_codex_page_target(target: &CdpTarget) -> bool {
          return false;
      }
      let haystack = format!("{} {}", target.title, target.url).to_lowercase();
@@ -246,9 +207,27 @@ index 9a442f0..6af5458 100644
 +        || is_chatgpt_desktop_page(&target.title, &target.url)
 +        || is_linux_local_codex_app_url(&target.url)
  }
-
- fn is_chatgpt_desktop_page(title: &str, url: &str) -> bool {
-@@ -115,3 +135,46 @@ fn is_chatgpt_desktop_page(title: &str, url: &str) -> bool {
+ 
+ pub fn is_primary_codex_page_target(target: &CdpTarget) -> bool {
+     is_codex_page_target(target) && !is_avatar_overlay_page_target(target)
+ }
+ 
++pub fn is_primary_codex_window(target: &CdpTarget) -> bool {
++    if !is_primary_codex_page_target(target) {
++        return false;
++    }
++    let url = target.url.to_ascii_lowercase();
++    let title = target.title.to_ascii_lowercase();
++    !url.contains("initialroute=%2fhotkey-window")
++        && !url.contains("initialroute=/hotkey-window")
++        && !title.contains("initialroute=%2fhotkey-window")
++        && !title.contains("initialroute=/hotkey-window")
++}
++
+ pub fn is_avatar_overlay_page_target(target: &CdpTarget) -> bool {
+     if !is_injectable_page_target(target) {
+         return false;
+@@ -228,3 +244,39 @@ fn is_chatgpt_desktop_page(title: &str, url: &str) -> bool {
              || url.starts_with("https://chat.openai.com/")
              || url.starts_with("data:text/html"))
  }
@@ -257,28 +236,21 @@ index 9a442f0..6af5458 100644
 +    let Ok(url) = Url::parse(raw_url) else {
 +        return false;
 +    };
-+
 +    if !matches!(url.scheme(), "http" | "https") {
 +        return false;
 +    }
-+
 +    let Some(port) = url.port_or_known_default() else {
 +        return false;
 +    };
 +    if !(LINUX_CODEX_WEBVIEW_PORT_START..=LINUX_CODEX_WEBVIEW_PORT_END).contains(&port) {
 +        return false;
 +    }
-+
-+    if !matches!(
-+        url.host(),
-+        Some(Host::Ipv4(address)) if address.is_loopback()
-+    ) && !matches!(
-+        url.host(),
-+        Some(Host::Ipv6(address)) if address.is_loopback()
-+    ) && !matches!(
-+        url.host_str(),
-+        Some(host) if host.eq_ignore_ascii_case("localhost")
-+    ) {
++    let loopback = matches!(url.host(), Some(Host::Ipv4(address)) if address.is_loopback())
++        || matches!(url.host(), Some(Host::Ipv6(address)) if address.is_loopback())
++        || url
++            .host_str()
++            .is_some_and(|host| host.eq_ignore_ascii_case("localhost"));
++    if !loopback {
 +        return false;
 +    }
 +

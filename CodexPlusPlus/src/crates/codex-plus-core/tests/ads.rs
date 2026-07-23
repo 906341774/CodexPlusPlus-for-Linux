@@ -175,6 +175,13 @@ fn normalizes_known_remote_sponsors_with_local_logos() {
                 "url": "https://example.test/runapi"
             },
             {
+                "id": "baikewei-ai",
+                "type": "sponsor",
+                "title": "百可为AI",
+                "description": "远端推荐内容",
+                "url": "https://example.test/baikewei"
+            },
+            {
                 "id": "jojocode-codex-relay",
                 "type": "sponsor",
                 "title": "JOJO Code",
@@ -201,6 +208,16 @@ fn normalizes_known_remote_sponsors_with_local_logos() {
             "{id}"
         );
     }
+    let baikewei = ads
+        .iter()
+        .find(|ad| ad["id"] == json!("baikewei-ai"))
+        .unwrap();
+    assert!(
+        baikewei["image"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/jpeg;base64,")
+    );
     for id in ["0055-token-bridge", "rawchat-codex-relay"] {
         let ad = ads.iter().find(|ad| ad["id"] == json!(id)).unwrap();
         assert!(
@@ -225,12 +242,20 @@ async fn fetch_ad_list_tries_backup_url_when_primary_fails() {
     let thread = thread::spawn(move || {
         for _ in 0..2 {
             let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
             let mut buffer = [0; 1024];
-            let read = stream.read(&mut buffer).unwrap();
-            let request = String::from_utf8_lossy(&buffer[..read]);
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "client closed before sending complete headers");
+                request.extend_from_slice(&buffer[..read]);
+                assert!(request.len() <= 16 * 1024, "request headers are too large");
+            }
+            let request = String::from_utf8_lossy(&request);
             if request.starts_with("GET /primary.json?") {
                 stream
-                    .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+                    .write_all(
+                        b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
                     .unwrap();
             } else {
                 assert!(request.starts_with("GET /backup.json?"), "{request}");
@@ -247,12 +272,13 @@ async fn fetch_ad_list_tries_backup_url_when_primary_fails() {
                 })
                 .to_string();
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.len(),
                     body
                 );
                 stream.write_all(response.as_bytes()).unwrap();
             }
+            stream.flush().unwrap();
         }
     });
 

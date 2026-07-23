@@ -5,13 +5,13 @@ use crate::{
     cli::{Cli, Commands},
     codex_cli,
     config::{RuntimeConfig, RuntimePaths},
-    diagnostics, feature_picker, install, install_rollback, liveness, logging, notify, rollback,
+    diagnostics, feature_picker, install, install_rollback, liveness, logging, notify, restart,
+    rollback,
     state::{CliStatus, PersistedState, UpdateStatus},
     upstream, wrapper, wrapper_apply,
 };
 use anyhow::{Context, Result};
 use chrono::{Duration as ChronoDuration, Utc};
-use reqwest::Client;
 use serde::Deserialize;
 use std::{
     ffi::OsString,
@@ -29,6 +29,8 @@ const CLI_MISSING_NOTIFICATION_EVENT: &str = "cli_missing";
 const CLI_MISSING_PROMPT_DISMISS_TTL: ChronoDuration = ChronoDuration::minutes(10);
 const PROMPT_INSTALL_CLI_CANCELLED_EXIT_CODE: i32 = 10;
 const PROMPT_INSTALL_CLI_NO_BACKEND_EXIT_CODE: i32 = 11;
+// Nonzero so `Restart=on-failure` relaunches the daemon on the new binary.
+const BINARY_REPLACED_RESTART_EXIT_CODE: i32 = 12;
 const POLKIT_AUTH_AGENT_PROCESS_TOKENS: &[&str] = &[
     "budgie-polkit",
     "cinnamon-polkit",
@@ -89,6 +91,11 @@ pub async fn run(cli: Cli) -> Result<()> {
             print_path,
             allow_install_missing,
         ),
+        Commands::RecoverStandaloneCli {
+            codex_home,
+            install_dir,
+            print_path,
+        } => run_recover_standalone_cli(codex_home, install_dir, print_path),
         Commands::PromptInstallCli {
             cli_path,
             print_path,
@@ -240,6 +247,20 @@ fn maybe_prune_generated_artifacts(config: &RuntimeConfig) {
 
 fn maybe_prune_caches(config: &RuntimeConfig, state: &PersistedState) {
     maybe_prune_workspace_cache(&config.workspace_root, state);
+    match cache_cleanup::prune_dmg_cache(&config.workspace_root, state) {
+        Ok(summary) if summary.pruned_dmgs > 0 || summary.pruned_temps > 0 => {
+            info!(
+                pruned_dmgs = summary.pruned_dmgs,
+                pruned_temps = summary.pruned_temps,
+                "pruned updater DMG cache"
+            );
+        }
+        Ok(summary) if summary.skipped_locked => {
+            info!("skipping DMG cache cleanup while another updater flow holds its lease");
+        }
+        Ok(_) => {}
+        Err(error) => warn!(?error, "failed to prune updater DMG cache"),
+    }
     maybe_prune_generated_artifacts(config);
 }
 
@@ -367,6 +388,37 @@ fn update_install_is_pending(status: &UpdateStatus) -> bool {
     )
 }
 
+// Failed attempts and transient states persisted before fallible download or
+// build work must retry after the next checker acquires the check lock. A
+// still-running checker continues to own that lock and prevents duplicate work.
+fn update_check_should_retry(status: &UpdateStatus) -> bool {
+    matches!(
+        status,
+        UpdateStatus::Failed
+            | UpdateStatus::DownloadingDmg
+            | UpdateStatus::UpdateDetected
+            | UpdateStatus::PreparingWorkspace
+            | UpdateStatus::PatchingApp
+            | UpdateStatus::BuildingPackage
+    )
+}
+
+fn prepare_upstream_check(state: &mut PersistedState, paths: &RuntimePaths) -> Result<bool> {
+    let retrying_update = update_check_should_retry(&state.status);
+
+    // Keep a retryable status durable until the metadata request completes. If
+    // the updater exits while that request is in flight, the next run must not
+    // mistake the interrupted rebuild for an ordinary unchanged-upstream check.
+    if !retrying_update {
+        state.status = UpdateStatus::CheckingUpstream;
+    }
+    state.last_check_at = Some(Utc::now());
+    state.error_message = None;
+    persist_state(paths, state)?;
+
+    Ok(retrying_update)
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum PendingInstallRecovery {
     NoChange,
@@ -402,7 +454,7 @@ async fn run_daemon(
     }
     info!("daemon initialized");
 
-    time::sleep(Duration::from_secs(config.initial_check_delay_seconds)).await;
+    time::sleep(config.initial_check_delay_duration()).await;
     if let Err(error) = run_check_cycle_from_disk(config, state, paths).await {
         error!(?error, "initial check failed");
     }
@@ -410,8 +462,7 @@ async fn run_daemon(
         error!(?error, "initial reconciliation failed");
     }
 
-    let mut check_interval =
-        time::interval(Duration::from_secs(config.check_interval_hours * 3600));
+    let mut check_interval = time::interval(config.check_interval_duration()?);
     let mut reconcile_interval = time::interval(Duration::from_secs(RECONCILE_INTERVAL_SECONDS));
     check_interval.tick().await;
     reconcile_interval.tick().await;
@@ -419,6 +470,14 @@ async fn run_daemon(
         if packaged_runtime_removed(config) {
             info!("packaged app files are gone; stopping updater daemon");
             break;
+        }
+
+        if let Some(installed_binary) = restart::replacement_binary() {
+            info!(
+                installed_binary = %installed_binary.display(),
+                "updater binary was replaced on disk; exiting so systemd restarts the daemon"
+            );
+            std::process::exit(BINARY_REPLACED_RESTART_EXIT_CODE);
         }
 
         tokio::select! {
@@ -456,7 +515,10 @@ async fn run_check_now(
     normalize_workspace_dir_and_persist(state, paths)?;
     maybe_prune_caches(config, state);
     maybe_notify_cli_missing(state, paths, config.notifications)?;
-    if if_stale && upstream_check_is_fresh(config, state) {
+    if if_stale
+        && !update_check_should_retry(&state.status)
+        && upstream_check_is_fresh(config, state)
+    {
         if let Err(error) = detect_and_record_wrapper_update(config, state, paths) {
             warn!(
                 ?error,
@@ -614,7 +676,9 @@ fn upstream_check_is_fresh(config: &RuntimeConfig, state: &PersistedState) -> bo
         return false;
     };
 
-    let freshness_window = ChronoDuration::hours(config.check_interval_hours as i64);
+    let Ok(freshness_window) = config.check_interval_chrono_duration() else {
+        return false;
+    };
     Utc::now().signed_duration_since(last_successful_check_at) < freshness_window
 }
 
@@ -735,6 +799,18 @@ fn run_cli_preflight(
     let outcome = codex_cli::preflight(state, paths, cli_path, allow_install_missing)?;
     if print_path {
         println!("{}", outcome.cli_path.display());
+    }
+    Ok(())
+}
+
+fn run_recover_standalone_cli(
+    codex_home: Option<PathBuf>,
+    install_dir: Option<PathBuf>,
+    print_path: bool,
+) -> Result<()> {
+    let launch_path = codex_cli::recover_standalone_cli(codex_home, install_dir)?;
+    if print_path {
+        println!("{}", launch_path.display());
     }
     Ok(())
 }
@@ -927,19 +1003,14 @@ async fn run_check_cycle(
         );
     }
 
-    let retrying_failed_update = state.status == UpdateStatus::Failed;
-
     let Some(_check_lock) = try_acquire_check_lock(paths)? else {
         return Ok(());
     };
 
-    let client = Client::builder().build()?;
+    let client = upstream::http_client()?;
 
     sync_runtime_state(config, state);
-    state.status = UpdateStatus::CheckingUpstream;
-    state.last_check_at = Some(Utc::now());
-    state.error_message = None;
-    persist_state(paths, state)?;
+    let retrying_update = prepare_upstream_check(state, paths)?;
 
     let result: Result<()> = async {
         let metadata = upstream::fetch_remote_metadata(&client, &config.dmg_url).await?;
@@ -949,7 +1020,7 @@ async fn run_check_cycle(
 
         if previous_headers_fingerprint.as_deref() == Some(metadata.headers_fingerprint.as_str())
             && state.dmg_sha256.is_some()
-            && !retrying_failed_update
+            && !retrying_update
         {
             set_status(state, paths, UpdateStatus::Idle)?;
             info!("upstream fingerprint unchanged; skipping download");
@@ -973,13 +1044,7 @@ async fn run_check_cycle(
             return Ok(());
         }
 
-        if state
-            .rollback_blocked_candidate_version
-            .as_deref()
-            .is_some_and(|blocked| {
-                installed_version_matches_candidate(blocked, &downloaded.candidate_version)
-            })
-        {
+        if rollback_blocks_candidate(state, &downloaded.sha256, &downloaded.candidate_version) {
             state.status = UpdateStatus::Idle;
             state.error_message = Some(format!(
                 "Candidate {} was rolled back and will not be reinstalled automatically",
@@ -993,9 +1058,7 @@ async fn run_check_cycle(
             return Ok(());
         }
 
-        if state.dmg_sha256.as_deref() == Some(downloaded.sha256.as_str())
-            && !retrying_failed_update
-        {
+        if state.dmg_sha256.as_deref() == Some(downloaded.sha256.as_str()) && !retrying_update {
             state.status = UpdateStatus::Idle;
             state.artifact_paths.dmg_path = Some(downloaded.path);
             persist_state(paths, state)?;
@@ -1005,8 +1068,8 @@ async fn run_check_cycle(
 
         rollback::record_current_package_as_known_good(state);
         state.status = UpdateStatus::UpdateDetected;
-        state.candidate_version = Some(downloaded.candidate_version);
-        state.dmg_sha256 = Some(downloaded.sha256);
+        state.candidate_version = Some(downloaded.candidate_version.clone());
+        state.dmg_sha256 = Some(downloaded.sha256.clone());
         state.artifact_paths.dmg_path = Some(downloaded.path.clone());
         state.notified_events.clear();
         state.save(&paths.state_file)?;
@@ -1025,15 +1088,17 @@ async fn run_check_cycle(
             .clone()
             .expect("candidate version should be set before local build");
         builder::build_update(config, state, paths, &candidate_version, &downloaded.path).await?;
-        maybe_prune_caches(config, state);
+        drop(downloaded);
         maybe_notify_update_ready(state, paths, config.notifications)?;
         Ok(())
     }
     .await;
 
+    // Every check outcome, including an early no-update return, releases its
+    // DMG lease before bounded cache cleanup runs here.
+    maybe_prune_caches(config, state);
     if let Err(error) = result {
         mark_failed_and_persist(state, paths, error.to_string())?;
-        maybe_prune_caches(config, state);
         let _ = notify_failure(config, state, paths, &error);
         return Err(error);
     }
@@ -1397,6 +1462,7 @@ fn complete_pending_install_if_already_installed(
     state.status = UpdateStatus::Installed;
     state.waiting_for_app_exit_auto_install = false;
     state.candidate_version = None;
+    clear_rollback_blocked_candidate(state);
     if !candidate_is_installed {
         state.artifact_paths.package_path = None;
     }
@@ -1422,6 +1488,7 @@ fn recover_interrupted_install(state: &mut PersistedState, paths: &RuntimePaths)
         state.status = UpdateStatus::Installed;
         state.waiting_for_app_exit_auto_install = false;
         state.candidate_version = None;
+        clear_rollback_blocked_candidate(state);
         if !candidate_is_installed {
             state.artifact_paths.package_path = None;
         }
@@ -1486,6 +1553,25 @@ fn installed_version_matches_candidate(installed: &str, candidate: &str) -> bool
         Some(_) => false,
         None => installed == candidate,
     }
+}
+
+fn rollback_blocks_candidate(
+    state: &PersistedState,
+    candidate_sha256: &str,
+    candidate_version: &str,
+) -> bool {
+    match state.rollback_blocked_dmg_sha256.as_deref() {
+        Some(blocked_sha256) => blocked_sha256 == candidate_sha256,
+        None => state
+            .rollback_blocked_candidate_version
+            .as_deref()
+            .is_some_and(|blocked| installed_version_matches_candidate(blocked, candidate_version)),
+    }
+}
+
+fn clear_rollback_blocked_candidate(state: &mut PersistedState) {
+    state.rollback_blocked_candidate_version = None;
+    state.rollback_blocked_dmg_sha256 = None;
 }
 
 fn compare_generated_versions(left: &str, right: &str) -> Option<std::cmp::Ordering> {
@@ -1667,7 +1753,7 @@ async fn trigger_install(
         state.waiting_for_app_exit_auto_install = false;
         state.installed_version = install::installed_package_version();
         state.candidate_version = None;
-        state.rollback_blocked_candidate_version = None;
+        clear_rollback_blocked_candidate(state);
         state.error_message = None;
         state.notified_events.clear();
         cache_cleanup::normalize_artifact_workspace_dir(workspace_root, state);
@@ -1975,6 +2061,66 @@ mod tests {
 
         state.last_successful_check_at = Some(Utc::now() - ChronoDuration::hours(7));
         assert!(!upstream_check_is_fresh(&config, &state));
+    }
+
+    #[test]
+    fn interrupted_preinstall_states_retry_the_update_check() {
+        for status in [
+            UpdateStatus::Failed,
+            UpdateStatus::DownloadingDmg,
+            UpdateStatus::UpdateDetected,
+            UpdateStatus::PreparingWorkspace,
+            UpdateStatus::PatchingApp,
+            UpdateStatus::BuildingPackage,
+        ] {
+            assert!(update_check_should_retry(&status), "status: {status:?}");
+        }
+
+        for status in [
+            UpdateStatus::Idle,
+            UpdateStatus::CheckingUpstream,
+            UpdateStatus::ReadyToInstall,
+            UpdateStatus::WaitingForAppExit,
+            UpdateStatus::Installing,
+            UpdateStatus::Installed,
+        ] {
+            assert!(!update_check_should_retry(&status), "status: {status:?}");
+        }
+    }
+
+    #[test]
+    fn upstream_check_setup_preserves_persisted_retry_intent() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = test_paths(temp.path());
+        paths.ensure_dirs()?;
+
+        for status in [
+            UpdateStatus::Failed,
+            UpdateStatus::DownloadingDmg,
+            UpdateStatus::UpdateDetected,
+            UpdateStatus::PreparingWorkspace,
+            UpdateStatus::PatchingApp,
+            UpdateStatus::BuildingPackage,
+        ] {
+            let mut state = PersistedState::new(true);
+            state.status = status.clone();
+            state.error_message = Some("previous failure".to_string());
+
+            assert!(prepare_upstream_check(&mut state, &paths)?);
+            assert_eq!(state.status, status);
+            assert!(state.last_check_at.is_some());
+            assert_eq!(state.error_message, None);
+
+            let persisted = PersistedState::load_or_default(&paths.state_file, true)?;
+            assert_eq!(persisted.status, status);
+        }
+
+        let mut fresh_state = PersistedState::new(true);
+        assert!(!prepare_upstream_check(&mut fresh_state, &paths)?);
+        assert_eq!(fresh_state.status, UpdateStatus::CheckingUpstream);
+        let persisted = PersistedState::load_or_default(&paths.state_file, true)?;
+        assert_eq!(persisted.status, UpdateStatus::CheckingUpstream);
+        Ok(())
     }
 
     #[test]
@@ -2319,7 +2465,9 @@ mod tests {
         let mut state = PersistedState::new(true);
         run_check_cycle(&config, &mut state, &paths).await?;
 
-        let expected_dmg_path = config.workspace_root.join("downloads/Codex.dmg");
+        let expected_dmg_path = config
+            .workspace_root
+            .join(format!("downloads/Codex-{sha256}.dmg"));
         assert_eq!(state.status, UpdateStatus::Idle);
         assert_eq!(state.candidate_version, None);
         assert_eq!(state.dmg_sha256.as_deref(), Some(sha256));
@@ -2330,6 +2478,68 @@ mod tests {
         assert_eq!(state.artifact_paths.package_path, None);
         assert_eq!(state.artifact_paths.workspace_dir, None);
         assert_eq!(state.error_message, None);
+        assert!(state.last_successful_check_at.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn interrupted_download_with_cached_hash_reaches_build_path() -> Result<()> {
+        let server = MockServer::start().await;
+        let body = b"codex-dmg-test-payload";
+        let sha256 = "678cd508ffe0071e217020a7a4eecbebe25362c022ac78c13a5ae87b7a3a0c92";
+        let headers_fingerprint = format!(
+            "etag=\"same-dmg\"|last_modified=|content_length={}",
+            body.len()
+        );
+
+        Mock::given(method("HEAD"))
+            .and(path("/Codex.dmg"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("ETag", "\"same-dmg\"")
+                    .insert_header("Content-Length", body.len().to_string()),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/Codex.dmg"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.to_vec()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let temp = tempfile::tempdir()?;
+        let paths = test_paths(temp.path());
+        paths.ensure_dirs()?;
+        let mut config = test_config(temp.path());
+        config.dmg_url = format!("{}/Codex.dmg", server.uri());
+        write_installed_build_info(
+            &config,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )?;
+
+        let mut state = PersistedState::new(true);
+        state.status = UpdateStatus::DownloadingDmg;
+        state.remote_headers_fingerprint = Some(headers_fingerprint);
+        state.dmg_sha256 = Some(sha256.to_string());
+
+        let error = run_check_cycle(&config, &mut state, &paths)
+            .await
+            .expect_err("retry should reach the intentionally missing builder bundle");
+        server.verify().await;
+
+        assert!(error
+            .to_string()
+            .contains("Required builder bundle path is missing"));
+        assert_eq!(state.status, UpdateStatus::Failed);
+        assert!(state.candidate_version.is_some());
+        assert_eq!(state.dmg_sha256.as_deref(), Some(sha256));
+        assert!(state.artifact_paths.workspace_dir.is_some());
+        assert!(state
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("Required builder bundle path is missing")));
         assert!(state.last_successful_check_at.is_some());
         Ok(())
     }
@@ -2606,11 +2816,18 @@ mod tests {
     #[test]
     fn daemon_reconcile_reloads_waiting_state_written_by_another_process() -> Result<()> {
         let _env_guard = crate::test_util::env_lock();
+        let _restore_env = crate::test_util::EnvRestoreGuard::capture(&[
+            "CODEX_UPDATE_MANAGER_ASSUME_NO_POLKIT_AGENT",
+            "CODEX_LINUX_SETTINGS_FILE",
+        ]);
         let runtime = tokio::runtime::Runtime::new()?;
-        let previous_no_agent = std::env::var_os("CODEX_UPDATE_MANAGER_ASSUME_NO_POLKIT_AGENT");
         std::env::set_var("CODEX_UPDATE_MANAGER_ASSUME_NO_POLKIT_AGENT", "1");
 
         let temp = tempfile::tempdir()?;
+        std::env::set_var(
+            "CODEX_LINUX_SETTINGS_FILE",
+            temp.path().join("isolated-settings.json"),
+        );
         let paths = test_paths(temp.path());
         paths.ensure_dirs()?;
         let config = test_config(temp.path());
@@ -2638,12 +2855,6 @@ mod tests {
             &mut stale_daemon_state,
             &paths,
         ));
-
-        if let Some(value) = previous_no_agent {
-            std::env::set_var("CODEX_UPDATE_MANAGER_ASSUME_NO_POLKIT_AGENT", value);
-        } else {
-            std::env::remove_var("CODEX_UPDATE_MANAGER_ASSUME_NO_POLKIT_AGENT");
-        }
 
         result?;
         assert_eq!(stale_daemon_state.status, UpdateStatus::ReadyToInstall);
@@ -3126,6 +3337,7 @@ mod tests {
     fn prompt_install_cli_does_not_treat_non_executable_file_as_installed() -> Result<()> {
         let _env_guard = crate::test_util::env_lock();
         let temp = tempfile::tempdir()?;
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o755))?;
         let paths = RuntimePaths {
             config_file: temp.path().join("config/config.toml"),
             state_file: temp.path().join("state/state.json"),
@@ -3349,6 +3561,8 @@ mod tests {
         state.status = UpdateStatus::ReadyToInstall;
         state.installed_version = "2026.04.28.082247-abcdef12.fc43".to_string();
         state.candidate_version = Some("2026.04.28.082247+abcdef12".to_string());
+        state.rollback_blocked_candidate_version = Some("2026.04.20.120000".to_string());
+        state.rollback_blocked_dmg_sha256 = Some("rolled-back-dmg-sha256".to_string());
         state.error_message = Some("authentication was not obtained".to_string());
         state
             .notified_events
@@ -3361,6 +3575,8 @@ mod tests {
 
         assert_eq!(state.status, UpdateStatus::Installed);
         assert_eq!(state.candidate_version, None);
+        assert_eq!(state.rollback_blocked_candidate_version, None);
+        assert_eq!(state.rollback_blocked_dmg_sha256, None);
         assert_eq!(state.error_message, None);
         assert!(state.notified_events.is_empty());
         Ok(())
@@ -3543,6 +3759,7 @@ mod tests {
     fn status_preserves_cli_reconciliation_failure() -> Result<()> {
         let _env_guard = crate::test_util::env_lock();
         let temp = tempfile::tempdir()?;
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o755))?;
         let paths = RuntimePaths {
             config_file: temp.path().join("config/config.toml"),
             state_file: temp.path().join("state/state.json"),
@@ -3555,6 +3772,7 @@ mod tests {
 
         let bin_dir = temp.path().join("bin");
         fs::create_dir_all(&bin_dir)?;
+        fs::set_permissions(&bin_dir, fs::Permissions::from_mode(0o755))?;
         let codex_path = bin_dir.join("codex");
         fs::write(
             &codex_path,
@@ -3572,6 +3790,9 @@ mod tests {
         let mut permissions = fs::metadata(&npm_path)?.permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&npm_path, permissions)?;
+        let node_path = bin_dir.join("node");
+        fs::write(&node_path, "#!/bin/sh\nexec /bin/sh \"$@\"\n")?;
+        fs::set_permissions(node_path, fs::Permissions::from_mode(0o755))?;
 
         let original_home = std::env::var_os("HOME");
         let original_path = std::env::var_os("PATH");
@@ -3663,6 +3884,56 @@ mod tests {
         assert_eq!(compare_generated_versions("0.34.1", "0.35.0"), None);
     }
 
+    #[test]
+    fn rollback_blocks_same_dmg_hash_at_a_different_timestamp() {
+        let mut state = PersistedState::new(true);
+        state.rollback_blocked_candidate_version = Some("2026.05.04.131500+badcafe0".to_string());
+        state.rollback_blocked_dmg_sha256 = Some("same-full-sha256".to_string());
+
+        assert!(rollback_blocks_candidate(
+            &state,
+            "same-full-sha256",
+            "2026.05.05.090000+badcafe0"
+        ));
+    }
+
+    #[test]
+    fn rollback_hash_mismatch_is_not_overridden_by_legacy_version_match() {
+        let mut state = PersistedState::new(true);
+        state.rollback_blocked_candidate_version = Some("2026.05.04.131500".to_string());
+        state.rollback_blocked_dmg_sha256 = Some("rolled-back-sha256".to_string());
+
+        assert!(!rollback_blocks_candidate(
+            &state,
+            "different-sha256",
+            "2026.05.04.131500+different"
+        ));
+    }
+
+    #[test]
+    fn rollback_legacy_version_fallback_applies_only_without_recorded_hash() {
+        let mut state = PersistedState::new(true);
+        state.rollback_blocked_candidate_version = Some("2026.05.04.131500".to_string());
+
+        assert!(rollback_blocks_candidate(
+            &state,
+            "unrecorded-sha256",
+            "2026.05.04.131500+newhash00"
+        ));
+    }
+
+    #[test]
+    fn successful_install_clears_both_rollback_block_identifiers() {
+        let mut state = PersistedState::new(true);
+        state.rollback_blocked_candidate_version = Some("2026.05.04.131500".to_string());
+        state.rollback_blocked_dmg_sha256 = Some("rolled-back-sha256".to_string());
+
+        clear_rollback_blocked_candidate(&mut state);
+
+        assert_eq!(state.rollback_blocked_candidate_version, None);
+        assert_eq!(state.rollback_blocked_dmg_sha256, None);
+    }
+
     #[tokio::test]
     async fn interrupted_install_becomes_installed_when_candidate_is_already_present() -> Result<()>
     {
@@ -3689,6 +3960,8 @@ mod tests {
         state.status = UpdateStatus::Installing;
         state.installed_version = "2026.04.01.035152".to_string();
         state.candidate_version = Some("2026.03.27.025604+1086e799".to_string());
+        state.rollback_blocked_candidate_version = Some("2026.03.20.120000".to_string());
+        state.rollback_blocked_dmg_sha256 = Some("rolled-back-dmg-sha256".to_string());
         state.artifact_paths.package_path = Some(package_path);
         state.artifact_paths.workspace_dir = Some(
             temp.path()
@@ -3699,6 +3972,8 @@ mod tests {
 
         assert_eq!(state.status, UpdateStatus::Installed);
         assert_eq!(state.candidate_version, None);
+        assert_eq!(state.rollback_blocked_candidate_version, None);
+        assert_eq!(state.rollback_blocked_dmg_sha256, None);
         assert_eq!(state.artifact_paths.package_path, None);
         assert_eq!(state.artifact_paths.workspace_dir, None);
         assert_eq!(state.error_message, None);

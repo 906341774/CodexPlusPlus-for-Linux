@@ -9,7 +9,7 @@ xref:snippets.adoc[English] | 简体中文
 
 == 补丁分类
 
-`docs/modules/ROOT/attachments/patches/compatibility/` 下的兼容性补丁是 Linux 移植必需补丁。`docs/modules/ROOT/attachments/patches/enhancements/` 下的增强功能补丁是预留给未来用户可选功能的目录。
+`docs/modules/ROOT/attachments/patches/compatibility/` 下的兼容性补丁是 Linux 移植必需补丁。`docs/modules/ROOT/attachments/patches/enhancements/` 下保存可由用户选择的增强功能补丁。
 
 == 片段表
 
@@ -26,7 +26,7 @@ xref:snippets.adoc[English] | 简体中文
 
 |`020-cdp-multi-target-injection`
 |必需
-|`Cargo.lock`, `crates/codex-plus-core/Cargo.toml`, `crates/codex-plus-core/src/cdp.rs`, `apps/codex-plus-launcher/src/main.rs`
+|`crates/codex-plus-core/src/cdp.rs`, `apps/codex-plus-launcher/src/main.rs`
 |注入所有存活的 Codex webview page target，同时优先选择主窗口而不是 hotkey window。
 |当 Linux webview 暴露多个未标记 CDP page target，或第一个 target 不是主窗口时需要。
 |xref:attachment$patches/compatibility/020-cdp-multi-target-injection.patch[patch]
@@ -54,7 +54,7 @@ xref:snippets.adoc[English] | 简体中文
 
 |`060-renderer-linux-compatibility`
 |必需
-|`apps/codex-plus-manager/src/App.tsx`, `apps/codex-plus-manager/src/i18n-en.ts`, `assets/inject/renderer-inject.js`
+|`apps/codex-plus-manager/src/App.tsx`、`apps/codex-plus-manager/src/i18n-en.ts` 和三个 renderer injection 资源
 |稳定 Linux renderer injection 的插件市场请求/详情、Pure API synthetic account、删除行为、浮动控件位置和 Fast/Standard 切换。Fast 支持 GPT-5.4、GPT-5.5、GPT-5.6、GPT-5.6 模型后缀、本地化标签和 Linux composer footer 发现；后端短暂 checking 不会阻断已知本地模型，Codex++ 清理自身 badge 时保留官方 Fast 控件。本补丁明确不恢复已经移除的侧边栏入口解锁、ChatGPT 鉴权伪装或 disabled 按钮篡改。
 |当上游 renderer injection 尚未覆盖 Linux Codex Desktop DOM 和 MCP response 差异时需要。
 |xref:attachment$patches/compatibility/060-renderer-linux-compatibility.patch[patch]
@@ -73,10 +73,17 @@ xref:snippets.adoc[English] | 简体中文
 |当 Codex++ 能列出本机会话，但 Codex Desktop Linux 项目侧边栏在 Codex 存储结构升级后显示“暂无对话”；当远端空来源 catalog 行仍作为空历史记录可见；或显示了对话但点击后始终无法加载时需要。
 |xref:attachment$patches/compatibility/080-linux-local-thread-catalog-sync.patch[patch]
 
+|`100-browser-native-rehosting`
+|默认启用的增强功能
+|Codex++ launcher、Manager、gateway core、browser shim 和定点测试
+|通过带鉴权的 loopback gateway 在普通浏览器中运行原始 Codex Desktop React UI，同时复用服务端 Electron AppHost 以及 Codex++ Pure API/API Key 状态。
+|适用于需要由浏览器 viewport 调整 DOM、而不使用 VNC 或像素流的 headless Linux 服务器。运行时仍需显式启动，并保留普通前台启动路径。
+|xref:attachment$patches/enhancements/100-browser-native-rehosting.patch[patch]
+
 |`900-regression-tests`
 |可选
-|`apps/codex-plus-manager`、`crates/codex-plus-core/tests` 与 `crates/codex-plus-data/tests` 下的 9 个定点测试文件
-|覆盖九个生产补丁，包括 GPT-5.6 Fast/Standard 变体、与官方 Fast 控件共存、Linux 用户脚本 URL alias、真实标题 catalog 回填、catalog 幂等同步和 projectless 排除。
+|`apps/codex-plus-manager`、`crates/codex-plus-core/tests` 与 `crates/codex-plus-data/tests` 下的兼容性定点测试和聚合测试配置
+|覆盖兼容性补丁，包括 GPT-5.6 Fast/Standard 变体、与官方 Fast 控件共存、Linux 用户脚本 URL alias、真实标题 catalog 回填、catalog 幂等同步和 projectless 排除。
 |推荐在源码构建和 CI 中启用；如果只需要更快的 production-only patch，可以禁用。
 |xref:attachment$patches/compatibility/900-regression-tests.patch[patch]
 |===
@@ -107,9 +114,7 @@ xref:snippets.adoc[English] | 简体中文
     "kind": "production",
     "patch": "docs/modules/ROOT/attachments/patches/compatibility/020-cdp-multi-target-injection.patch",
     "targets": [
-      "Cargo.lock",
       "apps/codex-plus-launcher/src/main.rs",
-      "crates/codex-plus-core/Cargo.toml",
       "crates/codex-plus-core/src/cdp.rs"
     ],
     "purpose": "Inject every live Codex webview target and prefer the primary Codex window."
@@ -161,7 +166,9 @@ xref:snippets.adoc[English] | 简体中文
     "targets": [
       "apps/codex-plus-manager/src/App.tsx",
       "apps/codex-plus-manager/src/i18n-en.ts",
-      "assets/inject/renderer-inject.js"
+      "assets/inject/renderer-inject.js",
+      "assets/inject/upstream/cidala-tiger/macos/renderer-inject.js",
+      "assets/inject/upstream/dream-skin/macos/renderer-inject.js"
     ],
     "purpose": "Patch Linux renderer compatibility for marketplace requests/details, Pure API account reads, delete and menu behavior, and GPT-5.6 Fast/Standard switching while preserving official Fast controls and refusing legacy plugin-entry auth spoofing."
   },
@@ -189,12 +196,37 @@ xref:snippets.adoc[English] | 简体中文
     "purpose": "Backfill Codex Desktop local_thread_catalog rows from rollout-backed sessions with real titles, exclude projectless threads, and keep unchanged syncs idempotent; companion CodexDesktop snapshot patches preserve and hydrate those rows."
   },
   {
+    "id": "100-browser-native-rehosting",
+    "required": false,
+    "defaultEnabled": true,
+    "kind": "enhancement",
+    "patch": "docs/modules/ROOT/attachments/patches/enhancements/100-browser-native-rehosting.patch",
+    "targets": [
+      "Cargo.lock",
+      "apps/codex-plus-launcher/src/main.rs",
+      "apps/codex-plus-manager/src-tauri/src/commands.rs",
+      "apps/codex-plus-manager/src-tauri/src/lib.rs",
+      "apps/codex-plus-manager/src/App.tsx",
+      "apps/codex-plus-manager/src/headless-browser.test.ts",
+      "apps/codex-plus-manager/src/headless-browser.ts",
+      "apps/codex-plus-manager/src/i18n-en.ts",
+      "apps/codex-plus-manager/src/styles.css",
+      "crates/codex-plus-core/Cargo.toml",
+      "crates/codex-plus-core/assets/browser-shim.js",
+      "crates/codex-plus-core/src/headless_browser.rs",
+      "crates/codex-plus-core/src/lib.rs",
+      "crates/codex-plus-core/tests/headless_browser.rs"
+    ],
+    "purpose": "Add opt-in browser-native Codex Desktop rehosting with an authenticated loopback gateway, Electron AppHost relay, tmux/Xvfb lifecycle, Manager controls, and server-side OAuth or Pure API/API Key reuse."
+  },
+  {
     "id": "900-regression-tests",
     "required": false,
     "defaultEnabled": true,
     "kind": "test",
     "patch": "docs/modules/ROOT/attachments/patches/compatibility/900-regression-tests.patch",
     "targets": [
+      "apps/codex-plus-manager/package.json",
       "apps/codex-plus-manager/src/relay-config-contract.test.mjs",
       "crates/codex-plus-core/tests/bridge_routes.rs",
       "crates/codex-plus-core/tests/cdp_bridge.rs",
@@ -202,6 +234,7 @@ xref:snippets.adoc[English] | 简体中文
       "crates/codex-plus-core/tests/installers.rs",
       "crates/codex-plus-core/tests/launcher.rs",
       "crates/codex-plus-core/tests/relay_config.rs",
+      "crates/codex-plus-core/tests/upstream_theme_assets.rs",
       "crates/codex-plus-core/tests/watcher.rs",
       "crates/codex-plus-data/tests/provider_sync.rs"
     ],
@@ -277,6 +310,14 @@ include::attachment$patches/compatibility/070-linux-user-scripts-compatibility.p
 [source,diff]
 ----
 include::attachment$patches/compatibility/080-linux-local-thread-catalog-sync.patch[]
+----
+
+[#snippet-100-browser-native-rehosting]
+=== 100 浏览器原生重托管
+
+[source,diff]
+----
+include::attachment$patches/enhancements/100-browser-native-rehosting.patch[]
 ----
 
 [#snippet-900-regression-tests]

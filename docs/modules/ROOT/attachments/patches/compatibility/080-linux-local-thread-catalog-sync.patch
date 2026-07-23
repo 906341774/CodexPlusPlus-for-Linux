@@ -1,50 +1,28 @@
-diff --git a/crates/codex-plus-core/src/codex_sqlite.rs b/crates/codex-plus-core/src/codex_sqlite.rs
-index 1a9716f..b2a76d0 100644
---- a/crates/codex-plus-core/src/codex_sqlite.rs
-+++ b/crates/codex-plus-core/src/codex_sqlite.rs
-@@ -87,9 +87,14 @@ fn is_sqlite_candidate(path: &Path) -> bool {
- }
-
- fn has_session_table(path: &Path) -> bool {
--    ["threads", "automation_runs", "inbox_items"]
--        .iter()
--        .any(|table| sqlite_has_table(path, table))
-+    [
-+        "threads",
-+        "automation_runs",
-+        "inbox_items",
-+        "local_thread_catalog",
-+    ]
-+    .iter()
-+    .any(|table| sqlite_has_table(path, table))
- }
-
- fn sqlite_has_table(path: &Path, table: &str) -> bool {
 diff --git a/crates/codex-plus-data/src/provider_sync.rs b/crates/codex-plus-data/src/provider_sync.rs
-index e4f7f44..5de0871 100644
+index 6cf5916..52d61b1 100644
 --- a/crates/codex-plus-data/src/provider_sync.rs
 +++ b/crates/codex-plus-data/src/provider_sync.rs
-@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
+@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
  const DEFAULT_PROVIDER: &str = "openai";
  const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
  const BACKUP_KEEP_COUNT: usize = 5;
 +const LOCK_STALE_AFTER_SECS: u64 = 6 * 60 * 60;
-
+ 
  #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
  #[serde(rename_all = "snake_case")]
-@@ -102,20 +103,42 @@ struct SqliteUpdateCounts {
+@@ -141,20 +142,42 @@ struct SqliteUpdateCounts {
      provider_rows: usize,
      user_event_rows: usize,
      cwd_rows: usize,
 +    local_catalog_rows: usize,
  }
-
+ 
  impl SqliteUpdateCounts {
      fn total(&self) -> usize {
 -        self.provider_rows + self.user_event_rows + self.cwd_rows
 +        self.provider_rows + self.user_event_rows + self.cwd_rows + self.local_catalog_rows
      }
-
+ 
      fn add(&mut self, other: Self) {
          self.provider_rows += other.provider_rows;
          self.user_event_rows += other.user_event_rows;
@@ -52,7 +30,7 @@ index e4f7f44..5de0871 100644
 +        self.local_catalog_rows += other.local_catalog_rows;
      }
  }
-
+ 
 +#[derive(Debug, Clone, PartialEq)]
 +struct LocalCatalogThread {
 +    thread_id: String,
@@ -76,7 +54,7 @@ index e4f7f44..5de0871 100644
  pub fn run_provider_sync(codex_home: Option<&Path>) -> ProviderSyncResult {
      run_provider_sync_with_target(codex_home, None)
  }
-@@ -178,20 +201,47 @@ pub fn run_provider_sync_with_target(
+@@ -217,20 +240,48 @@ pub fn run_provider_sync_with_target(
              .filter(|change| change.has_user_event)
              .filter_map(|change| change.thread_id.clone())
              .collect::<HashSet<_>>();
@@ -97,6 +75,7 @@ index e4f7f44..5de0871 100644
              .filter_map(|change| Some((change.thread_id.clone()?, change.cwd.clone()?)))
              .filter(|(thread_id, _)| !projectless_thread_ids.contains(thread_id))
              .collect::<HashMap<_, _>>();
+-        let sqlite_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
 +        let rollout_path_by_thread_id = collected
 +            .changes
 +            .iter()
@@ -107,7 +86,8 @@ index e4f7f44..5de0871 100644
 +                ))
 +            })
 +            .collect::<HashMap<_, _>>();
-         let sqlite_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
++        let sqlite_paths =
++            codex_plus_core::codex_sqlite::codex_thread_reference_db_paths_from_home(&home);
 +        let local_catalog_threads = collect_local_catalog_threads(
 +            &sqlite_paths,
 +            &target_provider,
@@ -125,7 +105,7 @@ index e4f7f44..5de0871 100644
          )?;
          let global_state_update_count =
              count_global_state_updates(&home.join(".codex-global-state.json"))?;
-@@ -217,6 +267,7 @@ pub fn run_provider_sync_with_target(
+@@ -256,6 +307,7 @@ pub fn run_provider_sync_with_target(
                  &target_provider,
                  &thread_ids_with_user_events,
                  &cwd_by_thread_id,
@@ -133,8 +113,8 @@ index e4f7f44..5de0871 100644
              )?;
              let updated_workspace_roots =
                  apply_global_state_update(&home.join(".codex-global-state.json"))?;
-@@ -475,11 +526,72 @@ fn toml_string_value(raw: &str) -> Option<String> {
-
+@@ -514,11 +566,72 @@ fn toml_string_value(raw: &str) -> Option<String> {
+ 
  fn acquire_lock(path: &Path) -> std::io::Result<()> {
      fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))?;
 +    match create_lock(path) {
@@ -206,12 +186,21 @@ index e4f7f44..5de0871 100644
 +fn process_is_running(_pid: u64) -> Option<bool> {
 +    None
  }
-
+ 
  fn release_lock(path: &Path) -> std::io::Result<()> {
-@@ -805,6 +917,16 @@ fn table_columns(db: &Connection, table: &str) -> anyhow::Result<HashSet<String>
+@@ -1063,7 +1176,7 @@ fn create_backup(
+     }
+     let db_dir = backup_dir.join("db");
+     let mut db_files = Vec::new();
+-    for db_path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(home) {
++    for db_path in codex_plus_core::codex_sqlite::codex_thread_reference_db_paths_from_home(home) {
+         for source in codex_plus_core::codex_sqlite::codex_sqlite_sidecar_paths(&db_path) {
+             if !source.exists() {
+                 continue;
+@@ -1182,6 +1295,16 @@ fn table_columns(db: &Connection, table: &str) -> anyhow::Result<HashSet<String>
          .collect::<rusqlite::Result<HashSet<_>>>()?)
  }
-
+ 
 +fn has_table(db: &Connection, table: &str) -> anyhow::Result<bool> {
 +    Ok(db
 +        .query_row(
@@ -225,10 +214,10 @@ index e4f7f44..5de0871 100644
  fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
      if !path.exists() {
          return Ok(Vec::new());
-@@ -827,42 +949,243 @@ fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
+@@ -1204,42 +1327,243 @@ fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
      Ok(sorted_provider_ids(ids))
  }
-
+ 
 +fn collect_local_catalog_threads(
 +    paths: &[PathBuf],
 +    target_provider: &str,
@@ -490,7 +479,7 @@ index e4f7f44..5de0871 100644
      }
      Ok(total)
  }
-@@ -872,6 +1195,7 @@ fn count_sqlite_updates_for_paths(
+@@ -1249,6 +1573,7 @@ fn count_sqlite_updates_for_paths(
      target_provider: &str,
      user_event_thread_ids: &HashSet<String>,
      cwd_by_thread_id: &HashMap<String, String>,
@@ -498,7 +487,7 @@ index e4f7f44..5de0871 100644
  ) -> anyhow::Result<usize> {
      let mut total = 0;
      for path in paths {
-@@ -880,6 +1204,7 @@ fn count_sqlite_updates_for_paths(
+@@ -1257,6 +1582,7 @@ fn count_sqlite_updates_for_paths(
              target_provider,
              user_event_thread_ids,
              cwd_by_thread_id,
@@ -506,7 +495,7 @@ index e4f7f44..5de0871 100644
          )?;
      }
      Ok(total)
-@@ -890,36 +1215,41 @@ fn apply_sqlite_update(
+@@ -1267,36 +1593,41 @@ fn apply_sqlite_update(
      target_provider: &str,
      user_event_thread_ids: &HashSet<String>,
      cwd_by_thread_id: &HashMap<String, String>,
@@ -568,7 +557,7 @@ index e4f7f44..5de0871 100644
      }
      tx.commit()?;
      Ok(counts)
-@@ -930,6 +1260,7 @@ fn apply_sqlite_update_for_paths(
+@@ -1307,6 +1638,7 @@ fn apply_sqlite_update_for_paths(
      target_provider: &str,
      user_event_thread_ids: &HashSet<String>,
      cwd_by_thread_id: &HashMap<String, String>,
@@ -576,7 +565,7 @@ index e4f7f44..5de0871 100644
  ) -> anyhow::Result<SqliteUpdateCounts> {
      let mut total = SqliteUpdateCounts::default();
      for path in paths {
-@@ -938,11 +1269,244 @@ fn apply_sqlite_update_for_paths(
+@@ -1315,11 +1647,244 @@ fn apply_sqlite_update_for_paths(
              target_provider,
              user_event_thread_ids,
              cwd_by_thread_id,
@@ -585,7 +574,7 @@ index e4f7f44..5de0871 100644
      }
      Ok(total)
  }
-
+ 
 +fn is_local_thread_catalog_db(db: &Connection) -> anyhow::Result<bool> {
 +    Ok(has_table(db, "local_thread_catalog")?
 +        && has_table(db, "local_thread_catalog_hosts")?
@@ -821,8 +810,8 @@ index e4f7f44..5de0871 100644
  fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {
      if !path.exists() {
          return Ok(Map::new());
-@@ -955,18 +1519,16 @@ fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {
-
+@@ -1332,18 +1897,16 @@ fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {
+ 
  fn load_projectless_thread_ids(path: &Path) -> anyhow::Result<HashSet<String>> {
      let state = load_global_state(path)?;
 -    let mut ids = HashSet::new();
@@ -846,5 +835,5 @@ index e4f7f44..5de0871 100644
 +        .map(str::to_string)
 +        .collect())
  }
-
+ 
  fn normalized_global_state(state: &Map<String, Value>) -> Map<String, Value> {

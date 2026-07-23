@@ -3,6 +3,7 @@
 <p align="center">
   <a href="https://github.com/ilysenko/codex-desktop-linux/actions/workflows/ci.yml"><img src="https://github.com/ilysenko/codex-desktop-linux/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/ilysenko/codex-desktop-linux/actions/workflows/upstream-build-app.yml"><img src="https://github.com/ilysenko/codex-desktop-linux/actions/workflows/upstream-build-app.yml/badge.svg" alt="Upstream Build App"></a>
+  <a href="https://discord.gg/skCB3DXqgw"><img src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?logo=discord&logoColor=white" alt="Join the Discord community"></a>
 </p>
 
 Unofficial Linux build wrapper for [OpenAI ChatGPT Desktop](https://chatgpt.com/features/desktop/).
@@ -21,7 +22,8 @@ rebuilds future Linux packages from newer upstream DMGs.
   <a href="#updates">Updates</a> ·
   <a href="#build-package-and-run">Build</a> ·
   <a href="#troubleshooting">Troubleshooting</a> ·
-  <a href="#project-docs">Docs</a>
+  <a href="#project-docs">Docs</a> ·
+  <a href="https://discord.gg/skCB3DXqgw">Discord</a>
 </p>
 
 Before opening a pull request, read [CONTRIBUTING.md](CONTRIBUTING.md). For
@@ -131,9 +133,9 @@ User data is preserved for reinstall. To remove only this wrapper's local app
 state, logs, launcher flags, and updater state, delete these paths.
 
 If you enabled Remote Mobile Control, `~/.config/codex-desktop` can contain
-`remote-control-device-keys-v1.json`. Revoke paired devices in Codex
-Settings/Connections or ChatGPT before deleting that file or removing the whole
-directory. For feature-owned data, prefer the cleanup flow in
+the private `remote-control-device-keys/` directory. Revoke paired devices in
+Codex Settings/Connections or ChatGPT before deleting it or removing the whole
+`codex-desktop` directory. For feature-owned data, prefer the cleanup flow in
 [Native setup](docs/native-setup.md#feature-cleanup).
 
 ```bash
@@ -164,6 +166,12 @@ version; it uses an explicit `CODEX_CLI_PATH` first, then the normal lookup
 order, and logs the resolved CLI path plus best-effort version so GUI PATH
 issues are visible. Set `CODEX_CLI_PATH=/path/to/codex` when you want to pin a
 specific binary.
+
+Local AppImage builds can optionally embed that CLI and its matching Linux
+platform package. Set `CODEX_CLI_BUNDLE_SOURCE` to an installed
+`node_modules/@openai/codex` directory when running `make appimage`; explicit
+`CODEX_CLI_PATH` values still take precedence at runtime. See
+[Build and packaging](docs/build-and-packaging.md#appimage-local-self-build).
 
 X11 and Wayland sessions are supported. The launcher prefers XWayland on
 Wayland when available for better Electron popup positioning, then falls back
@@ -207,12 +215,18 @@ workarounds.
 | Wrapper updater button | Opt-in | `codex-wrapper-updater` | [Docs](linux-features/codex-wrapper-updater/README.md) |
 | Conversation mode | Opt-in | `conversation-mode` | [Docs](linux-features/conversation-mode/README.md) |
 | Copilot reasoning effort defaults | Opt-in | `copilot-reasoning-effort` | [Docs](linux-features/copilot-reasoning-effort/README.md) |
+| Directory-only working-tree watch | Opt-in | `directory-only-working-tree-watch` | [Docs](linux-features/directory-only-working-tree-watch/README.md) |
 | Example Linux Feature | Developer example | `example-feature` | [Docs](linux-features/example-feature/README.md) |
 | Frameless titlebar | Opt-in | `frameless-titlebar` | [Docs](linux-features/frameless-titlebar/README.md) |
+| Global Dictation | Opt-in | `global-dictation` | [Docs](linux-features/global-dictation/README.md) |
 | MCP helper reaper | Opt-in | `mcp-helper-reaper` | [Docs](linux-features/mcp-helper-reaper/README.md) |
 | Browser Use node_repl reaper | Opt-in | `node-repl-reaper` | [Docs](linux-features/node-repl-reaper/README.md) |
+| Omarchy theme | Opt-in | `omarchy-theme` | [Docs](linux-features/omarchy-theme/README.md) |
 | Open Target Discovery | Opt-in | `open-target-discovery` | [Docs](linux-features/open-target-discovery/README.md) |
 | Persistent status panel | Opt-in | `persistent-status-panel` | [Docs](linux-features/persistent-status-panel/README.md) |
+| Pet overlay | Opt-in | `pet-overlay` | [Docs](linux-features/pet-overlay/README.md) |
+| Project group Last updated sorting | Opt-in | `project-group-last-updated-sort` | [Docs](linux-features/project-group-last-updated-sort/README.md) |
+| Project task Created sorting | Opt-in | `project-task-sort` | [Docs](linux-features/project-task-sort/README.md) |
 | Read Aloud button | Opt-in | `read-aloud` | [Docs](linux-features/read-aloud/README.md) |
 | Read Aloud MCP | Opt-in | `read-aloud-mcp` | [Docs](linux-features/read-aloud-mcp/README.md) |
 | Remote Control UI gates | Opt-in | `remote-control-ui` | [Docs](linux-features/remote-control-ui/README.md) |
@@ -298,6 +312,12 @@ Use a local DMG:
 ```bash
 make build-app DMG=/path/to/Codex.dmg
 ```
+
+Local builds are transactional: the candidate must pass the same
+[upstream DMG acceptance profile](docs/upstream-dmg-acceptance.md) used by the
+scheduled GitHub workflow before it replaces the working `codex-app/`.
+Only configured Linux Features are checked; drift in an enabled feature keeps
+the current app installed until that feature is disabled or repaired.
 
 Build and install a package:
 

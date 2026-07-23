@@ -1,5 +1,6 @@
 use codex_plus_core::codex_sqlite::{
-    codex_session_db_paths_from_home, sanitize_historical_model_suffixes,
+    codex_session_db_paths_from_home, codex_thread_reference_db_paths_from_home,
+    sanitize_historical_model_suffixes,
 };
 use rusqlite::Connection;
 
@@ -165,7 +166,7 @@ fn sanitize_cleans_suffix_from_logs() {
 }
 
 #[test]
-fn session_db_discovery_includes_local_catalog_only_database() {
+fn session_db_discovery_separates_local_catalog_only_database() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join(".codex");
     let sqlite_dir = home.join("sqlite");
@@ -185,5 +186,6 @@ fn session_db_discovery_includes_local_catalog_only_database() {
 
     let paths = codex_session_db_paths_from_home(&home);
 
-    assert!(paths.contains(&catalog_path));
+    assert!(!paths.contains(&catalog_path));
+    assert!(codex_thread_reference_db_paths_from_home(&home).contains(&catalog_path));
 }

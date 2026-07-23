@@ -1,0 +1,4270 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index cfa1137..6a635fe 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -436,6 +436,7 @@ dependencies = [
+  "tokio-tungstenite",
+  "toml 0.8.2",
+  "toml_edit 0.22.27",
++ "url",
+  "uuid",
+  "windows 0.58.0",
+  "wiremock",
+diff --git a/apps/codex-plus-launcher/src/main.rs b/apps/codex-plus-launcher/src/main.rs
+index 8f857df..2f81721 100644
+--- a/apps/codex-plus-launcher/src/main.rs
++++ b/apps/codex-plus-launcher/src/main.rs
+@@ -1,6 +1,10 @@
+ #![cfg_attr(windows, windows_subsystem = "windows")]
+ 
+ use anyhow::{Context, Result};
++use codex_plus_core::headless_browser::{
++    BrowserAuthMode, BrowserGateway, BrowserGatewayConfig, BrowserInstanceState,
++    BrowserInstanceStatus, BrowserSessionToken, BrowserStateStore, reserve_browser_gateway_port,
++};
+ use codex_plus_core::launcher::{
+     DefaultLaunchHooks, LaunchHooks, LaunchOptions, launch_and_inject_with_hooks,
+ };
+@@ -45,6 +49,9 @@ async fn main() -> Result<()> {
+         hooks.shutdown_helper(options.helper_port).await;
+         return Ok(());
+     }
++    if let Some(headless) = parse_headless_browser_options(&args)? {
++        return run_headless_browser(options, headless).await;
++    }
+     let Some(_guard) = acquire_single_instance_guard(options.debug_port)? else {
+         activate_existing_codex_app(&options).await?;
+         return Ok(());
+@@ -60,6 +67,481 @@ async fn main() -> Result<()> {
+     Ok(())
+ }
+ 
++#[derive(Debug, Clone, PartialEq, Eq)]
++struct HeadlessBrowserOptions {
++    requested_port: Option<u16>,
++}
++
++fn parse_headless_browser_options<I, S>(args: I) -> anyhow::Result<Option<HeadlessBrowserOptions>>
++where
++    I: IntoIterator<Item = S>,
++    S: AsRef<str>,
++{
++    let args = args
++        .into_iter()
++        .map(|arg| arg.as_ref().to_string())
++        .collect::<Vec<_>>();
++    if !args.iter().any(|arg| arg == "--headless-browser") {
++        return Ok(None);
++    }
++    let mut requested_port = None;
++    let mut iter = args.iter();
++    while let Some(arg) = iter.next() {
++        if arg != "--browser-port" {
++            continue;
++        }
++        let value = iter
++            .next()
++            .ok_or_else(|| anyhow::anyhow!("--browser-port requires a value"))?;
++        let port = value
++            .parse::<u16>()
++            .map_err(|_| anyhow::anyhow!("--browser-port must be a numeric port"))?;
++        if !(49_152..=65_535).contains(&port) {
++            anyhow::bail!("--browser-port must be between 49152 and 65535");
++        }
++        requested_port = Some(port);
++    }
++    Ok(Some(HeadlessBrowserOptions { requested_port }))
++}
++
++async fn run_headless_browser(
++    mut options: LaunchOptions,
++    headless: HeadlessBrowserOptions,
++) -> anyhow::Result<()> {
++    let hooks = LauncherHooks::default();
++    let settings = hooks.load_settings().await?;
++    let helper_port = select_headless_helper_port(&hooks, options.helper_port, &settings);
++    options.helper_port = helper_port;
++    let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
++    let browser_token = required_browser_token("CODEX_LINUX_BROWSER_SESSION_TOKEN")?;
++    let relay_token_text = browser_secret("CODEX_LINUX_BROWSER_RELAY_TOKEN")?;
++    let relay_token = BrowserSessionToken::from_exposed(&relay_token_text).ok_or_else(|| {
++        anyhow::anyhow!("CODEX_LINUX_BROWSER_RELAY_TOKEN is not a valid browser session token")
++    })?;
++    let reservation = reserve_browser_gateway_port(headless.requested_port)
++        .context("failed to reserve the browser gateway port")?;
++    let port = reservation.port();
++    let webview_root = app_dir.join("content").join("webview");
++    let gateway = BrowserGateway::start(
++        reservation,
++        BrowserGatewayConfig {
++            webview_root,
++            browser_token: browser_token.clone(),
++            relay_token,
++            browser_injection_script: codex_plus_core::assets::injection_script_with_settings(
++                helper_port,
++                &settings,
++            ),
++            browser_helper_origin: format!("http://127.0.0.1:{}", helper_port),
++        },
++    )
++    .await?;
++    let gateway_url = format!("http://127.0.0.1:{port}");
++    unsafe {
++        std::env::set_var("CODEX_LINUX_BROWSER_GATEWAY_URL", &gateway_url);
++        std::env::set_var("CODEX_LINUX_BROWSER_RELAY_TOKEN", &relay_token_text);
++    }
++    write_browser_access_file(&gateway_url, browser_token.expose_for_launch())?;
++
++    let state_store = browser_state_store();
++    let instance_id = std::env::var("CODEX_LINUX_BROWSER_INSTANCE_ID")
++        .ok()
++        .filter(|value| !value.trim().is_empty())
++        .unwrap_or_else(|| format!("browser-{}-{}", std::process::id(), current_time_ms()));
++    let tmux_session = std::env::var("CODEX_LINUX_BROWSER_TMUX_SESSION").unwrap_or_default();
++    let started_at_ms = current_time_ms();
++    save_browser_state(
++        &state_store,
++        &instance_id,
++        BrowserInstanceStatus::Starting,
++        "starting Codex Desktop and browser relay",
++        started_at_ms,
++        tmux_session.as_str(),
++        Some(port),
++        &app_dir,
++    );
++
++    let handle = match launch_and_inject_with_hooks(options, &hooks).await {
++        Ok(handle) => handle,
++        Err(error) => {
++            save_browser_state(
++                &state_store,
++                &instance_id,
++                BrowserInstanceStatus::Failed,
++                &error.to_string(),
++                started_at_ms,
++                tmux_session.as_str(),
++                Some(port),
++                &app_dir,
++            );
++            gateway.shutdown().await;
++            return Err(error);
++        }
++    };
++    save_browser_state(
++        &state_store,
++        &instance_id,
++        if gateway
++            .wait_for_peer(
++                codex_plus_core::headless_browser::GatewayPeerRole::Relay,
++                std::time::Duration::from_secs(30),
++            )
++            .await
++        {
++            BrowserInstanceStatus::Running
++        } else {
++            BrowserInstanceStatus::Degraded
++        },
++        if gateway.peer_connected(codex_plus_core::headless_browser::GatewayPeerRole::Relay) {
++            "browser gateway, relay, and Codex Desktop are running"
++        } else {
++            "Codex Desktop started, but the browser relay is not connected"
++        },
++        started_at_ms,
++        tmux_session.as_str(),
++        Some(port),
++        &app_dir,
++    );
++    let result = wait_for_headless_browser_exit(
++        &handle,
++        &gateway,
++        &state_store,
++        &instance_id,
++        started_at_ms,
++        tmux_session.as_str(),
++        &app_dir,
++    )
++    .await;
++    save_browser_state(
++        &state_store,
++        &instance_id,
++        if result.is_ok() {
++            BrowserInstanceStatus::Stopped
++        } else {
++            BrowserInstanceStatus::Failed
++        },
++        result
++            .as_ref()
++            .map(|_| "Codex Desktop exited".to_string())
++            .unwrap_or_else(|error| error.to_string()),
++        started_at_ms,
++        tmux_session.as_str(),
++        Some(gateway.port()),
++        &app_dir,
++    );
++    gateway.shutdown().await;
++    result
++}
++
++fn select_headless_helper_port(
++    hooks: &LauncherHooks,
++    requested: u16,
++    settings: &codex_plus_core::settings::BackendSettings,
++) -> u16 {
++    if settings.active_relay_uses_protocol_proxy() {
++        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT
++    } else {
++        hooks.select_helper_port(requested)
++    }
++}
++
++#[derive(Debug)]
++struct BrowserControlRequest {
++    browser_port: u16,
++}
++
++fn parse_browser_control_request(body: &str) -> anyhow::Result<BrowserControlRequest> {
++    let request: Value =
++        serde_json::from_str(body).context("browser control request is not valid JSON")?;
++    if request.get("type").and_then(Value::as_str) != Some("rebind") {
++        anyhow::bail!("browser control request type is not supported");
++    }
++    let browser_port = request
++        .get("browserPort")
++        .and_then(Value::as_u64)
++        .and_then(|port| u16::try_from(port).ok())
++        .context("browser control request is missing a numeric browserPort")?;
++    if !(49_152..=65_535).contains(&browser_port) {
++        anyhow::bail!("browser control port must be between 49152 and 65535");
++    }
++    Ok(BrowserControlRequest { browser_port })
++}
++
++async fn wait_for_headless_browser_exit(
++    handle: &codex_plus_core::launcher::LaunchHandle,
++    gateway: &BrowserGateway,
++    state_store: &BrowserStateStore,
++    instance_id: &str,
++    started_at_ms: u64,
++    tmux_session: &str,
++    app_dir: &Path,
++) -> anyhow::Result<()> {
++    #[cfg(unix)]
++    {
++        if let Some(control_path) = std::env::var_os("CODEX_LINUX_BROWSER_CONTROL_SOCKET") {
++            let control_path = PathBuf::from(control_path);
++            let listener = bind_browser_control_socket(&control_path)?;
++            let result = tokio::select! {
++                result = handle.wait_for_codex_exit() => result,
++                control_result = browser_control_loop(
++                    listener,
++                    gateway,
++                    state_store,
++                    instance_id,
++                    started_at_ms,
++                    tmux_session,
++                    app_dir,
++                ) => {
++                    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
++                        "headless_browser.control_socket_stopped",
++                        json!({ "message": control_result.as_ref().err().map(|error| error.to_string()) }),
++                    );
++                    handle.wait_for_codex_exit().await
++                }
++            };
++            let _ = std::fs::remove_file(control_path);
++            return result;
++        }
++    }
++
++    handle.wait_for_codex_exit().await
++}
++
++#[cfg(unix)]
++fn bind_browser_control_socket(path: &Path) -> anyhow::Result<tokio::net::UnixListener> {
++    if let Some(parent) = path.parent() {
++        std::fs::create_dir_all(parent)?;
++    }
++    let _ = std::fs::remove_file(path);
++    let listener = tokio::net::UnixListener::bind(path)
++        .with_context(|| format!("failed to bind browser control socket {}", path.display()))?;
++    use std::os::unix::fs::PermissionsExt;
++    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
++    Ok(listener)
++}
++
++#[cfg(unix)]
++async fn browser_control_loop(
++    listener: tokio::net::UnixListener,
++    gateway: &BrowserGateway,
++    state_store: &BrowserStateStore,
++    instance_id: &str,
++    started_at_ms: u64,
++    tmux_session: &str,
++    app_dir: &Path,
++) -> anyhow::Result<()> {
++    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
++
++    loop {
++        let (stream, _) = listener.accept().await?;
++        let mut reader = BufReader::new(stream);
++        let mut line = String::new();
++        reader.read_line(&mut line).await?;
++        let response = match parse_browser_control_request(&line) {
++            Ok(request) => {
++                rebind_browser_gateway(
++                    request.browser_port,
++                    gateway,
++                    state_store,
++                    instance_id,
++                    started_at_ms,
++                    tmux_session,
++                    app_dir,
++                )
++                .await
++            }
++            Err(error) => json!({ "status": "failed", "message": error.to_string() }),
++        };
++        let mut encoded = serde_json::to_vec(&response)?;
++        encoded.push(b'\n');
++        reader.get_mut().write_all(&encoded).await?;
++    }
++}
++
++#[cfg(unix)]
++async fn rebind_browser_gateway(
++    port: u16,
++    gateway: &BrowserGateway,
++    state_store: &BrowserStateStore,
++    instance_id: &str,
++    started_at_ms: u64,
++    tmux_session: &str,
++    app_dir: &Path,
++) -> Value {
++    let reservation = match reserve_browser_gateway_port(Some(port)) {
++        Ok(reservation) => reservation,
++        Err(error) => {
++            return json!({
++                "status": "failed",
++                "message": format!("browser gateway port is unavailable: {error}"),
++            });
++        }
++    };
++    let token = BrowserSessionToken::generate();
++    save_browser_state(
++        state_store,
++        instance_id,
++        BrowserInstanceStatus::Reconfiguring,
++        "replacing the browser gateway listener",
++        started_at_ms,
++        tmux_session,
++        Some(port),
++        app_dir,
++    );
++    if let Err(error) = gateway.rebind(reservation, token.clone()).await {
++        save_browser_state(
++            state_store,
++            instance_id,
++            BrowserInstanceStatus::Degraded,
++            format!("browser gateway rebind failed: {error}"),
++            started_at_ms,
++            tmux_session,
++            Some(gateway.port()),
++            app_dir,
++        );
++        return json!({ "status": "failed", "message": error.to_string() });
++    }
++    let gateway_url = format!("http://127.0.0.1:{port}");
++    if let Err(error) = write_browser_access_file(&gateway_url, token.expose_for_launch()) {
++        save_browser_state(
++            state_store,
++            instance_id,
++            BrowserInstanceStatus::Degraded,
++            format!("browser access file update failed: {error}"),
++            started_at_ms,
++            tmux_session,
++            Some(port),
++            app_dir,
++        );
++        return json!({ "status": "failed", "message": error.to_string() });
++    }
++    save_browser_state(
++        state_store,
++        instance_id,
++        if gateway.peer_connected(codex_plus_core::headless_browser::GatewayPeerRole::Relay) {
++            BrowserInstanceStatus::Running
++        } else {
++            BrowserInstanceStatus::Degraded
++        },
++        if gateway.peer_connected(codex_plus_core::headless_browser::GatewayPeerRole::Relay) {
++            "browser gateway port changed without restarting Codex Desktop"
++        } else {
++            "browser gateway port changed, but the browser relay is not connected"
++        },
++        started_at_ms,
++        tmux_session,
++        Some(port),
++        app_dir,
++    );
++    json!({
++        "status": "ok",
++        "message": "browser gateway port changed",
++        "browserPort": port,
++    })
++}
++
++fn required_browser_token(name: &str) -> anyhow::Result<BrowserSessionToken> {
++    let value = browser_secret(name)?;
++    BrowserSessionToken::from_exposed(value.trim())
++        .ok_or_else(|| anyhow::anyhow!("{name} is not a valid browser session token"))
++}
++
++fn browser_secret(name: &str) -> anyhow::Result<String> {
++    if let Ok(value) = std::env::var(name) {
++        if !value.trim().is_empty() {
++            return Ok(value);
++        }
++    }
++    let file_name = format!("{name}_FILE");
++    let path = std::env::var(&file_name)
++        .with_context(|| format!("{name} or {file_name} is required for headless browser mode"))?;
++    let value = std::fs::read_to_string(&path)
++        .with_context(|| format!("failed to read headless browser secret file {path}"))?;
++    if value.trim().is_empty() {
++        anyhow::bail!("headless browser secret file {path} is empty");
++    }
++    Ok(value.trim().to_string())
++}
++
++fn browser_state_store() -> BrowserStateStore {
++    let path = std::env::var("CODEX_LINUX_BROWSER_STATE_PATH")
++        .map(std::path::PathBuf::from)
++        .unwrap_or_else(|_| {
++            codex_plus_core::paths::default_app_state_dir().join("browser-instance.json")
++        });
++    BrowserStateStore::new(path)
++}
++
++fn write_browser_access_file(gateway_url: &str, token: &str) -> anyhow::Result<()> {
++    let Ok(path) = std::env::var("CODEX_LINUX_BROWSER_ACCESS_FILE") else {
++        return Ok(());
++    };
++    let path = PathBuf::from(path);
++    if let Some(parent) = path.parent() {
++        std::fs::create_dir_all(parent)?;
++    }
++    let contents = format!("{gateway_url}/#codexpp_session={token}\n");
++    codex_plus_core::settings::atomic_write(&path, contents.as_bytes())?;
++    #[cfg(unix)]
++    {
++        use std::os::unix::fs::PermissionsExt;
++        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
++    }
++    Ok(())
++}
++
++fn current_time_ms() -> u64 {
++    std::time::SystemTime::now()
++        .duration_since(std::time::UNIX_EPOCH)
++        .map(|duration| duration.as_millis() as u64)
++        .unwrap_or_default()
++}
++
++fn save_browser_state(
++    store: &BrowserStateStore,
++    instance_id: &str,
++    status: BrowserInstanceStatus,
++    message: impl Into<String>,
++    started_at_ms: u64,
++    tmux_session: &str,
++    access_port: Option<u16>,
++    app_dir: &Path,
++) {
++    let codex_pids = codex_plus_core::watcher::find_codex_processes();
++    let state = BrowserInstanceState {
++        instance_id: instance_id.to_string(),
++        status,
++        message: message.into(),
++        started_at_ms,
++        tmux_session: tmux_session.to_string(),
++        access_port,
++        auth_mode: browser_auth_mode(),
++        gateway_pid: Some(std::process::id()),
++        relay_pid: None,
++        electron_pid: codex_pids.first().copied(),
++        owned_pids: std::iter::once(std::process::id())
++            .chain(codex_pids)
++            .collect(),
++        failure_code: None,
++    };
++    if let Err(error) = store.save(&state) {
++        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
++            "headless_browser.state_save_failed",
++            serde_json::json!({ "app_dir": app_dir, "message": error.to_string() }),
++        );
++    }
++}
++
++fn browser_auth_mode() -> BrowserAuthMode {
++    let status = codex_plus_core::relay_config::default_relay_status();
++    match (status.configured, status.authenticated) {
++        (true, false) => BrowserAuthMode::PureApi,
++        (false, true) => BrowserAuthMode::ChatgptOauth,
++        (true, true) => BrowserAuthMode::MixedApi,
++        (false, false) => BrowserAuthMode::NotAuthenticated,
++    }
++}
++
+ fn acquire_single_instance_guard(
+     debug_port: u16,
+ ) -> anyhow::Result<Option<codex_plus_core::ports::LoopbackPortGuard>> {
+@@ -862,6 +1344,64 @@ mod tests {
+         assert_eq!(options.helper_port, LaunchOptions::default().helper_port);
+     }
+ 
++    #[test]
++    fn parse_headless_browser_options_is_opt_in_and_accepts_a_high_port() {
++        assert_eq!(
++            parse_headless_browser_options(["--debug-port", "9333"]).unwrap(),
++            None
++        );
++
++        let options =
++            parse_headless_browser_options(["--headless-browser", "--browser-port", "58444"])
++                .unwrap()
++                .unwrap();
++
++        assert_eq!(options.requested_port, Some(58444));
++    }
++
++    #[test]
++    fn parse_headless_browser_options_rejects_low_or_invalid_ports() {
++        assert!(
++            parse_headless_browser_options(["--headless-browser", "--browser-port", "1024"])
++                .is_err()
++        );
++        assert!(
++            parse_headless_browser_options(["--headless-browser", "--browser-port", "invalid"])
++                .is_err()
++        );
++    }
++
++    #[test]
++    fn browser_control_request_accepts_only_high_port_rebinds() {
++        let request =
++            parse_browser_control_request(r#"{"type":"rebind","browserPort":58444}"#).unwrap();
++
++        assert_eq!(request.browser_port, 58444);
++        assert!(parse_browser_control_request(r#"{"type":"rebind","browserPort":9229}"#).is_err());
++        assert!(
++            parse_browser_control_request(r#"{"type":"shutdown","browserPort":58444}"#).is_err()
++        );
++    }
++
++    #[test]
++    fn headless_browser_classifies_configured_api_key_without_oauth_as_pure_api() {
++        let source = include_str!("main.rs");
++        let start = source.find("fn browser_auth_mode()").unwrap();
++        let body = &source[start..source[start..].find("\n}\n").unwrap() + start];
++
++        assert!(body.contains("(true, false) => BrowserAuthMode::PureApi"));
++    }
++
++    #[test]
++    fn launcher_headless_source_reads_tokens_from_environment_not_command_arguments() {
++        let source = include_str!("main.rs");
++
++        assert!(source.contains("CODEX_LINUX_BROWSER_SESSION_TOKEN"));
++        assert!(source.contains("CODEX_LINUX_BROWSER_RELAY_TOKEN"));
++        assert!(!source.contains("\"--browser-token\""));
++        assert!(!source.contains("\"--relay-token\""));
++    }
++
+     #[test]
+     fn launcher_uses_single_instance_guard_before_launching() {
+         let source = include_str!("main.rs");
+@@ -933,6 +1473,24 @@ mod tests {
+         assert!(!update_prompt_disabled_by_environment(Some("false")));
+     }
+ 
++    #[test]
++    fn headless_browser_gateway_uses_the_preselected_helper_port() {
++        let source = include_str!("main.rs");
++        let start = source
++            .find("async fn run_headless_browser")
++            .expect("headless browser runner should exist");
++        let end = source[start..]
++            .find("struct BrowserControlRequest")
++            .map(|offset| start + offset)
++            .expect("headless browser runner should end before control requests");
++        let body = &source[start..end];
++
++        assert!(body.contains("select_headless_helper_port"));
++        assert!(body.contains("options.helper_port = helper_port;"));
++        assert!(body.contains("injection_script_with_settings(\n                helper_port,"));
++        assert!(body.contains("format!(\"http://127.0.0.1:{}\", helper_port)"));
++    }
++
+     #[test]
+     fn launcher_hooks_forward_runtime_watchdogs_and_computer_use_guard_methods() {
+         let source = include_str!("main.rs");
+diff --git a/apps/codex-plus-manager/src-tauri/src/commands.rs b/apps/codex-plus-manager/src-tauri/src/commands.rs
+index bb34dca..bd1c3a7 100644
+--- a/apps/codex-plus-manager/src-tauri/src/commands.rs
++++ b/apps/codex-plus-manager/src-tauri/src/commands.rs
+@@ -1,10 +1,16 @@
+-use std::collections::BTreeMap;
++use std::collections::{BTreeMap, BTreeSet};
++use std::ffi::OsString;
+ use std::fs;
+-use std::io::{Read, Seek, SeekFrom};
++use std::io::{BufRead, Read, Seek, SeekFrom, Write};
+ use std::path::{Path, PathBuf};
++use std::process::Command;
+ use std::sync::{Mutex, OnceLock};
+-use std::time::{SystemTime, UNIX_EPOCH};
++use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+ 
++use codex_plus_core::headless_browser::{
++    BrowserAuthMode, BrowserInstanceState, BrowserInstanceStatus, BrowserSessionToken,
++    BrowserStateStore,
++};
+ use codex_plus_core::install::SILENT_BINARY;
+ use codex_plus_core::models::{DeleteResult, SessionRef};
+ use codex_plus_core::relay_environment::RelayEnvironmentReport;
+@@ -376,6 +382,369 @@ pub struct LaunchRequest {
+     pub helper_port: u16,
+ }
+ 
++#[derive(Debug, Clone, serde::Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct HeadlessBrowserStartRequest {
++    #[serde(default)]
++    pub app_path: String,
++    #[serde(default = "default_debug_port")]
++    pub debug_port: u16,
++    #[serde(default = "default_helper_port")]
++    pub helper_port: u16,
++    #[serde(default)]
++    pub browser_port: Option<u16>,
++}
++
++#[derive(Debug, Clone, serde::Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct HeadlessBrowserPortRequest {
++    pub browser_port: u16,
++}
++
++#[derive(Debug, Clone, Serialize)]
++#[serde(rename_all = "camelCase")]
++pub struct HeadlessBrowserPayload {
++    pub state: Option<BrowserInstanceState>,
++    pub access_url: Option<String>,
++}
++
++#[derive(Debug, Clone)]
++struct HeadlessSessionSpec {
++    session_name: String,
++    display: String,
++    launcher_path: PathBuf,
++    app_path: PathBuf,
++    script_path: PathBuf,
++    state_path: PathBuf,
++    access_file: PathBuf,
++    control_socket: PathBuf,
++    browser_token_file: PathBuf,
++    relay_token_file: PathBuf,
++    debug_port: u16,
++    helper_port: u16,
++    browser_port: Option<u16>,
++}
++
++fn headless_tmux_args(spec: &HeadlessSessionSpec) -> Vec<OsString> {
++    let mut args = vec![
++        OsString::from("new-session"),
++        OsString::from("-d"),
++        OsString::from("-s"),
++        OsString::from(&spec.session_name),
++    ];
++    let environment = [
++        ("DISPLAY", spec.display.to_string()),
++        (
++            "CODEX_PLUS_HEADLESS_SCRIPT",
++            spec.script_path.to_string_lossy().to_string(),
++        ),
++        (
++            "CODEX_PLUS_HEADLESS_LAUNCHER",
++            spec.launcher_path.to_string_lossy().to_string(),
++        ),
++        (
++            "CODEX_LINUX_APP_PATH",
++            spec.app_path.to_string_lossy().to_string(),
++        ),
++        (
++            "CODEX_LINUX_BROWSER_STATE_PATH",
++            spec.state_path.to_string_lossy().to_string(),
++        ),
++        (
++            "CODEX_LINUX_BROWSER_ACCESS_FILE",
++            spec.access_file.to_string_lossy().to_string(),
++        ),
++        (
++            "CODEX_LINUX_BROWSER_CONTROL_SOCKET",
++            spec.control_socket.to_string_lossy().to_string(),
++        ),
++        (
++            "CODEX_LINUX_BROWSER_SESSION_TOKEN_FILE",
++            spec.browser_token_file.to_string_lossy().to_string(),
++        ),
++        (
++            "CODEX_LINUX_BROWSER_RELAY_TOKEN_FILE",
++            spec.relay_token_file.to_string_lossy().to_string(),
++        ),
++        (
++            "CODEX_LINUX_BROWSER_TMUX_SESSION",
++            spec.session_name.to_string(),
++        ),
++        (
++            "CODEX_PLUS_HEADLESS_DEBUG_PORT",
++            spec.debug_port.to_string(),
++        ),
++        (
++            "CODEX_PLUS_HEADLESS_HELPER_PORT",
++            spec.helper_port.to_string(),
++        ),
++        (
++            "CODEX_PLUS_HEADLESS_BROWSER_PORT",
++            spec.browser_port
++                .map(|port| port.to_string())
++                .unwrap_or_default(),
++        ),
++        ("CODEX_LINUX_MULTI_LAUNCH", "1".to_string()),
++    ];
++    for (key, value) in environment {
++        args.push(OsString::from("-e"));
++        args.push(OsString::from(format!("{key}={value}")));
++    }
++    args.extend([
++        OsString::from("--"),
++        OsString::from("sh"),
++        OsString::from("-c"),
++        OsString::from("exec \"$CODEX_PLUS_HEADLESS_SCRIPT\""),
++    ]);
++    args
++}
++
++fn headless_session_script() -> &'static str {
++    r#"#!/bin/sh
++set -eu
++
++xvfb_pid=""
++launcher_pid=""
++
++terminate() {
++    if [ -n "$launcher_pid" ]; then
++        kill -TERM "$launcher_pid" 2>/dev/null || true
++    fi
++}
++
++cleanup() {
++    terminate
++    if [ -n "$xvfb_pid" ]; then
++        kill -TERM "$xvfb_pid" 2>/dev/null || true
++        wait "$xvfb_pid" 2>/dev/null || true
++    fi
++    rm -f \
++        "$CODEX_LINUX_BROWSER_SESSION_TOKEN_FILE" \
++        "$CODEX_LINUX_BROWSER_RELAY_TOKEN_FILE" \
++        "$CODEX_LINUX_BROWSER_ACCESS_FILE" \
++        "$CODEX_LINUX_BROWSER_CONTROL_SOCKET"
++}
++
++trap terminate TERM INT HUP
++trap cleanup EXIT
++
++Xvfb "$DISPLAY" -screen 0 1920x1080x24 -nolisten tcp >/dev/null 2>&1 &
++xvfb_pid=$!
++attempt=0
++while ! kill -0 "$xvfb_pid" 2>/dev/null; do
++    attempt=$((attempt + 1))
++    [ "$attempt" -lt 50 ] || exit 1
++    sleep 0.1
++done
++
++set -- --headless-browser \
++    --app-path "$CODEX_LINUX_APP_PATH" \
++    --debug-port "$CODEX_PLUS_HEADLESS_DEBUG_PORT" \
++    --helper-port "$CODEX_PLUS_HEADLESS_HELPER_PORT"
++if [ -n "$CODEX_PLUS_HEADLESS_BROWSER_PORT" ]; then
++    set -- "$@" --browser-port "$CODEX_PLUS_HEADLESS_BROWSER_PORT"
++fi
++
++"$CODEX_PLUS_HEADLESS_LAUNCHER" "$@" &
++launcher_pid=$!
++wait "$launcher_pid"
++status=$?
++exit "$status"
++"#
++}
++
++fn headless_runtime_dir() -> PathBuf {
++    std::env::var_os("XDG_RUNTIME_DIR")
++        .map(PathBuf::from)
++        .unwrap_or_else(|| codex_plus_core::paths::default_app_state_dir().join("runtime"))
++        .join("codex-plus-plus")
++        .join("headless-browser")
++}
++
++fn headless_state_store() -> BrowserStateStore {
++    BrowserStateStore::new(
++        codex_plus_core::paths::default_app_state_dir().join("browser-instance.json"),
++    )
++}
++
++fn write_private_file(path: &Path, contents: &str, mode: u32) -> anyhow::Result<()> {
++    if let Some(parent) = path.parent() {
++        fs::create_dir_all(parent)?;
++    }
++    fs::write(path, contents)?;
++    #[cfg(unix)]
++    {
++        use std::os::unix::fs::PermissionsExt;
++        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
++    }
++    Ok(())
++}
++
++fn select_headless_display() -> String {
++    for number in 90..200 {
++        let socket = PathBuf::from(format!("/tmp/.X11-unix/X{number}"));
++        if !socket.exists() {
++            return format!(":{number}");
++        }
++    }
++    ":199".to_string()
++}
++
++fn headless_payload() -> HeadlessBrowserPayload {
++    let state = headless_state_store().load().ok().flatten();
++    let state = state.map(|mut state| {
++        if !state.tmux_session.is_empty() && !headless_tmux_session_exists(&state.tmux_session) {
++            if !matches!(
++                state.status,
++                BrowserInstanceStatus::Stopped | BrowserInstanceStatus::Failed
++            ) {
++                state.status = BrowserInstanceStatus::Stopped;
++                state.message = "tmux session is no longer present".to_string();
++            }
++        }
++        state
++    });
++    let access_path = headless_runtime_dir().join("access.url");
++    let access_url = fs::read_to_string(access_path)
++        .ok()
++        .map(|value| value.trim().to_string())
++        .filter(|value| !value.is_empty());
++    HeadlessBrowserPayload { state, access_url }
++}
++
++fn headless_tmux_session_exists(session: &str) -> bool {
++    Command::new("tmux")
++        .args(["has-session", "-t", session])
++        .status()
++        .is_ok_and(|status| status.success())
++}
++
++fn save_manager_headless_state(state: BrowserInstanceState) -> anyhow::Result<()> {
++    headless_state_store().save(&state)
++}
++
++fn new_headless_state(spec: &HeadlessSessionSpec) -> BrowserInstanceState {
++    BrowserInstanceState {
++        instance_id: spec.session_name.clone(),
++        status: BrowserInstanceStatus::Starting,
++        message: "tmux session is starting".to_string(),
++        started_at_ms: current_time_ms(),
++        tmux_session: spec.session_name.clone(),
++        access_port: spec.browser_port,
++        auth_mode: BrowserAuthMode::NotAuthenticated,
++        gateway_pid: None,
++        relay_pid: None,
++        electron_pid: None,
++        owned_pids: Vec::new(),
++        failure_code: None,
++    }
++}
++
++fn current_time_ms() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .map(|duration| duration.as_millis() as u64)
++        .unwrap_or_default()
++}
++
++fn start_headless_browser_inner(
++    request: HeadlessBrowserStartRequest,
++) -> CommandResult<HeadlessBrowserPayload> {
++    let current = headless_payload();
++    if current.state.as_ref().is_some_and(|state| {
++        matches!(
++            state.status,
++            BrowserInstanceStatus::Starting
++                | BrowserInstanceStatus::Running
++                | BrowserInstanceStatus::Stopping
++        ) && headless_tmux_session_exists(&state.tmux_session)
++    }) {
++        return failed("后台实例已经在运行。", current);
++    }
++
++    let settings = SettingsStore::default().load().unwrap_or_default();
++    let app_path = if request.app_path.trim().is_empty() {
++        PathBuf::from(settings.codex_app_path.trim())
++    } else {
++        PathBuf::from(request.app_path.trim())
++    };
++    if !app_path.is_dir() {
++        return failed(
++            "CodexDesktop 安装目录不存在。",
++            HeadlessBrowserPayload {
++                state: None,
++                access_url: None,
++            },
++        );
++    }
++
++    let runtime = headless_runtime_dir();
++    if let Err(error) = fs::create_dir_all(&runtime) {
++        return failed(&format!("无法创建后台实例运行目录：{error}"), current);
++    }
++    #[cfg(unix)]
++    if let Err(error) = {
++        use std::os::unix::fs::PermissionsExt;
++        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))
++    } {
++        return failed(&format!("无法保护后台实例运行目录：{error}"), current);
++    }
++
++    let session_name = "codexpp-browser".to_string();
++    let spec = HeadlessSessionSpec {
++        session_name,
++        display: select_headless_display(),
++        launcher_path: codex_plus_core::install::companion_binary_path(SILENT_BINARY),
++        app_path,
++        script_path: runtime.join("headless-session.sh"),
++        state_path: headless_state_store().path().to_path_buf(),
++        access_file: runtime.join("access.url"),
++        control_socket: runtime.join("control.sock"),
++        browser_token_file: runtime.join("browser.token"),
++        relay_token_file: runtime.join("relay.token"),
++        debug_port: request.debug_port,
++        helper_port: request.helper_port,
++        browser_port: request.browser_port,
++    };
++    let browser_token = BrowserSessionToken::generate();
++    let relay_token = BrowserSessionToken::generate();
++    let write_result = write_private_file(
++        &spec.browser_token_file,
++        browser_token.expose_for_launch(),
++        0o600,
++    )
++    .and_then(|_| {
++        write_private_file(
++            &spec.relay_token_file,
++            relay_token.expose_for_launch(),
++            0o600,
++        )
++    })
++    .and_then(|_| write_private_file(&spec.script_path, headless_session_script(), 0o700));
++    if let Err(error) = write_result {
++        return failed(&format!("无法准备后台实例凭据或启动脚本：{error}"), current);
++    }
++
++    let args = headless_tmux_args(&spec);
++    let status = Command::new("tmux").args(&args).status();
++    match status {
++        Ok(status) if status.success() => {
++            let state = new_headless_state(&spec);
++            let _ = save_manager_headless_state(state);
++            CommandResult {
++                status: "accepted".to_string(),
++                message: "后台 CodexDesktop 已在 tmux 中启动。".to_string(),
++                payload: headless_payload(),
++            }
++        }
++        Ok(status) => failed(
++            &format!("tmux 启动后台实例失败：{status}"),
++            headless_payload(),
++        ),
++        Err(error) => failed(&format!("无法执行 tmux：{error}"), headless_payload()),
++    }
++}
++
+ #[derive(Debug, Clone, serde::Deserialize)]
+ #[serde(rename_all = "camelCase")]
+ pub struct LogRequest {
+@@ -513,6 +882,291 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
+     spawn_codex_plus_launch(request, "Codex 已请求重启，启动任务正在后台运行。")
+ }
+ 
++#[tauri::command]
++pub fn start_headless_browser(
++    request: HeadlessBrowserStartRequest,
++) -> CommandResult<HeadlessBrowserPayload> {
++    start_headless_browser_inner(request)
++}
++
++#[tauri::command]
++pub fn load_headless_browser_status() -> CommandResult<HeadlessBrowserPayload> {
++    ok("后台实例状态已读取。", headless_payload())
++}
++
++#[tauri::command]
++pub async fn stop_headless_browser() -> CommandResult<HeadlessBrowserPayload> {
++    match tauri::async_runtime::spawn_blocking(stop_headless_browser_inner).await {
++        Ok(result) => result,
++        Err(error) => failed(
++            &format!("后台实例终止任务失败：{error}"),
++            headless_payload(),
++        ),
++    }
++}
++
++#[tauri::command]
++pub async fn rebind_headless_browser(
++    request: HeadlessBrowserPortRequest,
++) -> CommandResult<HeadlessBrowserPayload> {
++    #[cfg(not(unix))]
++    {
++        let _ = request;
++        return failed("浏览器后台实例端口变更仅支持 Linux。", headless_payload());
++    }
++
++    #[cfg(unix)]
++    {
++        match tauri::async_runtime::spawn_blocking(move || rebind_headless_browser_inner(request))
++            .await
++        {
++            Ok(result) => result,
++            Err(error) => failed(
++                &format!("后台实例端口变更任务失败：{error}"),
++                headless_payload(),
++            ),
++        }
++    }
++}
++
++#[cfg(unix)]
++fn rebind_headless_browser_inner(
++    request: HeadlessBrowserPortRequest,
++) -> CommandResult<HeadlessBrowserPayload> {
++    if !(49_152..=65_535).contains(&request.browser_port) {
++        return failed("浏览器端口必须位于 49152-65535。", headless_payload());
++    }
++    let socket_path = headless_runtime_dir().join("control.sock");
++    let mut stream = match std::os::unix::net::UnixStream::connect(&socket_path) {
++        Ok(stream) => stream,
++        Err(error) => {
++            return failed(
++                &format!("无法连接后台实例控制 socket：{error}"),
++                headless_payload(),
++            );
++        }
++    };
++    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
++    let request = json!({
++        "type": "rebind",
++        "browserPort": request.browser_port,
++    });
++    if let Err(error) = writeln!(stream, "{request}") {
++        return failed(
++            &format!("无法发送后台实例端口变更请求：{error}"),
++            headless_payload(),
++        );
++    }
++    let mut response_line = String::new();
++    if let Err(error) = std::io::BufReader::new(stream).read_line(&mut response_line) {
++        return failed(
++            &format!("无法读取后台实例端口变更结果：{error}"),
++            headless_payload(),
++        );
++    }
++    let response: Value = match serde_json::from_str(&response_line) {
++        Ok(response) => response,
++        Err(error) => {
++            return failed(
++                &format!("后台实例返回了无效的端口变更结果：{error}"),
++                headless_payload(),
++            );
++        }
++    };
++    let message = response
++        .get("message")
++        .and_then(Value::as_str)
++        .unwrap_or("后台实例端口变更失败。");
++    if response.get("status").and_then(Value::as_str) != Some("ok") {
++        return failed(message, headless_payload());
++    }
++    ok(message, headless_payload())
++}
++
++fn stop_headless_browser_inner() -> CommandResult<HeadlessBrowserPayload> {
++    let current = headless_payload();
++    let Some(state) = current.state.clone() else {
++        return ok("没有正在运行的后台实例。", current);
++    };
++    let session = state.tmux_session.trim();
++    if session.is_empty() {
++        return ok("没有可终止的 tmux session。", current);
++    }
++
++    let mut stopping = state.clone();
++    stopping.status = BrowserInstanceStatus::Stopping;
++    stopping.message = "正在终止后台实例进程树。".to_string();
++    let _ = save_manager_headless_state(stopping);
++    let roots = headless_tmux_pane_pids(session);
++    let owned = process_tree(&roots);
++    if owned.is_empty() {
++        let _ = Command::new("tmux")
++            .args(["kill-session", "-t", session])
++            .status();
++        let mut stopped = state;
++        stopped.status = BrowserInstanceStatus::Stopped;
++        stopped.message = "后台进程已经退出，tmux session 已清理。".to_string();
++        stopped.owned_pids.clear();
++        let _ = save_manager_headless_state(stopped);
++        remove_headless_secrets();
++        return ok("后台实例已结束。", headless_payload());
++    }
++
++    send_signal(&owned, "TERM");
++    let mut remaining = live_process_ids(&owned);
++    let graceful_deadline = Instant::now() + Duration::from_secs(10);
++    while Instant::now() < graceful_deadline {
++        std::thread::sleep(Duration::from_millis(100));
++        remaining = live_process_ids(&owned);
++        if remaining.is_empty() {
++            break;
++        }
++    }
++    if !remaining.is_empty() {
++        send_signal(&remaining, "KILL");
++        let kill_deadline = Instant::now() + Duration::from_secs(2);
++        while Instant::now() < kill_deadline {
++            std::thread::sleep(Duration::from_millis(100));
++            remaining = live_process_ids(&owned);
++            if remaining.is_empty() {
++                break;
++            }
++        }
++    }
++    if !remaining.is_empty() {
++        let mut failed_state = state;
++        failed_state.status = BrowserInstanceStatus::Failed;
++        failed_state.message = format!("终止后仍有进程存活：{remaining:?}");
++        failed_state.owned_pids = remaining;
++        let _ = save_manager_headless_state(failed_state);
++        return failed(
++            "后台进程未能完全终止，tmux session 已保留。",
++            headless_payload(),
++        );
++    }
++
++    if headless_tmux_session_exists(session) {
++        let _ = Command::new("tmux")
++            .args(["kill-session", "-t", session])
++            .status();
++    }
++    if !tmux_cleanup_complete(headless_tmux_session_exists(session)) {
++        return failed(
++            "后台进程已结束，但 tmux session 清理失败。",
++            headless_payload(),
++        );
++    }
++    let mut stopped = state;
++    stopped.status = BrowserInstanceStatus::Stopped;
++    stopped.message = "后台进程已按 TERM/KILL 流程终止，tmux session 已清理。".to_string();
++    stopped.owned_pids.clear();
++    let _ = save_manager_headless_state(stopped);
++    remove_headless_secrets();
++    ok("后台实例已结束。", headless_payload())
++}
++
++fn headless_tmux_pane_pids(session: &str) -> Vec<u32> {
++    let Ok(output) = Command::new("tmux")
++        .args(["list-panes", "-t", session, "-F", "#{pane_pid}"])
++        .output()
++    else {
++        return Vec::new();
++    };
++    String::from_utf8_lossy(&output.stdout)
++        .lines()
++        .filter_map(|line| line.trim().parse::<u32>().ok())
++        .collect()
++}
++
++fn process_tree(roots: &[u32]) -> Vec<u32> {
++    if roots.is_empty() {
++        return Vec::new();
++    }
++    let Ok(output) = Command::new("ps")
++        .args(["-eo", "pid=,ppid=,stat="])
++        .output()
++    else {
++        return roots.to_vec();
++    };
++    let mut children = BTreeMap::<u32, Vec<u32>>::new();
++    let mut live = BTreeSet::<u32>::new();
++    for line in String::from_utf8_lossy(&output.stdout).lines() {
++        let mut parts = line.split_whitespace();
++        let Some(pid) = parts.next().and_then(|value| value.parse::<u32>().ok()) else {
++            continue;
++        };
++        let Some(ppid) = parts.next().and_then(|value| value.parse::<u32>().ok()) else {
++            continue;
++        };
++        if parts.next().is_some_and(|stat| stat.contains('Z')) {
++            continue;
++        }
++        live.insert(pid);
++        children.entry(ppid).or_default().push(pid);
++    }
++    let mut result = Vec::new();
++    let mut queue = roots.to_vec();
++    while let Some(pid) = queue.pop() {
++        if result.contains(&pid) {
++            continue;
++        }
++        if !live.contains(&pid) {
++            continue;
++        }
++        result.push(pid);
++        if let Some(descendants) = children.get(&pid) {
++            queue.extend(descendants);
++        }
++    }
++    result
++}
++
++fn live_process_ids(process_ids: &[u32]) -> Vec<u32> {
++    if process_ids.is_empty() {
++        return Vec::new();
++    }
++    let Ok(output) = Command::new("ps")
++        .args(["-eo", "pid=,ppid=,stat="])
++        .output()
++    else {
++        return process_ids.to_vec();
++    };
++    filter_live_process_ids(process_ids, &String::from_utf8_lossy(&output.stdout))
++}
++
++fn filter_live_process_ids(process_ids: &[u32], process_snapshot: &str) -> Vec<u32> {
++    let tracked = process_ids.iter().copied().collect::<BTreeSet<_>>();
++    process_snapshot
++        .lines()
++        .filter_map(|line| {
++            let mut parts = line.split_whitespace();
++            let pid = parts.next()?.parse::<u32>().ok()?;
++            let _parent_pid = parts.next()?;
++            let stat = parts.next()?;
++            (tracked.contains(&pid) && !stat.contains('Z')).then_some(pid)
++        })
++        .collect()
++}
++
++fn tmux_cleanup_complete(session_exists_after: bool) -> bool {
++    !session_exists_after
++}
++
++fn send_signal(pids: &[u32], signal: &str) {
++    for pid in pids {
++        let _ = Command::new("kill")
++            .args([format!("-{signal}"), pid.to_string()])
++            .status();
++    }
++}
++
++fn remove_headless_secrets() {
++    let runtime = headless_runtime_dir();
++    for name in ["browser.token", "relay.token", "access.url", "control.sock"] {
++        let _ = fs::remove_file(runtime.join(name));
++    }
++}
++
+ fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> CommandResult<Value> {
+     let debug_port = request.debug_port;
+     let helper_port = request.helper_port;
+@@ -4186,6 +4840,73 @@ mod tests {
+             .unwrap_or_else(std::sync::PoisonError::into_inner)
+     }
+ 
++    #[test]
++    fn headless_tmux_args_pass_secret_file_paths_not_secret_values() {
++        let spec = HeadlessSessionSpec {
++            session_name: "codexpp-browser-test".to_string(),
++            display: ":97".to_string(),
++            launcher_path: PathBuf::from("/opt/codexpp/codex-plus-plus"),
++            app_path: PathBuf::from("/opt/CodexDesktop"),
++            script_path: PathBuf::from("/run/user/1000/codexpp/headless-session.sh"),
++            state_path: PathBuf::from("/tmp/browser-state.json"),
++            access_file: PathBuf::from("/run/user/1000/codexpp/access.url"),
++            control_socket: PathBuf::from("/run/user/1000/codexpp/control.sock"),
++            browser_token_file: PathBuf::from("/run/user/1000/codexpp/browser.token"),
++            relay_token_file: PathBuf::from("/run/user/1000/codexpp/relay.token"),
++            debug_port: 9229,
++            helper_port: 57321,
++            browser_port: Some(58444),
++        };
++
++        let args = headless_tmux_args(&spec)
++            .into_iter()
++            .map(|value| value.to_string_lossy().to_string())
++            .collect::<Vec<_>>();
++        let joined = args.join(" ");
++
++        assert!(joined.contains("CODEX_LINUX_BROWSER_SESSION_TOKEN_FILE="));
++        assert!(joined.contains("CODEX_LINUX_BROWSER_RELAY_TOKEN_FILE="));
++        assert!(
++            joined
++                .contains("CODEX_LINUX_BROWSER_CONTROL_SOCKET=/run/user/1000/codexpp/control.sock")
++        );
++        assert!(joined.contains("CODEX_LINUX_MULTI_LAUNCH=1"));
++        assert!(joined.contains("CODEX_PLUS_HEADLESS_BROWSER_PORT=58444"));
++        assert!(
++            !joined.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
++        );
++    }
++
++    #[test]
++    fn headless_session_script_owns_xvfb_and_does_not_kill_tmux() {
++        let script = headless_session_script();
++
++        assert!(script.contains("Xvfb \"$DISPLAY\""));
++        assert!(script.contains("trap terminate TERM INT HUP"));
++        assert!(script.contains("--headless-browser"));
++        assert!(script.contains("wait \"$launcher_pid\""));
++        assert!(script.contains("\"$CODEX_LINUX_BROWSER_SESSION_TOKEN_FILE\""));
++        assert!(script.contains("\"$CODEX_LINUX_BROWSER_RELAY_TOKEN_FILE\""));
++        assert!(script.contains("\"$CODEX_LINUX_BROWSER_ACCESS_FILE\""));
++        assert!(script.contains("\"$CODEX_LINUX_BROWSER_CONTROL_SOCKET\""));
++        assert!(script.contains("rm -f"));
++        assert!(!script.contains("kill-session"));
++    }
++
++    #[test]
++    fn headless_stop_keeps_tracking_reparented_owned_processes() {
++        let live =
++            filter_live_process_ids(&[101, 102, 103], "101 1 Z\n102 1 Sl\n103 102 S\n999 1 R\n");
++
++        assert_eq!(live, vec![102, 103]);
++    }
++
++    #[test]
++    fn headless_stop_accepts_an_already_removed_tmux_session() {
++        assert!(tmux_cleanup_complete(false));
++        assert!(!tmux_cleanup_complete(true));
++    }
++
+     #[test]
+     fn provider_switch_state_helpers_restore_only_safe_state() {
+         let temp = tempfile::tempdir().unwrap();
+diff --git a/apps/codex-plus-manager/src-tauri/src/lib.rs b/apps/codex-plus-manager/src-tauri/src/lib.rs
+index 60a385b..fb0b61d 100644
+--- a/apps/codex-plus-manager/src-tauri/src/lib.rs
++++ b/apps/codex-plus-manager/src-tauri/src/lib.rs
+@@ -67,6 +67,10 @@ pub fn run() {
+             commands::load_overview,
+             commands::launch_codex_plus,
+             commands::restart_codex_plus,
++            commands::start_headless_browser,
++            commands::load_headless_browser_status,
++            commands::stop_headless_browser,
++            commands::rebind_headless_browser,
+             commands::load_settings,
+             commands::save_settings,
+             commands::dream_skin_status,
+diff --git a/apps/codex-plus-manager/src/App.tsx b/apps/codex-plus-manager/src/App.tsx
+index 4c7fa08..5b5dddc 100644
+--- a/apps/codex-plus-manager/src/App.tsx
++++ b/apps/codex-plus-manager/src/App.tsx
+@@ -102,6 +102,12 @@ import {
+   type DreamSkinVerificationResult,
+ } from "./dream-skin";
+ import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
++import {
++  headlessBrowserIsActive,
++  headlessBrowserSummaryPid,
++  parseHeadlessBrowserPort,
++  type HeadlessBrowserState,
++} from "./headless-browser";
+ 
+ const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
+ const dreamSkinWindowsPreviewUrl = new URL("../../../assets/inject/upstream/dream-skin/windows/dream-reference.jpg", import.meta.url).href;
+@@ -147,6 +153,13 @@ type OverviewResult = CommandResult<{
+   logs_path: string;
+ }>;
+ 
++type HeadlessBrowserResult = CommandResult<{
++  state: HeadlessBrowserState | null;
++  accessUrl: string | null;
++}>;
++
++type HeadlessBrowserPendingAction = "start" | "rebind" | "stop" | null;
++
+ type PluginMarketplaceRepairResult = CommandResult<{
+   codexHome: string;
+   marketplaceRoot?: string | null;
+@@ -858,6 +871,8 @@ export function App() {
+     resolve: (selectedIds: string[] | null) => void;
+   } | null>(null);
+   const [overview, setOverview] = useState<OverviewResult | null>(null);
++  const [headlessBrowser, setHeadlessBrowser] = useState<HeadlessBrowserResult | null>(null);
++  const [headlessBrowserPending, setHeadlessBrowserPending] = useState<HeadlessBrowserPendingAction>(null);
+   const [settings, setSettings] = useState<SettingsResult | null>(null);
+   const [relay, setRelay] = useState<RelayResult | null>(null);
+   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
+@@ -1660,6 +1675,88 @@ export function App() {
+     return result;
+   };
+ 
++  const refreshHeadlessBrowser = async (silent = false) => {
++    const result = await run(() => call<HeadlessBrowserResult>("load_headless_browser_status"));
++    if (result) {
++      setHeadlessBrowser(result);
++      if (!silent && !isSuccessStatus(result.status)) {
++        showResultNotice(t("浏览器后台实例"), result);
++      }
++    }
++    return result;
++  };
++
++  const startHeadlessBrowser = async (portValue: string) => {
++    let browserPort: number | undefined;
++    try {
++      browserPort = parseHeadlessBrowserPort(portValue);
++    } catch (error) {
++      showNotice(t("浏览器后台实例"), t("浏览器端口必须位于 49152-65535。"), "failed");
++      return;
++    }
++    setHeadlessBrowserPending("start");
++    try {
++      const result = await run(() =>
++        call<HeadlessBrowserResult>("start_headless_browser", {
++          request: {
++            appPath: launchForm.appPath,
++            debugPort: numberOrDefault(launchForm.debugPort, 9229),
++            helperPort: numberOrDefault(launchForm.helperPort, 57321),
++            browserPort: browserPort ?? null,
++          },
++        }),
++      );
++      if (result) {
++        setHeadlessBrowser(result);
++        showResultNotice(t("浏览器后台实例"), result);
++        window.setTimeout(() => void refreshHeadlessBrowser(true), 500);
++      }
++    } finally {
++      setHeadlessBrowserPending(null);
++    }
++  };
++
++  const rebindHeadlessBrowser = async (portValue: string) => {
++    let browserPort: number | undefined;
++    try {
++      browserPort = parseHeadlessBrowserPort(portValue);
++    } catch (error) {
++      showNotice(t("浏览器后台实例"), t("浏览器端口必须位于 49152-65535。"), "failed");
++      return;
++    }
++    if (!browserPort) {
++      showNotice(t("浏览器后台实例"), t("变更端口时需要填写端口号。"), "failed");
++      return;
++    }
++    setHeadlessBrowserPending("rebind");
++    try {
++      const result = await run(() =>
++        call<HeadlessBrowserResult>("rebind_headless_browser", {
++          request: { browserPort },
++        }),
++      );
++      if (result) {
++        setHeadlessBrowser(result);
++        showResultNotice(t("浏览器后台实例"), result);
++      }
++    } finally {
++      setHeadlessBrowserPending(null);
++    }
++  };
++
++  const stopHeadlessBrowser = async () => {
++    setHeadlessBrowserPending("stop");
++    try {
++      const result = await run(() => call<HeadlessBrowserResult>("stop_headless_browser"));
++      if (result) {
++        setHeadlessBrowser(result);
++        showResultNotice(t("浏览器后台实例"), result);
++      }
++    } finally {
++      setHeadlessBrowserPending(null);
++    }
++  };
++
+   const repairPluginMarketplace = async () => {
+     if (pluginMarketplaceProgress.active) return;
+     setPluginMarketplaceProgress({ active: true, percent: 8, message: t("正在检查本地插件市场…") });
+@@ -2331,6 +2428,7 @@ export function App() {
+         void checkUpdate(true);
+       }
+       await refreshOverview(true);
++      await refreshHeadlessBrowser(true);
+       await refreshSettings(true);
+       await refreshRelay(true);
+       await refreshEnvConflicts(true);
+@@ -2358,6 +2456,13 @@ export function App() {
+     return () => window.clearInterval(timer);
+   }, []);
+ 
++  useEffect(() => {
++    const timer = window.setInterval(() => {
++      void refreshHeadlessBrowser(true);
++    }, 1500);
++    return () => window.clearInterval(timer);
++  }, []);
++
+   useEffect(() => {
+     document.documentElement.classList.toggle("dark", theme === "dark");
+     document.documentElement.classList.toggle("light", theme === "light");
+@@ -2442,6 +2547,11 @@ export function App() {
+       refreshCurrent: () => navigate(route),
+       launch,
+       restart,
++      refreshHeadlessBrowser,
++      startHeadlessBrowser,
++      rebindHeadlessBrowser,
++      stopHeadlessBrowser,
++      copyHeadlessBrowserUrl: (url: string) => copyText(url, t("访问地址已复制。")),
+       repairPluginMarketplace,
+       refreshRemotePluginMarketplace,
+       repairRemotePluginMarketplace,
+@@ -2632,7 +2742,7 @@ export function App() {
+       disableWatcher: () => watcherAction("disable_watcher"),
+       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
+     }),
+-    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
++    [route, launchForm, settingsForm, settings, overview, headlessBrowser, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
+   );
+   const hasUpdate = update?.updateAvailable === true;
+ 
+@@ -2717,6 +2827,8 @@ export function App() {
+           {route === "overview" ? (
+             <OverviewScreen
+               overview={overview}
++              headlessBrowser={headlessBrowser}
++              headlessBrowserPending={headlessBrowserPending}
+               pluginMarketplaceProgress={pluginMarketplaceProgress}
+               actions={actions}
+             />
+@@ -2885,6 +2997,11 @@ type Actions = {
+   refreshCurrent: () => Promise<void>;
+   launch: () => Promise<void>;
+   restart: () => Promise<void>;
++  refreshHeadlessBrowser: (silent?: boolean) => Promise<HeadlessBrowserResult | null>;
++  startHeadlessBrowser: (portValue: string) => Promise<void>;
++  rebindHeadlessBrowser: (portValue: string) => Promise<void>;
++  stopHeadlessBrowser: () => Promise<void>;
++  copyHeadlessBrowserUrl: (url: string) => Promise<void>;
+   repairPluginMarketplace: () => Promise<void>;
+   refreshRemotePluginMarketplace: (silent?: boolean) => Promise<RemotePluginMarketplaceResult | null>;
+   repairRemotePluginMarketplace: () => Promise<void>;
+@@ -2980,10 +3097,14 @@ type Actions = {
+ 
+ function OverviewScreen({
+   overview,
++  headlessBrowser,
++  headlessBrowserPending,
+   pluginMarketplaceProgress,
+   actions,
+ }: {
+   overview: OverviewResult | null;
++  headlessBrowser: HeadlessBrowserResult | null;
++  headlessBrowserPending: HeadlessBrowserPendingAction;
+   pluginMarketplaceProgress: TaskProgress;
+   actions: Actions;
+ }) {
+@@ -3078,10 +3199,157 @@ function OverviewScreen({
+           </Toolbar>
+         </CardContent>
+       </Panel>
++      <HeadlessBrowserPanel
++        result={headlessBrowser}
++        pending={headlessBrowserPending}
++        actions={actions}
++      />
+     </>
+   );
+ }
+ 
++function HeadlessBrowserPanel({
++  result,
++  pending,
++  actions,
++}: {
++  result: HeadlessBrowserResult | null;
++  pending: HeadlessBrowserPendingAction;
++  actions: Actions;
++}) {
++  const state = result?.state ?? null;
++  const active = headlessBrowserIsActive(state);
++  const summaryPid = headlessBrowserSummaryPid(state);
++  const [portDraft, setPortDraft] = useState("");
++  const [pidsOpen, setPidsOpen] = useState(false);
++
++  useEffect(() => {
++    if (state?.accessPort) setPortDraft(String(state.accessPort));
++  }, [state?.accessPort]);
++
++  const authLabel = {
++    chatgpt_oauth: t("ChatGPT OAuth"),
++    pure_api: t("Pure API"),
++    mixed_api: t("混合 API"),
++    not_authenticated: t("未认证"),
++  }[state?.authMode ?? "not_authenticated"];
++  const ownedPids = state?.ownedPids ?? [];
++
++  return (
++    <Panel className="headless-browser-panel">
++      <CardHead
++        title={t("浏览器后台实例")}
++        detail={state?.message || t("未启动独立的 tmux / Xvfb 实例")}
++      />
++      <CardContent>
++        <div className="headless-browser-status">
++          <div>
++            <span>{t("状态")}</span>
++            <Badge status={state?.status ?? "stopped"} />
++          </div>
++          <div>
++            <span>{t("认证模式")}</span>
++            <strong>{authLabel}</strong>
++          </div>
++          <div className="headless-pid-cell">
++            <span>PID</span>
++            <button
++              className="headless-pid-trigger"
++              disabled={!summaryPid}
++              onClick={() => setPidsOpen((open) => !open)}
++              title={t("查看完整进程列表")}
++              type="button"
++            >
++              <MoreHorizontal className="h-4 w-4" />
++              {summaryPid ?? "-"}
++            </button>
++            {pidsOpen && state ? (
++              <div className="headless-pid-popover">
++                <div><span>Gateway</span><code>{state.gatewayPid ?? "-"}</code></div>
++                <div><span>Relay</span><code>{state.relayPid ?? "-"}</code></div>
++                <div><span>Electron</span><code>{state.electronPid ?? "-"}</code></div>
++                <div><span>{t("全部")}</span><code>{ownedPids.length ? ownedPids.join(", ") : "-"}</code></div>
++              </div>
++            ) : null}
++          </div>
++          <div>
++            <span>tmux</span>
++            <strong>{state?.tmuxSession || "-"}</strong>
++          </div>
++        </div>
++
++        {result?.accessUrl ? (
++          <div className="headless-access-row">
++            <code>{result.accessUrl}</code>
++            <Button
++              onClick={() => void actions.copyHeadlessBrowserUrl(result.accessUrl ?? "")}
++              size="icon"
++              title={t("复制访问地址")}
++              variant="outline"
++            >
++              <Copy className="h-4 w-4" />
++            </Button>
++          </div>
++        ) : null}
++
++        <div className="headless-browser-controls">
++          <Field label={t("浏览器端口")}>
++            <Input
++              inputMode="numeric"
++              onChange={(event) => setPortDraft(event.currentTarget.value)}
++              placeholder={t("留空时自动选择高位端口")}
++              value={portDraft}
++            />
++          </Field>
++          <Toolbar>
++            {active ? (
++              <>
++                <Button
++                  disabled={Boolean(pending)}
++                  onClick={() => void actions.rebindHeadlessBrowser(portDraft)}
++                  variant="secondary"
++                >
++                  <RefreshCw className={`h-4 w-4 ${pending === "rebind" ? "animate-spin" : ""}`} />
++                  {pending === "rebind" ? t("正在变更端口") : t("变更端口")}
++                </Button>
++                <Button
++                  className="headless-stop-button"
++                  disabled={Boolean(pending)}
++                  onClick={() => void actions.stopHeadlessBrowser()}
++                  variant="outline"
++                >
++                  <PowerOff className="h-4 w-4" />
++                  {pending === "stop" ? t("正在终止") : t("终止实例")}
++                </Button>
++              </>
++            ) : (
++              <Button
++                disabled={Boolean(pending)}
++                onClick={() => void actions.startHeadlessBrowser(portDraft)}
++              >
++                <Rocket className="h-4 w-4" />
++                {pending === "start" ? t("正在启动") : t("后台启动")}
++              </Button>
++            )}
++            <Button
++              disabled={Boolean(pending)}
++              onClick={() => void actions.refreshHeadlessBrowser()}
++              size="icon"
++              title={t("刷新状态")}
++              variant="outline"
++            >
++              <RefreshCw className="h-4 w-4" />
++            </Button>
++          </Toolbar>
++        </div>
++        <p className="headless-loopback-note">
++          {t("仅监听 127.0.0.1；远程访问请使用 SSH 端口转发。")}
++        </p>
++      </CardContent>
++    </Panel>
++  );
++}
++
+ function RelayEnvironmentScreen({ result, actions }: { result: RelayEnvironmentResult | null; actions: Actions }) {
+   const proxyVariables = result?.proxyEnvironment.variables ?? [];
+   const proxyVariableLabels = proxyVariables.map((item) => {
+@@ -7523,6 +7791,11 @@ function statusLabel(status: string) {
+     failed: t("失败"),
+     archived: t("已归档"),
+     accepted: t("已受理"),
++    starting: t("启动中"),
++    degraded: t("降级运行"),
++    reconfiguring: t("变更中"),
++    stopping: t("终止中"),
++    stopped: t("已停止"),
+     not_checked: t("未检查"),
+     not_implemented: t("未实现"),
+     disabled: t("已禁用"),
+diff --git a/apps/codex-plus-manager/src/headless-browser.test.ts b/apps/codex-plus-manager/src/headless-browser.test.ts
+new file mode 100644
+index 0000000..8c6f738
+--- /dev/null
++++ b/apps/codex-plus-manager/src/headless-browser.test.ts
+@@ -0,0 +1,54 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++
++import {
++  headlessBrowserIsActive,
++  headlessBrowserSummaryPid,
++  parseHeadlessBrowserPort,
++  type HeadlessBrowserState,
++} from "./headless-browser.ts";
++
++const state = (status: HeadlessBrowserState["status"]): HeadlessBrowserState => ({
++  instanceId: "codexpp-browser",
++  status,
++  message: "ready",
++  startedAtMs: 1,
++  tmuxSession: "codexpp-browser",
++  accessPort: 58444,
++  authMode: "pure_api",
++  gatewayPid: 101,
++  relayPid: 102,
++  electronPid: 103,
++  ownedPids: [101, 102, 103],
++  failureCode: null,
++});
++
++test("headless browser ports are optional for auto selection and otherwise high", () => {
++  assert.equal(parseHeadlessBrowserPort(""), undefined);
++  assert.equal(parseHeadlessBrowserPort(" 58444 "), 58444);
++  assert.throws(() => parseHeadlessBrowserPort("9229"), /49152/);
++  assert.throws(() => parseHeadlessBrowserPort("not-a-port"), /49152/);
++});
++
++test("headless browser active states include transitions and degraded instances", () => {
++  for (const status of ["starting", "running", "degraded", "reconfiguring", "stopping"] as const) {
++    assert.equal(headlessBrowserIsActive(state(status)), true);
++  }
++  assert.equal(headlessBrowserIsActive(state("stopped")), false);
++  assert.equal(headlessBrowserIsActive(state("failed")), false);
++  assert.equal(headlessBrowserIsActive(null), false);
++});
++
++test("headless browser summary PID prefers Electron and falls back to owned processes", () => {
++  assert.equal(headlessBrowserSummaryPid(state("running")), 103);
++  assert.equal(
++    headlessBrowserSummaryPid({
++      ...state("running"),
++      electronPid: null,
++      gatewayPid: null,
++      ownedPids: [201, 202],
++    }),
++    201,
++  );
++  assert.equal(headlessBrowserSummaryPid(null), null);
++});
+diff --git a/apps/codex-plus-manager/src/headless-browser.ts b/apps/codex-plus-manager/src/headless-browser.ts
+new file mode 100644
+index 0000000..276a66f
+--- /dev/null
++++ b/apps/codex-plus-manager/src/headless-browser.ts
+@@ -0,0 +1,52 @@
++export type HeadlessBrowserStatus =
++  | "starting"
++  | "running"
++  | "degraded"
++  | "reconfiguring"
++  | "stopping"
++  | "stopped"
++  | "failed";
++
++export type HeadlessBrowserAuthMode =
++  | "chatgpt_oauth"
++  | "pure_api"
++  | "mixed_api"
++  | "not_authenticated";
++
++export type HeadlessBrowserState = {
++  instanceId: string;
++  status: HeadlessBrowserStatus;
++  message: string;
++  startedAtMs: number;
++  tmuxSession: string;
++  accessPort: number | null;
++  authMode: HeadlessBrowserAuthMode;
++  gatewayPid: number | null;
++  relayPid: number | null;
++  electronPid: number | null;
++  ownedPids: number[];
++  failureCode: string | null;
++};
++
++export function parseHeadlessBrowserPort(value: string): number | undefined {
++  const trimmed = value.trim();
++  if (!trimmed) return undefined;
++  const port = Number(trimmed);
++  if (!Number.isInteger(port) || port < 49_152 || port > 65_535) {
++    throw new Error("Browser port must be an integer between 49152 and 65535.");
++  }
++  return port;
++}
++
++export function headlessBrowserIsActive(state: HeadlessBrowserState | null): boolean {
++  return Boolean(
++    state
++      && ["starting", "running", "degraded", "reconfiguring", "stopping"].includes(
++        state.status,
++      ),
++  );
++}
++
++export function headlessBrowserSummaryPid(state: HeadlessBrowserState | null): number | null {
++  return state?.electronPid ?? state?.gatewayPid ?? state?.ownedPids[0] ?? null;
++}
+diff --git a/apps/codex-plus-manager/src/i18n-en.ts b/apps/codex-plus-manager/src/i18n-en.ts
+index b7c03ed..76bcbc6 100644
+--- a/apps/codex-plus-manager/src/i18n-en.ts
++++ b/apps/codex-plus-manager/src/i18n-en.ts
+@@ -804,6 +804,33 @@ export const EN_PLAIN: Record<string, string> = {
+   "正在读取本机环境": "Reading the local environment",
+   "重新检测": "Check again",
+   "排查可能干扰中转站配置的本机环境": "Find local environment settings that may interfere with relay configuration",
++  "浏览器后台实例": "Browser background instance",
++  "浏览器端口必须位于 49152-65535。": "The browser port must be between 49152 and 65535.",
++  "变更端口时需要填写端口号。": "Enter a port number before changing the port.",
++  "访问地址已复制。": "Access URL copied.",
++  "ChatGPT OAuth": "ChatGPT OAuth",
++  "Pure API": "Pure API",
++  "混合 API": "Mixed API",
++  "未认证": "Not authenticated",
++  "未启动独立的 tmux / Xvfb 实例": "No dedicated tmux / Xvfb instance has been started",
++  "认证模式": "Authentication mode",
++  "查看完整进程列表": "View the full process list",
++  "全部": "All",
++  "复制访问地址": "Copy access URL",
++  "浏览器端口": "Browser port",
++  "留空时自动选择高位端口": "Leave empty to choose a high port automatically",
++  "正在变更端口": "Changing port",
++  "变更端口": "Change port",
++  "正在终止": "Stopping",
++  "终止实例": "Stop instance",
++  "正在启动": "Starting",
++  "后台启动": "Start in background",
++  "仅监听 127.0.0.1；远程访问请使用 SSH 端口转发。": "Listening on 127.0.0.1 only; use SSH port forwarding for remote access.",
++  "启动中": "Starting",
++  "降级运行": "Degraded",
++  "变更中": "Reconfiguring",
++  "终止中": "Stopping",
++  "已停止": "Stopped",
+ };
+ 
+ // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
+diff --git a/apps/codex-plus-manager/src/styles.css b/apps/codex-plus-manager/src/styles.css
+index 6a3aafa..48823b9 100644
+--- a/apps/codex-plus-manager/src/styles.css
++++ b/apps/codex-plus-manager/src/styles.css
+@@ -22,6 +22,150 @@
+   --color-ring: hsl(var(--ring));
+ }
+ 
++.headless-browser-status {
++  display: grid;
++  grid-template-columns: repeat(4, minmax(0, 1fr));
++  gap: 1px;
++  overflow: visible;
++  border: 1px solid hsl(var(--border));
++  border-radius: 8px;
++  background: hsl(var(--border));
++}
++
++.headless-browser-status > div {
++  position: relative;
++  display: grid;
++  gap: 6px;
++  min-width: 0;
++  min-height: 64px;
++  align-content: center;
++  background: hsl(var(--surface-sunken));
++  padding: 10px 12px;
++}
++
++.headless-browser-status > div:first-child {
++  border-radius: 7px 0 0 7px;
++}
++
++.headless-browser-status > div:last-child {
++  border-radius: 0 7px 7px 0;
++}
++
++.headless-browser-status span,
++.headless-loopback-note {
++  color: hsl(var(--muted-foreground));
++  font-size: 12px;
++}
++
++.headless-browser-status strong,
++.headless-browser-status code {
++  min-width: 0;
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++.headless-pid-trigger {
++  display: inline-flex;
++  width: max-content;
++  max-width: 100%;
++  align-items: center;
++  gap: 5px;
++  border: 0;
++  background: transparent;
++  color: hsl(var(--foreground));
++  cursor: pointer;
++  font: inherit;
++  font-weight: 600;
++  padding: 0;
++}
++
++.headless-pid-trigger:disabled {
++  cursor: default;
++  opacity: 0.55;
++}
++
++.headless-pid-popover {
++  position: absolute;
++  z-index: 20;
++  top: calc(100% - 4px);
++  left: 10px;
++  display: grid;
++  width: min(310px, 70vw);
++  gap: 8px;
++  border: 1px solid hsl(var(--border));
++  border-radius: 8px;
++  background: hsl(var(--popover));
++  box-shadow: 0 14px 35px hsl(0 0% 0% / 0.28);
++  padding: 10px;
++}
++
++.headless-pid-popover > div {
++  display: grid;
++  grid-template-columns: 70px minmax(0, 1fr);
++  gap: 8px;
++}
++
++.headless-pid-popover code {
++  overflow-wrap: anywhere;
++  white-space: normal;
++}
++
++.headless-access-row {
++  display: grid;
++  grid-template-columns: minmax(0, 1fr) 32px;
++  gap: 8px;
++  align-items: center;
++  margin-top: 12px;
++}
++
++.headless-access-row code {
++  min-width: 0;
++  overflow-wrap: anywhere;
++  border: 1px solid hsl(var(--border));
++  border-radius: 6px;
++  background: hsl(var(--surface-sunken));
++  color: hsl(var(--muted-foreground));
++  padding: 8px 10px;
++}
++
++.headless-browser-controls {
++  display: grid;
++  grid-template-columns: minmax(220px, 360px) minmax(0, 1fr);
++  gap: 12px;
++  align-items: end;
++  margin-top: 12px;
++}
++
++.headless-browser-controls .field,
++.headless-browser-controls .toolbar {
++  margin: 0;
++}
++
++.headless-stop-button {
++  border-color: hsl(var(--status-error) / 0.5);
++  color: hsl(var(--status-error));
++}
++
++.headless-loopback-note {
++  margin: 10px 0 0;
++}
++
++@media (max-width: 980px) {
++  .headless-browser-status {
++    grid-template-columns: repeat(2, minmax(0, 1fr));
++  }
++
++  .headless-browser-status > div:first-child,
++  .headless-browser-status > div:last-child {
++    border-radius: 0;
++  }
++
++  .headless-browser-controls {
++    grid-template-columns: 1fr;
++  }
++}
++
+ :root,
+ .dark {
+   --background: 0 0% 9.4%;
+diff --git a/assets/inject/renderer-inject.js b/assets/inject/renderer-inject.js
+index e3e0b48..b446aef 100644
+--- a/assets/inject/renderer-inject.js
++++ b/assets/inject/renderer-inject.js
+@@ -1201,6 +1201,19 @@
+       .codex-plus-service-tier-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 5px 8px; white-space: nowrap; }
+       .codex-plus-service-tier-button[data-active="true"] { border-color: #10a37f; background: rgba(16,163,127,.22); color: #6ee7b7; }
+       .codex-plus-service-tier-button:disabled { opacity: .55; cursor: not-allowed; }
++      @media (max-width: 480px) {
++        .codex-plus-modal-content { width: calc(100vw - 24px); max-height: calc(100vh - 24px); border-radius: 14px; }
++        .codex-plus-modal-header { padding: 14px 14px 8px; }
++        .codex-plus-modal-title { font-size: 16px; }
++        .codex-plus-tabs { flex-wrap: wrap; gap: 6px; padding: 0 14px 6px; }
++        .codex-plus-modal-body { overflow-x: hidden; padding: 4px 14px 14px; }
++        .codex-plus-row > :first-child { min-width: 0; overflow-wrap: anywhere; }
++        .codex-plus-row[data-codex-service-tier-controls] { flex-direction: column; }
++        .codex-plus-service-tier-control { min-width: 0; width: 100%; justify-items: stretch; }
++        .codex-plus-service-tier-status { text-align: left; }
++        .codex-plus-service-tier-actions { justify-content: flex-start; }
++        .codex-plus-service-tier-thread-label { flex: 1 0 100%; }
++      }
+       .${codexServiceTierBadgeClass} {
+         display: inline-flex;
+         align-items: center;
+@@ -2143,6 +2156,7 @@
+   const codexAppAssetTextPromises = new Map();
+   const codexAppAssetFeatureFallbacks = {
+     "setting-storage-": [
++      ["default-service-tier", "dispatchMessage"],
+       ["default-service-tier", "dispatchMessage", "service_tier"],
+       ["pending-worktree-create", "dispatchMessage", "service_tier"],
+     ],
+@@ -2258,6 +2272,10 @@
+       const settingStorage = await codexSettingStorageModule();
+       return await settingStorage.n(codexDefaultServiceTierSetting);
+     } catch (error) {
++      const settings = await postJson("/settings/get", {});
++      if (settings && Object.prototype.hasOwnProperty.call(settings, "codexDefaultServiceTier")) {
++        return settings.codexDefaultServiceTier;
++      }
+       if (typeof codexStateCall === "function") {
+         const result = await codexStateCall("get-setting", { params: { key: codexDefaultServiceTierSetting.key } });
+         return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : codexDefaultServiceTierSetting.default;
+@@ -5405,7 +5423,10 @@
+           headers: { "Content-Type": "application/json" },
+           body: JSON.stringify(payload || {}),
+         });
+-        const value = await response.json();
++        const originalResponseJson = window.__codexPlusModelJsonResponseOriginals?.responseJson;
++        const value = typeof originalResponseJson === "function"
++          ? await originalResponseJson.call(response)
++          : await response.json();
+         if (!response.ok && value && typeof value === "object" && !("status" in value)) {
+           value.status = "failed";
+         }
+diff --git a/crates/codex-plus-core/Cargo.toml b/crates/codex-plus-core/Cargo.toml
+index 63dfa5d..2ec4279 100644
+--- a/crates/codex-plus-core/Cargo.toml
++++ b/crates/codex-plus-core/Cargo.toml
+@@ -24,6 +24,7 @@ tokio-tungstenite.workspace = true
+ toml.workspace = true
+ toml_edit.workspace = true
+ uuid.workspace = true
++url.workspace = true
+ zip.workspace = true
+ 
+ [target.'cfg(windows)'.dependencies]
+diff --git a/crates/codex-plus-core/assets/browser-shim.js b/crates/codex-plus-core/assets/browser-shim.js
+new file mode 100644
+index 0000000..942f42a
+--- /dev/null
++++ b/crates/codex-plus-core/assets/browser-shim.js
+@@ -0,0 +1,288 @@
++(function () {
++  "use strict";
++
++  var SESSION_TOKEN_KEY = "codexpp.browser-session-token";
++  var fragment = new URLSearchParams(window.location.hash.slice(1));
++  var fragmentToken = fragment.get("codexpp_session");
++  var token = fragmentToken;
++  try {
++    if (fragmentToken) {
++      sessionStorage.setItem(SESSION_TOKEN_KEY, fragmentToken);
++    } else {
++      token = sessionStorage.getItem(SESSION_TOKEN_KEY);
++    }
++  } catch (_) {}
++  var socket = null;
++  var socketAuthenticated = false;
++  var reconnectTimer = null;
++  var reconnectDelayMs = 100;
++  var MAX_RECONNECT_DELAY_MS = 5000;
++  var nextRequestId = 1;
++  var pending = new Map();
++  var appHostPort = null;
++  var inboundAppHostQueue = [];
++  var MAX_INBOUND_APPHOST_QUEUE = 1024;
++  var workerSubscriptions = new Map();
++  var sharedObjectSnapshots = new Map([
++    ["host_config", { id: "local", display_name: "Local", kind: "local" }],
++    ["remote_ssh_connections", []],
++    ["remote_wsl_connections", []],
++    ["pending_worktrees", []]
++  ]);
++  var outboundQueue = [];
++  var MAX_OUTBOUND_QUEUE = 1024;
++
++  function endpoint() {
++    var protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
++    return protocol + "//" + window.location.host + "/__codexpp/ws";
++  }
++
++  function sendEnvelope(envelope) {
++    if (!socket || socket.readyState !== WebSocket.OPEN || !socketAuthenticated) {
++      if (outboundQueue.length >= MAX_OUTBOUND_QUEUE) {
++        return Promise.reject(new Error("browser gateway outbound queue is full"));
++      }
++      outboundQueue.push(envelope);
++      return Promise.resolve();
++    }
++    socket.send(JSON.stringify(envelope));
++    return Promise.resolve();
++  }
++
++  function flushOutboundQueue() {
++    while (
++      outboundQueue.length > 0 &&
++      socket &&
++      socket.readyState === WebSocket.OPEN &&
++      socketAuthenticated
++    ) {
++      socket.send(JSON.stringify(outboundQueue.shift()));
++    }
++  }
++
++  function rejectPending(message) {
++    pending.forEach(function (waiter) { waiter.reject(new Error(message)); });
++    pending.clear();
++  }
++
++  function scheduleReconnect() {
++    if (!token || reconnectTimer) return;
++    var delay = reconnectDelayMs;
++    reconnectDelayMs = Math.min(reconnectDelayMs * 2, MAX_RECONNECT_DELAY_MS);
++    reconnectTimer = window.setTimeout(function () {
++      reconnectTimer = null;
++      connect();
++    }, delay);
++  }
++
++  function request(method, args) {
++    var id = String(nextRequestId++);
++    return new Promise(function (resolve, reject) {
++      pending.set(id, { resolve: resolve, reject: reject });
++      sendEnvelope({ type: "bridge-request", id: id, method: method, args: args })
++        .catch(function (error) {
++          pending.delete(id);
++          reject(error);
++        });
++    });
++  }
++
++  function deliverAppHostPayload(payload) {
++    if (!appHostPort) {
++      if (inboundAppHostQueue.length >= MAX_INBOUND_APPHOST_QUEUE) {
++        inboundAppHostQueue.shift();
++      }
++      inboundAppHostQueue.push(payload);
++      return;
++    }
++    appHostPort.postMessage(payload);
++  }
++
++  function flushInboundAppHostQueue() {
++    while (appHostPort && inboundAppHostQueue.length > 0) {
++      appHostPort.postMessage(inboundAppHostQueue.shift());
++    }
++  }
++
++  function dispatchBrowserFocusState() {
++    window.dispatchEvent(new MessageEvent("message", {
++      data: {
++        type: "electron-window-focus-changed",
++        isFocused: document.hasFocus()
++      }
++    }));
++  }
++
++  window.addEventListener("focus", dispatchBrowserFocusState);
++  window.addEventListener("blur", dispatchBrowserFocusState);
++
++  function connectAppHost(event) {
++    if (event.source !== window || !event.data || event.data.type !== "connect-app-host") {
++      return;
++    }
++    appHostPort = event.ports && event.ports[0];
++    if (!appHostPort) return;
++    appHostPort.onmessage = function (message) {
++      sendEnvelope({ type: "apphost", payload: message.data }).catch(function () {});
++    };
++    if (appHostPort.start) appHostPort.start();
++    flushInboundAppHostQueue();
++  }
++
++  window.addEventListener("message", connectAppHost);
++
++  function subscribeToWorkerMessages(worker, callback) {
++    var id = String(nextRequestId++);
++    workerSubscriptions.set(id, { worker: worker, callback: callback });
++    sendEnvelope({
++      type: "bridge-request",
++      id: id,
++      method: "subscribeToWorkerMessages",
++      args: { worker: worker }
++    }).catch(function () {});
++    return function () {
++      if (!workerSubscriptions.delete(id)) return;
++      sendEnvelope({
++        type: "bridge-request",
++        id: String(nextRequestId++),
++        method: "unsubscribeFromWorkerMessages",
++        args: { subscriptionId: id }
++      }).catch(function () {});
++    };
++  }
++
++  window.electronBridge = {
++    windowType: "electron",
++    getPreloadStartedAtMs: function () { return performance.timeOrigin; },
++    sendMessageFromView: function (payload) { return request("sendMessageFromView", payload); },
++    sendWorkerMessageFromView: function (worker, payload) {
++      return request("sendWorkerMessageFromView", { worker: worker, payload: payload });
++    },
++    subscribeToWorkerMessages: subscribeToWorkerMessages,
++    getPathForFile: function () { return null; },
++    startFileDrag: function () { return false; },
++    showContextMenu: function (payload) { return request("showContextMenu", payload); },
++    showApplicationMenu: function (menuId, x, y) {
++      return request("showApplicationMenu", { menuId: menuId, x: x, y: y });
++    },
++    getFastModeRolloutMetrics: function (payload) {
++      return request("getFastModeRolloutMetrics", payload);
++    },
++    getSharedObjectSnapshotValue: function (key) { return sharedObjectSnapshots.get(key); },
++    getSystemThemeVariant: function () {
++      return document.documentElement.classList.contains("electron-dark") ? "dark" : "light";
++    },
++    subscribeToSystemThemeVariant: function () { return function () {}; },
++    getSentryInitOptions: function () { return null; },
++    getAppSessionId: function () { return "codexpp-browser"; },
++    getBuildFlavor: function () { return "prod"; },
++    isDeviceCheckSupported: function () { return false; },
++    isIntelMacBuild: function () { return false; },
++    usesOwlAppShell: function () { return true; }
++  };
++
++  function connect() {
++    if (
++      !token ||
++      socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)
++    ) {
++      return;
++    }
++
++    var currentSocket;
++    try {
++      currentSocket = new WebSocket(endpoint(), "codexpp-browser-v1");
++    } catch (_) {
++      scheduleReconnect();
++      return;
++    }
++    socket = currentSocket;
++    socketAuthenticated = false;
++
++    currentSocket.addEventListener("open", function () {
++      if (socket !== currentSocket) return;
++      currentSocket.send(JSON.stringify({ type: "authenticate", role: "browser", token: token }));
++    });
++    currentSocket.addEventListener("message", function (event) {
++      if (socket !== currentSocket) return;
++      var message;
++      try { message = JSON.parse(event.data); } catch (_) { return; }
++      if (message.type === "authenticated") {
++        socketAuthenticated = true;
++        reconnectDelayMs = 100;
++        flushOutboundQueue();
++        if (fragmentToken) {
++          history.replaceState(null, "", window.location.pathname + window.location.search);
++          fragmentToken = null;
++        }
++        return;
++      }
++      if (message.type === "codex-plus-injection" && typeof message.script === "string") {
++        try {
++          (0, eval)(message.script);
++        } catch (error) {
++          console.error("[codex-plus-browser] renderer injection failed", error);
++        }
++        return;
++      }
++      if (message.type === "error") {
++        if (message.code === "unauthorized") {
++          token = null;
++          try { sessionStorage.removeItem(SESSION_TOKEN_KEY); } catch (_) {}
++          outboundQueue.length = 0;
++          rejectPending("browser gateway authentication failed");
++        }
++        return;
++      }
++      if (message.type === "apphost") {
++        deliverAppHostPayload(message.payload);
++        return;
++      }
++      if (message.type === "window-message") {
++        if (
++          message.payload &&
++          message.payload.type === "electron-window-focus-changed"
++        ) {
++          dispatchBrowserFocusState();
++          return;
++        }
++        if (
++          message.payload &&
++          message.payload.type === "shared-object-updated" &&
++          typeof message.payload.key === "string"
++        ) {
++          sharedObjectSnapshots.set(message.payload.key, message.payload.value);
++        }
++        window.dispatchEvent(new MessageEvent("message", { data: message.payload }));
++        return;
++      }
++      if (message.type === "worker-message") {
++        workerSubscriptions.forEach(function (subscription) {
++          if (subscription.worker === message.worker) subscription.callback(message.payload);
++        });
++        return;
++      }
++      if (message.type === "bridge-response") {
++        var waiter = pending.get(String(message.id));
++        if (!waiter) return;
++        pending.delete(String(message.id));
++        if (message.error) waiter.reject(new Error(message.error));
++        else waiter.resolve(message.result);
++      }
++    });
++    currentSocket.addEventListener("close", function () {
++      if (socket !== currentSocket) return;
++      var wasAuthenticated = socketAuthenticated;
++      socket = null;
++      socketAuthenticated = false;
++      if (wasAuthenticated || !token) {
++        outboundQueue.length = 0;
++        rejectPending("browser gateway disconnected");
++      }
++      scheduleReconnect();
++    });
++  }
++
++  if (!token) return;
++  connect();
++})();
+diff --git a/crates/codex-plus-core/src/codex_app_state.rs b/crates/codex-plus-core/src/codex_app_state.rs
+index 0ab3a0f..28d46d2 100644
+--- a/crates/codex-plus-core/src/codex_app_state.rs
++++ b/crates/codex-plus-core/src/codex_app_state.rs
+@@ -81,6 +81,39 @@ pub fn capture_app_state_snapshot(home: &Path) -> anyhow::Result<Option<PathBuf>
+     Ok(Some(path))
+ }
+ 
++pub fn default_service_tier(home: &Path) -> Option<String> {
++    let persisted = load_global_state(home).ok().flatten().and_then(|state| {
++        let atom = state
++            .get("electron-persisted-atom-state")
++            .and_then(Value::as_object)?;
++        atom.get("default-service-tier")
++            .or_else(|| atom.get("service-tier-default"))
++            .and_then(Value::as_str)
++            .and_then(normalize_service_tier)
++    });
++    persisted.or_else(|| default_service_tier_from_config(&home.join("config.toml")))
++}
++
++fn default_service_tier_from_config(path: &Path) -> Option<String> {
++    let text = fs::read_to_string(path).ok()?;
++    let config = text
++        .trim_start_matches('\u{feff}')
++        .parse::<toml::Table>()
++        .ok()?;
++    config
++        .get("service_tier")
++        .and_then(toml::Value::as_str)
++        .and_then(normalize_service_tier)
++}
++
++fn normalize_service_tier(value: &str) -> Option<String> {
++    match value.trim().to_ascii_lowercase().as_str() {
++        "priority" | "fast" => Some("priority".to_string()),
++        "standard" | "default" => Some("standard".to_string()),
++        _ => None,
++    }
++}
++
+ pub fn capture_app_state_snapshot_nonfatal(home: &Path, source: &str) {
+     if let Err(error) = capture_app_state_snapshot(home) {
+         let _ = crate::diagnostic_log::append_diagnostic_log(
+diff --git a/crates/codex-plus-core/src/headless_browser.rs b/crates/codex-plus-core/src/headless_browser.rs
+new file mode 100644
+index 0000000..12c368e
+--- /dev/null
++++ b/crates/codex-plus-core/src/headless_browser.rs
+@@ -0,0 +1,918 @@
++use std::fs;
++use std::net::TcpListener;
++use std::path::{Path, PathBuf};
++use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
++use std::time::Duration;
++
++use anyhow::Context;
++use futures_util::{SinkExt, StreamExt};
++use serde::{Deserialize, Serialize};
++use sha2::{Digest, Sha256};
++use tokio::io::{AsyncReadExt, AsyncWriteExt};
++use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
++use tokio::sync::{Mutex, Notify, mpsc, oneshot};
++use tokio_tungstenite::accept_hdr_async;
++use tokio_tungstenite::tungstenite::{
++    Message,
++    handshake::server::{Request, Response},
++};
++
++const MIN_BROWSER_PORT: u16 = 49_152;
++const MAX_BROWSER_PORT: u16 = 65_535;
++const AUTO_PORT_ATTEMPTS: usize = 256;
++pub const MAX_GATEWAY_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
++const BROWSER_WEBSOCKET_PATH: &str = "/__codexpp/ws";
++const BROWSER_SHIM_PATH: &str = "/__codexpp/browser-shim.js";
++const GATEWAY_BROWSER_SESSION_STARTED: &str = "gateway-browser-session-started";
++const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
++
++#[derive(Debug)]
++pub struct ReservedBrowserPort {
++    listener: TcpListener,
++    port: u16,
++}
++
++impl ReservedBrowserPort {
++    pub fn port(&self) -> u16 {
++        self.port
++    }
++
++    pub fn into_listener(self) -> TcpListener {
++        self.listener
++    }
++}
++
++pub fn reserve_browser_gateway_port(
++    requested: Option<u16>,
++) -> std::io::Result<ReservedBrowserPort> {
++    if let Some(port) = requested {
++        if !(MIN_BROWSER_PORT..=MAX_BROWSER_PORT).contains(&port) {
++            return Err(std::io::Error::new(
++                std::io::ErrorKind::InvalidInput,
++                format!(
++                    "browser gateway port must be between {MIN_BROWSER_PORT} and {MAX_BROWSER_PORT}"
++                ),
++            ));
++        }
++        return reserve_port(port);
++    }
++
++    let span = u32::from(MAX_BROWSER_PORT - MIN_BROWSER_PORT) + 1;
++    let seed = uuid::Uuid::new_v4().as_u128();
++    for attempt in 0..AUTO_PORT_ATTEMPTS {
++        let offset = ((seed.wrapping_add(attempt as u128)) % u128::from(span)) as u16;
++        let port = MIN_BROWSER_PORT + offset;
++        match reserve_port(port) {
++            Ok(reservation) => return Ok(reservation),
++            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => continue,
++            Err(error) => return Err(error),
++        }
++    }
++
++    Err(std::io::Error::new(
++        std::io::ErrorKind::AddrNotAvailable,
++        "could not reserve a high loopback port for the browser gateway",
++    ))
++}
++
++fn reserve_port(port: u16) -> std::io::Result<ReservedBrowserPort> {
++    let listener = TcpListener::bind(("127.0.0.1", port))?;
++    Ok(ReservedBrowserPort { listener, port })
++}
++
++#[derive(Debug, Clone)]
++pub struct BrowserSessionToken {
++    exposed: String,
++    digest: [u8; 32],
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "lowercase")]
++pub enum GatewayPeerRole {
++    Browser,
++    Relay,
++}
++
++#[derive(Debug, Clone)]
++pub struct BrowserGatewayConfig {
++    pub webview_root: PathBuf,
++    pub browser_token: BrowserSessionToken,
++    pub relay_token: BrowserSessionToken,
++    pub browser_injection_script: String,
++    pub browser_helper_origin: String,
++}
++
++#[derive(Debug)]
++pub struct BrowserGateway {
++    port: std::sync::Arc<AtomicU16>,
++    presence: std::sync::Arc<GatewayPresence>,
++    commands: mpsc::UnboundedSender<GatewayCommand>,
++    task: tokio::task::JoinHandle<()>,
++}
++
++struct GatewayState {
++    port: std::sync::Arc<AtomicU16>,
++    webview_root: PathBuf,
++    browser_token: std::sync::RwLock<BrowserSessionToken>,
++    relay_token: BrowserSessionToken,
++    browser_injection_script: String,
++    browser_helper_origin: String,
++    presence: std::sync::Arc<GatewayPresence>,
++    connections: Mutex<GatewayConnections>,
++    next_connection_id: std::sync::atomic::AtomicU64,
++}
++
++#[derive(Debug, Default)]
++struct GatewayPresence {
++    browser: AtomicBool,
++    relay: AtomicBool,
++    changed: Notify,
++}
++
++impl GatewayPresence {
++    fn connected(&self, role: GatewayPeerRole) -> bool {
++        match role {
++            GatewayPeerRole::Browser => self.browser.load(Ordering::Relaxed),
++            GatewayPeerRole::Relay => self.relay.load(Ordering::Relaxed),
++        }
++    }
++
++    fn set_connected(&self, role: GatewayPeerRole, connected: bool) {
++        match role {
++            GatewayPeerRole::Browser => self.browser.store(connected, Ordering::Relaxed),
++            GatewayPeerRole::Relay => self.relay.store(connected, Ordering::Relaxed),
++        }
++        self.changed.notify_waiters();
++    }
++}
++
++enum GatewayCommand {
++    Rebind {
++        listener: TokioTcpListener,
++        port: u16,
++        browser_token: BrowserSessionToken,
++        response: oneshot::Sender<anyhow::Result<()>>,
++    },
++    Shutdown,
++}
++
++#[derive(Default)]
++struct GatewayConnections {
++    browser: Option<GatewayPeer>,
++    relay: Option<GatewayPeer>,
++}
++
++struct GatewayPeer {
++    id: u64,
++    sender: mpsc::UnboundedSender<Message>,
++}
++
++#[derive(Debug, Deserialize)]
++struct GatewayAuthentication {
++    #[serde(rename = "type")]
++    message_type: String,
++    role: GatewayPeerRole,
++    token: String,
++}
++
++impl BrowserGateway {
++    pub async fn start(
++        reservation: ReservedBrowserPort,
++        config: BrowserGatewayConfig,
++    ) -> anyhow::Result<Self> {
++        let port = reservation.port();
++        let listener = reservation.into_listener();
++        listener.set_nonblocking(true)?;
++        let listener = TokioTcpListener::from_std(listener)?;
++        let root = config.webview_root.canonicalize().with_context(|| {
++            format!(
++                "webview root does not exist: {}",
++                config.webview_root.display()
++            )
++        })?;
++        let port = std::sync::Arc::new(AtomicU16::new(port));
++        let presence = std::sync::Arc::new(GatewayPresence::default());
++        let state = std::sync::Arc::new(GatewayState {
++            port: std::sync::Arc::clone(&port),
++            webview_root: root,
++            browser_token: std::sync::RwLock::new(config.browser_token),
++            relay_token: config.relay_token,
++            browser_injection_script: config.browser_injection_script,
++            browser_helper_origin: config.browser_helper_origin,
++            presence: std::sync::Arc::clone(&presence),
++            connections: Mutex::new(GatewayConnections::default()),
++            next_connection_id: std::sync::atomic::AtomicU64::new(1),
++        });
++        let (commands, mut command_rx) = mpsc::unbounded_channel();
++        let task = tokio::spawn(async move {
++            let mut listener = listener;
++            loop {
++                tokio::select! {
++                    command = command_rx.recv() => {
++                        match command {
++                            Some(GatewayCommand::Rebind { listener: replacement, port, browser_token, response }) => {
++                                listener = replacement;
++                                state.port.store(port, Ordering::Relaxed);
++                                let result = state.browser_token.write()
++                                    .map(|mut current| {
++                                        *current = browser_token;
++                                        ()
++                                    })
++                                    .map_err(|_| anyhow::anyhow!("browser gateway token lock was poisoned"));
++                                if result.is_ok() {
++                                    disconnect_browser(&state).await;
++                                }
++                                let _ = response.send(result);
++                            }
++                            Some(GatewayCommand::Shutdown) | None => break,
++                        }
++                    }
++                    accepted = listener.accept() => {
++                        let Ok((stream, _address)) = accepted else { continue };
++                        let state = std::sync::Arc::clone(&state);
++                        tokio::spawn(async move {
++                            let _ = handle_gateway_connection(stream, state).await;
++                        });
++                    }
++                }
++            }
++        });
++        Ok(Self {
++            port,
++            presence,
++            commands,
++            task,
++        })
++    }
++
++    pub fn port(&self) -> u16 {
++        self.port.load(Ordering::Relaxed)
++    }
++
++    pub fn peer_connected(&self, role: GatewayPeerRole) -> bool {
++        self.presence.connected(role)
++    }
++
++    pub async fn wait_for_peer(&self, role: GatewayPeerRole, timeout: Duration) -> bool {
++        if self.peer_connected(role) {
++            return true;
++        }
++        tokio::time::timeout(timeout, async {
++            loop {
++                self.presence.changed.notified().await;
++                if self.peer_connected(role) {
++                    return;
++                }
++            }
++        })
++        .await
++        .is_ok()
++    }
++
++    pub async fn rebind(
++        &self,
++        reservation: ReservedBrowserPort,
++        browser_token: BrowserSessionToken,
++    ) -> anyhow::Result<()> {
++        let port = reservation.port();
++        let listener = reservation.into_listener();
++        listener.set_nonblocking(true)?;
++        let listener = TokioTcpListener::from_std(listener)?;
++        let (response, result) = oneshot::channel();
++        self.commands
++            .send(GatewayCommand::Rebind {
++                listener,
++                port,
++                browser_token,
++                response,
++            })
++            .map_err(|_| anyhow::anyhow!("browser gateway task has stopped"))?;
++        result
++            .await
++            .map_err(|_| anyhow::anyhow!("browser gateway rebind response was dropped"))?
++    }
++
++    pub async fn shutdown(self) {
++        let _ = self.commands.send(GatewayCommand::Shutdown);
++        let _ = self.task.await;
++    }
++}
++
++async fn handle_gateway_connection(
++    mut stream: TcpStream,
++    state: std::sync::Arc<GatewayState>,
++) -> anyhow::Result<()> {
++    let mut probe = [0_u8; 4096];
++    let read = stream.peek(&mut probe).await?;
++    let request = String::from_utf8_lossy(&probe[..read]).to_ascii_lowercase();
++    if request.contains("\r\nupgrade: websocket") || request.contains("\r\nsec-websocket-key:") {
++        handle_gateway_websocket(stream, state).await
++    } else {
++        handle_gateway_http(&mut stream, &state).await
++    }
++}
++
++async fn handle_gateway_websocket(
++    stream: TcpStream,
++    state: std::sync::Arc<GatewayState>,
++) -> anyhow::Result<()> {
++    let port = state.port.load(Ordering::Relaxed);
++    let relay_only_origin = std::sync::Arc::new(AtomicBool::new(false));
++    let handshake_relay_only_origin = std::sync::Arc::clone(&relay_only_origin);
++    let websocket = accept_hdr_async(stream, move |request: &Request, response: Response| {
++        let origin = request
++            .headers()
++            .get("origin")
++            .and_then(|value| value.to_str().ok())
++            .unwrap_or_default();
++        let allowed_path = request.uri().path() == BROWSER_WEBSOCKET_PATH;
++        let browser_origin = is_allowed_browser_origin(origin, port);
++        let relay_origin = is_allowed_relay_origin(origin);
++        if !allowed_path || !browser_origin && !relay_origin {
++            let error = Response::builder()
++                .status(403)
++                .body(Some("forbidden".to_string()))
++                .unwrap();
++            return Err(error);
++        }
++        handshake_relay_only_origin.store(relay_origin && !browser_origin, Ordering::Relaxed);
++        let mut response = response;
++        response.headers_mut().insert(
++            "Sec-WebSocket-Protocol",
++            "codexpp-browser-v1".parse().unwrap(),
++        );
++        Ok(response)
++    })
++    .await
++    .context("browser gateway websocket handshake failed")?;
++    let (mut outgoing, mut incoming) = websocket.split();
++    let auth = tokio::time::timeout(Duration::from_secs(10), incoming.next())
++        .await
++        .context("browser gateway authentication timed out")?
++        .transpose()
++        .context("browser gateway authentication read failed")?
++        .context("browser gateway closed before authentication")?;
++    let auth = parse_gateway_authentication(auth)?;
++    if relay_only_origin.load(Ordering::Relaxed) && auth.role != GatewayPeerRole::Relay
++        || !verify_gateway_authentication(&state, &auth)
++    {
++        outgoing
++            .send(Message::Text(gateway_error("unauthorized").into()))
++            .await
++            .ok();
++        return Ok(());
++    }
++
++    let id = state
++        .next_connection_id
++        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++    let (sender, mut receiver) = mpsc::unbounded_channel();
++    if !register_gateway_peer(&state, auth.role, id, sender.clone()).await {
++        outgoing
++            .send(Message::Text(gateway_error("controller-in-use").into()))
++            .await
++            .ok();
++        return Ok(());
++    }
++    if auth.role == GatewayPeerRole::Browser {
++        sender
++            .send(Message::Text(
++                serde_json::json!({
++                    "type": "authenticated",
++                    "role": GatewayPeerRole::Browser,
++                })
++                .to_string()
++                .into(),
++            ))
++            .ok();
++        if !state.browser_injection_script.is_empty() {
++            sender
++                .send(Message::Text(
++                    serde_json::json!({
++                        "type": "codex-plus-injection",
++                        "script": state.browser_injection_script,
++                    })
++                    .to_string()
++                    .into(),
++                ))
++                .ok();
++        }
++    }
++    let writer = tokio::spawn(async move {
++        while let Some(message) = receiver.recv().await {
++            let close = message.is_close();
++            if outgoing.send(message).await.is_err() {
++                break;
++            }
++            if close {
++                let _ = outgoing.close().await;
++                break;
++            }
++        }
++    });
++
++    while let Some(message) = incoming.next().await {
++        let message = message.context("browser gateway websocket read failed")?;
++        if message.is_close() {
++            break;
++        }
++        if message.len() > MAX_GATEWAY_MESSAGE_BYTES {
++            sender
++                .send(Message::Text(gateway_error("message-too-large").into()))
++                .ok();
++            break;
++        }
++        forward_gateway_message(&state, auth.role, id, message).await;
++    }
++
++    unregister_gateway_peer(&state, auth.role, id).await;
++    drop(sender);
++    let _ = writer.await;
++    Ok(())
++}
++
++fn parse_gateway_authentication(message: Message) -> anyhow::Result<GatewayAuthentication> {
++    let text = message
++        .into_text()
++        .context("browser gateway authentication must be text")?;
++    let auth: GatewayAuthentication =
++        serde_json::from_str(&text).context("browser gateway authentication is not valid JSON")?;
++    if auth.message_type != "authenticate" || auth.token.is_empty() {
++        anyhow::bail!("invalid browser gateway authentication message");
++    }
++    Ok(auth)
++}
++
++fn verify_gateway_authentication(
++    state: &GatewayState,
++    authentication: &GatewayAuthentication,
++) -> bool {
++    match authentication.role {
++        GatewayPeerRole::Browser => state
++            .browser_token
++            .read()
++            .map(|token| token.verify(&authentication.token))
++            .unwrap_or(false),
++        GatewayPeerRole::Relay => state.relay_token.verify(&authentication.token),
++    }
++}
++
++async fn disconnect_browser(state: &std::sync::Arc<GatewayState>) {
++    let peer = state.connections.lock().await.browser.take();
++    if let Some(peer) = peer {
++        state
++            .presence
++            .set_connected(GatewayPeerRole::Browser, false);
++        let _ = peer.sender.send(Message::Close(None));
++    }
++}
++
++async fn register_gateway_peer(
++    state: &GatewayState,
++    role: GatewayPeerRole,
++    id: u64,
++    sender: mpsc::UnboundedSender<Message>,
++) -> bool {
++    let mut connections = state.connections.lock().await;
++    match role {
++        GatewayPeerRole::Browser => {
++            if let Some(previous) = connections.browser.replace(GatewayPeer { id, sender }) {
++                previous.sender.send(Message::Close(None)).ok();
++            }
++            if let Some(relay) = connections.relay.as_ref() {
++                relay
++                    .sender
++                    .send(Message::Text(
++                        serde_json::json!({ "type": GATEWAY_BROWSER_SESSION_STARTED })
++                            .to_string()
++                            .into(),
++                    ))
++                    .ok();
++            }
++        }
++        GatewayPeerRole::Relay => {
++            if connections.relay.is_some() {
++                return false;
++            }
++            if connections.browser.is_some() {
++                sender
++                    .send(Message::Text(
++                        serde_json::json!({ "type": GATEWAY_BROWSER_SESSION_STARTED })
++                            .to_string()
++                            .into(),
++                    ))
++                    .ok();
++            }
++            connections.relay = Some(GatewayPeer { id, sender });
++        }
++    }
++    state.presence.set_connected(role, true);
++    true
++}
++
++async fn unregister_gateway_peer(state: &GatewayState, role: GatewayPeerRole, id: u64) {
++    let mut connections = state.connections.lock().await;
++    let slot = match role {
++        GatewayPeerRole::Browser => &mut connections.browser,
++        GatewayPeerRole::Relay => &mut connections.relay,
++    };
++    if slot.as_ref().is_some_and(|peer| peer.id == id) {
++        *slot = None;
++        state.presence.set_connected(role, false);
++    }
++}
++
++async fn forward_gateway_message(
++    state: &GatewayState,
++    sender_role: GatewayPeerRole,
++    sender_id: u64,
++    message: Message,
++) {
++    if message
++        .to_text()
++        .ok()
++        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
++        .and_then(|message| {
++            message
++                .get("type")
++                .and_then(serde_json::Value::as_str)
++                .map(str::to_owned)
++        })
++        .as_deref()
++        == Some(GATEWAY_BROWSER_SESSION_STARTED)
++    {
++        return;
++    }
++    let connections = state.connections.lock().await;
++    let sender_is_current = match sender_role {
++        GatewayPeerRole::Browser => connections
++            .browser
++            .as_ref()
++            .is_some_and(|peer| peer.id == sender_id),
++        GatewayPeerRole::Relay => connections
++            .relay
++            .as_ref()
++            .is_some_and(|peer| peer.id == sender_id),
++    };
++    if !sender_is_current {
++        return;
++    }
++    let target = match sender_role {
++        GatewayPeerRole::Browser => connections.relay.as_ref(),
++        GatewayPeerRole::Relay => connections.browser.as_ref(),
++    };
++    if let Some(target) = target {
++        target.sender.send(message).ok();
++    }
++}
++
++fn gateway_error(code: &str) -> String {
++    serde_json::json!({ "type": "error", "code": code }).to_string()
++}
++
++async fn handle_gateway_http(stream: &mut TcpStream, state: &GatewayState) -> anyhow::Result<()> {
++    let mut buffer = vec![0_u8; MAX_HTTP_HEADER_BYTES];
++    let read = stream.read(&mut buffer).await?;
++    if read == buffer.len()
++        && !buffer[..read]
++            .windows(4)
++            .any(|window| window == b"\r\n\r\n")
++    {
++        write_http_response(
++            stream,
++            431,
++            "text/plain; charset=utf-8",
++            b"request headers too large",
++        )
++        .await?;
++        return Ok(());
++    }
++    let request = String::from_utf8_lossy(&buffer[..read]);
++    let request_line = request.lines().next().unwrap_or_default();
++    let mut parts = request_line.split_whitespace();
++    let method = parts.next().unwrap_or_default();
++    let raw_path = parts.next().unwrap_or_default();
++    if method != "GET" {
++        write_http_response(
++            stream,
++            405,
++            "text/plain; charset=utf-8",
++            b"method not allowed",
++        )
++        .await?;
++        return Ok(());
++    }
++    let path = raw_path.split('?').next().unwrap_or("/");
++    if path == "/__codexpp/health" {
++        write_http_response(
++            stream,
++            200,
++            "application/json; charset=utf-8",
++            br#"{"status":"ok","service":"codex-plus-browser-gateway"}"#,
++        )
++        .await?;
++        return Ok(());
++    }
++    if path == BROWSER_SHIM_PATH {
++        write_http_response(
++            stream,
++            200,
++            "application/javascript; charset=utf-8",
++            BROWSER_SHIM.as_bytes(),
++        )
++        .await?;
++        return Ok(());
++    }
++
++    let relative = if path == "/" {
++        "index.html"
++    } else {
++        path.trim_start_matches('/')
++    };
++    if relative.is_empty() || relative.contains("..") || relative.contains('\\') {
++        write_http_response(stream, 404, "text/plain; charset=utf-8", b"not found").await?;
++        return Ok(());
++    }
++    let candidate = state.webview_root.join(relative);
++    let canonical = match candidate.canonicalize() {
++        Ok(path) => path,
++        Err(_) => {
++            write_http_response(stream, 404, "text/plain; charset=utf-8", b"not found").await?;
++            return Ok(());
++        }
++    };
++    if !canonical.starts_with(&state.webview_root) || !canonical.is_file() {
++        write_http_response(stream, 404, "text/plain; charset=utf-8", b"not found").await?;
++        return Ok(());
++    }
++    let mut body = fs::read(&canonical)?;
++    let content_type = content_type_for_path(&canonical);
++    if relative == "index.html" {
++        let source = String::from_utf8_lossy(&body);
++        let injected = inject_browser_shim(&source, &state.browser_helper_origin);
++        body = injected.into_bytes();
++    }
++    write_http_response(stream, 200, content_type, &body).await
++}
++
++fn inject_browser_shim(source: &str, browser_helper_origin: &str) -> String {
++    let source = allow_browser_rpc_eval(source);
++    let source = allow_browser_helper_connect(&source, browser_helper_origin);
++    let script = format!("<script src=\"{BROWSER_SHIM_PATH}\"></script>");
++    if source.contains(BROWSER_SHIM_PATH) {
++        return source;
++    }
++    if let Some(index) = source.find("</head>") {
++        let mut result = String::with_capacity(source.len() + script.len());
++        result.push_str(&source[..index]);
++        result.push_str(&script);
++        result.push_str(&source[index..]);
++        return result;
++    }
++    format!("{script}{source}")
++}
++
++fn allow_browser_helper_connect(source: &str, browser_helper_origin: &str) -> String {
++    let origin = browser_helper_origin.trim().trim_end_matches('/');
++    let Ok(url) = url::Url::parse(origin) else {
++        return source.to_string();
++    };
++    if url.scheme() != "http"
++        || !matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
++        || url.path() != "/"
++        || url.query().is_some()
++        || url.fragment().is_some()
++    {
++        return source.to_string();
++    }
++    if source.contains(origin) {
++        return source.to_string();
++    }
++    if source.contains("connect-src ") {
++        return source.replacen("connect-src ", &format!("connect-src {origin} "), 1);
++    }
++    let Some(meta) = source.find("http-equiv=\"Content-Security-Policy\"") else {
++        return source.to_string();
++    };
++    let Some(relative_content) = source[meta..].find("content=\"") else {
++        return source.to_string();
++    };
++    let insert = meta + relative_content + "content=\"".len();
++    let directive = format!("connect-src {origin}; ");
++    let mut result = String::with_capacity(source.len() + directive.len());
++    result.push_str(&source[..insert]);
++    result.push_str(&directive);
++    result.push_str(&source[insert..]);
++    result
++}
++
++fn allow_browser_rpc_eval(source: &str) -> String {
++    const ENCODED_WASM_EVAL: &str = "&#39;wasm-unsafe-eval&#39;";
++    const ENCODED_UNSAFE_EVAL: &str = "&#39;unsafe-eval&#39;";
++    const WASM_EVAL: &str = "'wasm-unsafe-eval'";
++    const UNSAFE_EVAL: &str = "'unsafe-eval'";
++
++    if source.contains(ENCODED_WASM_EVAL) && !source.contains(ENCODED_UNSAFE_EVAL) {
++        return source.replacen(
++            ENCODED_WASM_EVAL,
++            &format!("{ENCODED_WASM_EVAL} {ENCODED_UNSAFE_EVAL}"),
++            1,
++        );
++    }
++    if source.contains(WASM_EVAL) && !source.contains(UNSAFE_EVAL) {
++        return source.replacen(WASM_EVAL, &format!("{WASM_EVAL} {UNSAFE_EVAL}"), 1);
++    }
++    source.to_string()
++}
++
++fn content_type_for_path(path: &Path) -> &'static str {
++    match path.extension().and_then(|extension| extension.to_str()) {
++        Some("html") => "text/html; charset=utf-8",
++        Some("js") => "application/javascript; charset=utf-8",
++        Some("css") => "text/css; charset=utf-8",
++        Some("json") => "application/json; charset=utf-8",
++        Some("svg") => "image/svg+xml",
++        Some("png") => "image/png",
++        Some("jpg" | "jpeg") => "image/jpeg",
++        Some("woff" | "woff2") => "font/woff2",
++        _ => "application/octet-stream",
++    }
++}
++
++async fn write_http_response(
++    stream: &mut TcpStream,
++    status: u16,
++    content_type: &str,
++    body: &[u8],
++) -> anyhow::Result<()> {
++    let reason = match status {
++        200 => "OK",
++        404 => "Not Found",
++        405 => "Method Not Allowed",
++        431 => "Request Header Fields Too Large",
++        _ => "Error",
++    };
++    let header = format!(
++        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
++        body.len()
++    );
++    stream.write_all(header.as_bytes()).await?;
++    stream.write_all(body).await?;
++    Ok(())
++}
++
++const BROWSER_SHIM: &str = include_str!("../assets/browser-shim.js");
++
++impl BrowserSessionToken {
++    pub fn generate() -> Self {
++        let exposed = format!(
++            "{}{}",
++            uuid::Uuid::new_v4().simple(),
++            uuid::Uuid::new_v4().simple()
++        );
++        let digest = token_digest(&exposed);
++        Self { exposed, digest }
++    }
++
++    pub fn from_exposed(exposed: &str) -> Option<Self> {
++        if exposed.len() != 64 || !exposed.bytes().all(|byte| byte.is_ascii_hexdigit()) {
++            return None;
++        }
++        let exposed = exposed.to_ascii_lowercase();
++        Some(Self {
++            digest: token_digest(&exposed),
++            exposed,
++        })
++    }
++
++    pub fn expose_for_launch(&self) -> &str {
++        &self.exposed
++    }
++
++    pub fn verify(&self, candidate: &str) -> bool {
++        constant_time_eq(&self.digest, &token_digest(candidate))
++    }
++}
++
++fn token_digest(value: &str) -> [u8; 32] {
++    Sha256::digest(value.as_bytes()).into()
++}
++
++fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
++    left.iter()
++        .zip(right.iter())
++        .fold(0_u8, |difference, (left, right)| {
++            difference | (left ^ right)
++        })
++        == 0
++}
++
++pub fn is_allowed_browser_origin(origin: &str, gateway_port: u16) -> bool {
++    let Ok(url) = url::Url::parse(origin) else {
++        return false;
++    };
++    if url.scheme() != "http" || url.port_or_known_default() != Some(gateway_port) {
++        return false;
++    }
++    matches!(
++        url.host_str(),
++        Some("127.0.0.1" | "localhost" | "::1" | "[::1]")
++    )
++}
++
++fn is_allowed_relay_origin(origin: &str) -> bool {
++    matches!(origin.trim(), "file://" | "null")
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum BrowserInstanceStatus {
++    Starting,
++    Running,
++    Degraded,
++    Reconfiguring,
++    Stopping,
++    Stopped,
++    Failed,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum BrowserAuthMode {
++    ChatgptOauth,
++    PureApi,
++    MixedApi,
++    NotAuthenticated,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct BrowserInstanceState {
++    pub instance_id: String,
++    pub status: BrowserInstanceStatus,
++    pub message: String,
++    pub started_at_ms: u64,
++    pub tmux_session: String,
++    pub access_port: Option<u16>,
++    pub auth_mode: BrowserAuthMode,
++    pub gateway_pid: Option<u32>,
++    pub relay_pid: Option<u32>,
++    pub electron_pid: Option<u32>,
++    pub owned_pids: Vec<u32>,
++    pub failure_code: Option<String>,
++}
++
++#[derive(Debug, Clone)]
++pub struct BrowserStateStore {
++    path: PathBuf,
++}
++
++impl BrowserStateStore {
++    pub fn new(path: PathBuf) -> Self {
++        Self { path }
++    }
++
++    pub fn path(&self) -> &Path {
++        &self.path
++    }
++
++    pub fn save(&self, state: &BrowserInstanceState) -> anyhow::Result<()> {
++        let bytes = serde_json::to_vec_pretty(state)?;
++        crate::settings::atomic_write(&self.path, &bytes)
++    }
++
++    pub fn load(&self) -> anyhow::Result<Option<BrowserInstanceState>> {
++        let contents = match fs::read_to_string(&self.path) {
++            Ok(contents) => contents,
++            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
++            Err(error) => {
++                return Err(error).with_context(|| {
++                    format!(
++                        "failed to read browser instance state {}",
++                        self.path.display()
++                    )
++                });
++            }
++        };
++        Ok(serde_json::from_str(&contents).ok())
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct TerminationPolicy {
++    term_grace_period: Duration,
++}
++
++impl Default for TerminationPolicy {
++    fn default() -> Self {
++        Self {
++            term_grace_period: Duration::from_secs(10),
++        }
++    }
++}
++
++impl TerminationPolicy {
++    pub fn term_grace_period(self) -> Duration {
++        self.term_grace_period
++    }
++}
+diff --git a/crates/codex-plus-core/src/launcher.rs b/crates/codex-plus-core/src/launcher.rs
+index ed3add2..3f10f54 100644
+--- a/crates/codex-plus-core/src/launcher.rs
++++ b/crates/codex-plus-core/src/launcher.rs
+@@ -529,7 +529,11 @@ impl LaunchHooks for DefaultLaunchHooks {
+     }
+ 
+     fn select_helper_port(&self, requested: u16) -> u16 {
+-        crate::ports::select_platform_loopback_port(requested)
++        if crate::ports::can_bind_loopback_port(requested) {
++            requested
++        } else {
++            crate::ports::find_available_loopback_port()
++        }
+     }
+ 
+     async fn load_settings(&self) -> anyhow::Result<BackendSettings> {
+diff --git a/crates/codex-plus-core/src/lib.rs b/crates/codex-plus-core/src/lib.rs
+index 203b411..5686776 100644
+--- a/crates/codex-plus-core/src/lib.rs
++++ b/crates/codex-plus-core/src/lib.rs
+@@ -15,6 +15,7 @@ pub mod dream_skin_library;
+ pub mod dream_skin_market;
+ pub mod dream_skin_runtime;
+ pub mod env_conflicts;
++pub mod headless_browser;
+ pub mod http_client;
+ pub mod install;
+ pub mod launcher;
+diff --git a/crates/codex-plus-core/src/routes.rs b/crates/codex-plus-core/src/routes.rs
+index d2ab9a3..827844d 100644
+--- a/crates/codex-plus-core/src/routes.rs
++++ b/crates/codex-plus-core/src/routes.rs
+@@ -607,6 +607,14 @@ fn settings_payload_value(
+     let mut value = serde_json::to_value(settings)?;
+     if let Some(object) = value.as_object_mut() {
+         object.remove("codexAppStepwiseApiKey");
++        object.insert(
++            "codexDefaultServiceTier".to_string(),
++            crate::codex_app_state::default_service_tier(
++                &crate::codex_home::default_codex_home_dir(),
++            )
++            .map(Value::String)
++            .unwrap_or(Value::Null),
++        );
+         object.insert(
+             "codexAppVersion".to_string(),
+             Value::String(codex_app_version),
+diff --git a/crates/codex-plus-core/tests/bridge_routes.rs b/crates/codex-plus-core/tests/bridge_routes.rs
+index f543291..05a00f2 100644
+--- a/crates/codex-plus-core/tests/bridge_routes.rs
++++ b/crates/codex-plus-core/tests/bridge_routes.rs
+@@ -121,6 +121,7 @@ async fn settings_get_includes_runtime_codex_app_version() {
+ 
+     assert_eq!(result["codexAppVersion"], json!("26.601.21317"));
+     assert_eq!(result["codexAppPluginMarketplaceUnlock"], json!(true));
++    assert_eq!(result.get("codexDefaultServiceTier"), Some(&Value::Null));
+     assert_eq!(result.get("codexAppForcePluginInstall"), None);
+     assert_eq!(result["codexAppThreadIdBadge"], json!(false));
+ }
+diff --git a/crates/codex-plus-core/tests/cdp_bridge.rs b/crates/codex-plus-core/tests/cdp_bridge.rs
+index 9e476f0..cfc33b3 100644
+--- a/crates/codex-plus-core/tests/cdp_bridge.rs
++++ b/crates/codex-plus-core/tests/cdp_bridge.rs
+@@ -1018,6 +1018,47 @@ fn injection_script_unlocks_custom_model_catalog() {
+     assert!(!script.contains("querySelectorAll(\"button, [role='menu']"));
+ }
+ 
++#[test]
++fn injection_script_parses_helper_json_without_reentering_the_model_response_patch() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains(
++        "const originalResponseJson = window.__codexPlusModelJsonResponseOriginals?.responseJson;"
++    ));
++    assert!(script.contains("originalResponseJson.call(response)"));
++}
++
++#[test]
++fn injection_script_wraps_service_tier_controls_on_narrow_browser_windows() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("@media (max-width: 480px)"));
++    assert!(
++        script.contains(
++            ".codex-plus-row[data-codex-service-tier-controls] { flex-direction: column; }"
++        )
++    );
++    assert!(script.contains(
++        ".codex-plus-service-tier-control { min-width: 0; width: 100%; justify-items: stretch; }"
++    ));
++    assert!(script.contains(".codex-plus-service-tier-actions { justify-content: flex-start; }"));
++}
++
++#[test]
++fn injection_script_finds_service_tier_storage_in_the_merged_desktop_chunk() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains(r#"["default-service-tier", "dispatchMessage"],"#));
++}
++
++#[test]
++fn injection_script_falls_back_to_helper_settings_for_service_tier() {
++    let script = assets::injection_script(57321);
++
++    assert!(script.contains("settings.codexDefaultServiceTier"));
++    assert!(script.contains(r#"await postJson("/settings/get", {})"#));
++}
++
+ #[test]
+ fn injection_script_exposes_fast_service_tier_control() {
+     let script = assets::injection_script(57321);
+diff --git a/crates/codex-plus-core/tests/codex_app_state.rs b/crates/codex-plus-core/tests/codex_app_state.rs
+index 5f09fae..a330fab 100644
+--- a/crates/codex-plus-core/tests/codex_app_state.rs
++++ b/crates/codex-plus-core/tests/codex_app_state.rs
+@@ -1,9 +1,55 @@
+ use codex_plus_core::codex_app_state::{
+-    capture_app_state_snapshot, prepare_projectless_main_window,
++    capture_app_state_snapshot, default_service_tier, prepare_projectless_main_window,
+     sync_app_state_after_provider_switch,
+ };
+ use serde_json::{Value, json};
+ 
++#[test]
++fn default_service_tier_prefers_safe_persisted_state_and_normalizes_fast() {
++    let temp = tempfile::tempdir().unwrap();
++    std::fs::write(
++        temp.path().join(".codex-global-state.json"),
++        json!({
++            "electron-persisted-atom-state": {
++                "default-service-tier": "fast"
++            }
++        })
++        .to_string(),
++    )
++    .unwrap();
++    std::fs::write(
++        temp.path().join("config.toml"),
++        "service_tier = \"standard\"\n",
++    )
++    .unwrap();
++
++    assert_eq!(
++        default_service_tier(temp.path()).as_deref(),
++        Some("priority")
++    );
++}
++
++#[test]
++fn default_service_tier_uses_structured_config_fallback_and_rejects_unknown_values() {
++    let temp = tempfile::tempdir().unwrap();
++    std::fs::write(
++        temp.path().join("config.toml"),
++        "service_tier = \"priority\"\n",
++    )
++    .unwrap();
++    assert_eq!(
++        default_service_tier(temp.path()).as_deref(),
++        Some("priority")
++    );
++
++    std::fs::write(
++        temp.path().join("config.toml"),
++        "service_tier = \"secret\"\n",
++    )
++    .unwrap();
++    assert_eq!(default_service_tier(temp.path()), None);
++}
++
+ #[test]
+ fn app_state_sync_restores_safe_state_and_ignores_sensitive_snapshot_keys() {
+     let temp = tempfile::tempdir().unwrap();
+diff --git a/crates/codex-plus-core/tests/headless_browser.rs b/crates/codex-plus-core/tests/headless_browser.rs
+new file mode 100644
+index 0000000..671ee62
+--- /dev/null
++++ b/crates/codex-plus-core/tests/headless_browser.rs
+@@ -0,0 +1,665 @@
++use std::net::TcpListener;
++use std::time::Duration;
++
++use codex_plus_core::headless_browser::{
++    BrowserAuthMode, BrowserGateway, BrowserGatewayConfig, BrowserInstanceState,
++    BrowserInstanceStatus, BrowserSessionToken, BrowserStateStore, GatewayPeerRole,
++    MAX_GATEWAY_MESSAGE_BYTES, TerminationPolicy, is_allowed_browser_origin,
++    reserve_browser_gateway_port,
++};
++use futures_util::{SinkExt, StreamExt};
++use serde_json::json;
++use tokio_tungstenite::tungstenite::Message;
++
++#[test]
++fn automatic_gateway_port_is_high_and_reserved_until_released() {
++    let reservation = reserve_browser_gateway_port(None).unwrap();
++    let port = reservation.port();
++
++    assert!((49_152..=65_535).contains(&port));
++    let duplicate = TcpListener::bind(("127.0.0.1", port)).unwrap_err();
++    assert_eq!(duplicate.kind(), std::io::ErrorKind::AddrInUse);
++}
++
++#[test]
++fn requested_gateway_port_must_be_high_and_available() {
++    let (_occupied, occupied_port) = (49_152..=65_535)
++        .find_map(|port| {
++            TcpListener::bind(("127.0.0.1", port))
++                .ok()
++                .map(|listener| (listener, port))
++        })
++        .unwrap();
++
++    assert!(reserve_browser_gateway_port(Some(1024)).is_err());
++    let error = reserve_browser_gateway_port(Some(occupied_port)).unwrap_err();
++    assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
++}
++
++#[test]
++fn browser_session_token_verification_rejects_modified_values() {
++    let token = BrowserSessionToken::generate();
++    let exposed = token.expose_for_launch().to_string();
++    let mut modified = exposed.clone().into_bytes();
++    modified[0] = if modified[0] == b'a' { b'b' } else { b'a' };
++    let modified = String::from_utf8(modified).unwrap();
++
++    assert!(exposed.len() >= 64);
++    assert!(token.verify(&exposed));
++    assert!(!token.verify(&modified));
++    assert!(!token.verify("short"));
++}
++
++#[test]
++fn browser_session_token_can_be_reconstructed_from_an_explicit_secret() {
++    let generated = BrowserSessionToken::generate();
++    let exposed = generated.expose_for_launch().to_string();
++    let reconstructed = BrowserSessionToken::from_exposed(&exposed).unwrap();
++
++    assert!(reconstructed.verify(&exposed));
++    assert!(BrowserSessionToken::from_exposed("not-a-token").is_none());
++}
++
++#[test]
++fn browser_origin_must_match_the_loopback_gateway_port() {
++    assert!(is_allowed_browser_origin("http://127.0.0.1:57340", 57340));
++    assert!(is_allowed_browser_origin("http://localhost:57340", 57340));
++    assert!(is_allowed_browser_origin("http://[::1]:57340", 57340));
++    assert!(!is_allowed_browser_origin("null", 57340));
++    assert!(!is_allowed_browser_origin("http://127.0.0.1:57341", 57340));
++    assert!(!is_allowed_browser_origin(
++        "https://example.com:57340",
++        57340
++    ));
++}
++
++#[test]
++fn browser_shim_matches_the_current_electron_route_contract() {
++    let shim = include_str!("../assets/browser-shim.js");
++
++    assert!(shim.contains("getBuildFlavor: function () { return \"prod\"; }"));
++    assert!(shim.contains("usesOwlAppShell: function () { return true; }"));
++}
++
++#[test]
++fn browser_shim_seeds_and_tracks_shared_object_snapshots() {
++    let shim = include_str!("../assets/browser-shim.js");
++
++    assert!(
++        shim.contains(r#"["host_config", { id: "local", display_name: "Local", kind: "local" }]"#)
++    );
++    assert!(
++        shim.contains("sharedObjectSnapshots.set(message.payload.key, message.payload.value);")
++    );
++    assert!(shim.contains(
++        "getSharedObjectSnapshotValue: function (key) { return sharedObjectSnapshots.get(key); }"
++    ));
++}
++
++#[test]
++fn browser_shim_queues_apphost_frames_until_the_renderer_port_connects() {
++    let shim = include_str!("../assets/browser-shim.js");
++
++    assert!(shim.contains("var inboundAppHostQueue = [];"));
++    assert!(shim.contains("inboundAppHostQueue.push(payload);"));
++    assert!(shim.contains("while (appHostPort && inboundAppHostQueue.length > 0)"));
++    let connect = shim.find("appHostPort.onmessage = function").unwrap();
++    let flush = shim.find("flushInboundAppHostQueue();").unwrap();
++    assert!(connect < flush);
++}
++
++#[test]
++fn browser_shim_reports_the_browser_document_focus_instead_of_the_hidden_relay_focus() {
++    let shim = include_str!("../assets/browser-shim.js");
++
++    assert!(shim.contains("function dispatchBrowserFocusState()"));
++    assert!(shim.contains("isFocused: document.hasFocus()"));
++    assert!(shim.contains("message.payload.type === \"electron-window-focus-changed\""));
++    assert!(shim.contains("window.addEventListener(\"focus\", dispatchBrowserFocusState);"));
++    assert!(shim.contains("window.addEventListener(\"blur\", dispatchBrowserFocusState);"));
++}
++
++#[test]
++fn persisted_browser_state_contains_no_session_secret() {
++    let temp = tempfile::tempdir().unwrap();
++    let store = BrowserStateStore::new(temp.path().join("browser-instance.json"));
++    let state = BrowserInstanceState {
++        instance_id: "browser-1".to_string(),
++        status: BrowserInstanceStatus::Running,
++        message: "ready".to_string(),
++        started_at_ms: 123,
++        tmux_session: "codexpp-browser-1".to_string(),
++        access_port: Some(57340),
++        auth_mode: BrowserAuthMode::PureApi,
++        gateway_pid: Some(101),
++        relay_pid: Some(102),
++        electron_pid: Some(103),
++        owned_pids: vec![101, 102, 103],
++        failure_code: None,
++    };
++
++    store.save(&state).unwrap();
++    let serialized = std::fs::read_to_string(store.path()).unwrap();
++
++    assert_eq!(store.load().unwrap(), Some(state));
++    assert!(!serialized.to_ascii_lowercase().contains("token"));
++    assert!(!serialized.to_ascii_lowercase().contains("secret"));
++}
++
++#[test]
++fn default_termination_policy_waits_ten_seconds_before_kill() {
++    let policy = TerminationPolicy::default();
++
++    assert_eq!(policy.term_grace_period(), Duration::from_secs(10));
++}
++
++#[tokio::test]
++async fn gateway_serves_the_original_index_with_the_browser_shim_injected() {
++    let temp = tempfile::tempdir().unwrap();
++    std::fs::write(
++        temp.path().join("index.html"),
++        r#"<!doctype html><html><head><title>Codex</title><meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;; script-src &#39;self&#39; &#39;wasm-unsafe-eval&#39;; connect-src &#39;self&#39;;"></head><body>original</body></html>"#,
++    )
++    .unwrap();
++    std::fs::write(temp.path().join("asset.js"), "window.originalAsset = true;").unwrap();
++    let browser_token = BrowserSessionToken::generate();
++    let relay_token = BrowserSessionToken::generate();
++    let gateway = BrowserGateway::start(
++        reserve_browser_gateway_port(None).unwrap(),
++        BrowserGatewayConfig {
++            webview_root: temp.path().to_path_buf(),
++            browser_token,
++            relay_token,
++            browser_injection_script: String::new(),
++            browser_helper_origin: "http://127.0.0.1:58421".to_string(),
++        },
++    )
++    .await
++    .unwrap();
++
++    let index = reqwest::get(format!("http://127.0.0.1:{}/", gateway.port()))
++        .await
++        .unwrap()
++        .text()
++        .await
++        .unwrap();
++    let asset = reqwest::get(format!("http://127.0.0.1:{}/asset.js", gateway.port()))
++        .await
++        .unwrap()
++        .text()
++        .await
++        .unwrap();
++    let shim = reqwest::get(format!(
++        "http://127.0.0.1:{}/__codexpp/browser-shim.js",
++        gateway.port()
++    ))
++    .await
++    .unwrap()
++    .text()
++    .await
++    .unwrap();
++
++    assert!(index.contains("/__codexpp/browser-shim.js"));
++    assert!(index.contains("&#39;wasm-unsafe-eval&#39; &#39;unsafe-eval&#39;"));
++    assert!(index.contains("connect-src http://127.0.0.1:58421 &#39;self&#39;"));
++    assert!(index.contains("original"));
++    assert_eq!(asset, "window.originalAsset = true;");
++    assert!(shim.contains("message.type === \"window-message\""));
++    assert!(shim.contains("message.type === \"worker-message\""));
++    assert!(shim.contains("unsubscribeFromWorkerMessages"));
++    assert!(shim.contains("var outboundQueue = []"));
++    assert!(shim.contains("outboundQueue.push(envelope)"));
++    assert!(shim.contains("getSentryInitOptions: function () { return null; }"));
++    assert!(shim.contains("sessionStorage.setItem(SESSION_TOKEN_KEY, fragmentToken)"));
++    assert!(shim.contains("sessionStorage.getItem(SESSION_TOKEN_KEY)"));
++    assert!(shim.contains("message.type === \"authenticated\""));
++    assert!(shim.contains("message.type === \"codex-plus-injection\""));
++    assert!(shim.contains("(0, eval)(message.script);"));
++    assert!(shim.contains("scheduleReconnect();"));
++    assert!(shim.contains("socket.readyState !== WebSocket.OPEN || !socketAuthenticated"));
++    let restore_token = shim
++        .find("sessionStorage.getItem(SESSION_TOKEN_KEY)")
++        .unwrap();
++    let connect = shim.find("new WebSocket(endpoint()").unwrap();
++    assert!(restore_token < connect);
++    let authenticate = shim
++        .find("currentSocket.send(JSON.stringify({ type: \"authenticate\"")
++        .unwrap();
++    let flush = shim.find("flushOutboundQueue();").unwrap();
++    assert!(authenticate < flush);
++    assert!(shim.contains("outboundQueue.length = 0"));
++    gateway.shutdown().await;
++}
++
++#[tokio::test]
++async fn gateway_acknowledges_an_authenticated_browser_controller() {
++    let temp = tempfile::tempdir().unwrap();
++    std::fs::write(temp.path().join("index.html"), "<html><head></head></html>").unwrap();
++    let browser_token = BrowserSessionToken::generate();
++    let browser_secret = browser_token.expose_for_launch().to_string();
++    let gateway = BrowserGateway::start(
++        reserve_browser_gateway_port(None).unwrap(),
++        BrowserGatewayConfig {
++            webview_root: temp.path().to_path_buf(),
++            browser_token,
++            relay_token: BrowserSessionToken::generate(),
++            browser_injection_script: "window.__CODEX_PLUS_VERSION__ = '1.2.41';".to_string(),
++            browser_helper_origin: String::new(),
++        },
++    )
++    .await
++    .unwrap();
++
++    let mut browser =
++        connect_gateway_result(gateway.port(), GatewayPeerRole::Browser, &browser_secret)
++            .await
++            .unwrap();
++    let acknowledgement = tokio::time::timeout(Duration::from_secs(1), browser.next())
++        .await
++        .expect("gateway did not acknowledge browser authentication")
++        .unwrap()
++        .unwrap()
++        .into_text()
++        .unwrap();
++
++    assert_eq!(
++        acknowledgement,
++        json!({ "type": "authenticated", "role": "browser" }).to_string()
++    );
++    let injection = tokio::time::timeout(Duration::from_secs(1), browser.next())
++        .await
++        .expect("gateway did not send the Codex++ browser injection")
++        .unwrap()
++        .unwrap()
++        .into_text()
++        .unwrap();
++    assert_eq!(
++        serde_json::from_str::<serde_json::Value>(&injection).unwrap(),
++        json!({
++            "type": "codex-plus-injection",
++            "script": "window.__CODEX_PLUS_VERSION__ = '1.2.41';",
++        })
++    );
++    gateway.shutdown().await;
++}
++
++#[tokio::test]
++async fn gateway_forwards_apphost_frames_without_mutating_them() {
++    let temp = tempfile::tempdir().unwrap();
++    std::fs::write(temp.path().join("index.html"), "<html><head></head></html>").unwrap();
++    let browser_token = BrowserSessionToken::generate();
++    let browser_secret = browser_token.expose_for_launch().to_string();
++    let relay_token = BrowserSessionToken::generate();
++    let relay_secret = relay_token.expose_for_launch().to_string();
++    let gateway = BrowserGateway::start(
++        reserve_browser_gateway_port(None).unwrap(),
++        BrowserGatewayConfig {
++            webview_root: temp.path().to_path_buf(),
++            browser_token,
++            relay_token,
++            browser_injection_script: String::new(),
++            browser_helper_origin: String::new(),
++        },
++    )
++    .await
++    .unwrap();
++
++    let mut relay = connect_gateway(gateway.port(), GatewayPeerRole::Relay, &relay_secret).await;
++    let mut browser =
++        connect_gateway(gateway.port(), GatewayPeerRole::Browser, &browser_secret).await;
++    assert_eq!(
++        relay.next().await.unwrap().unwrap().into_text().unwrap(),
++        json!({ "type": "gateway-browser-session-started" }).to_string()
++    );
++    let frame = json!({
++        "type": "apphost",
++        "payload": "{\"method\":\"thread/list\",\"id\":7}"
++    })
++    .to_string();
++
++    browser
++        .send(Message::Text(frame.clone().into()))
++        .await
++        .unwrap();
++
++    assert_eq!(
++        relay.next().await.unwrap().unwrap().into_text().unwrap(),
++        frame
++    );
++    gateway.shutdown().await;
++}
++
++#[tokio::test]
++async fn gateway_replaces_a_stale_browser_controller_with_a_new_authenticated_one() {
++    let temp = tempfile::tempdir().unwrap();
++    std::fs::write(temp.path().join("index.html"), "<html><head></head></html>").unwrap();
++    let browser_token = BrowserSessionToken::generate();
++    let browser_secret = browser_token.expose_for_launch().to_string();
++    let relay_token = BrowserSessionToken::generate();
++    let relay_secret = relay_token.expose_for_launch().to_string();
++    let gateway = BrowserGateway::start(
++        reserve_browser_gateway_port(None).unwrap(),
++        BrowserGatewayConfig {
++            webview_root: temp.path().to_path_buf(),
++            browser_token,
++            relay_token,
++            browser_injection_script: String::new(),
++            browser_helper_origin: String::new(),
++        },
++    )
++    .await
++    .unwrap();
++
++    let mut relay = connect_gateway(gateway.port(), GatewayPeerRole::Relay, &relay_secret).await;
++    let mut first =
++        connect_gateway(gateway.port(), GatewayPeerRole::Browser, &browser_secret).await;
++    assert_eq!(
++        relay.next().await.unwrap().unwrap().into_text().unwrap(),
++        json!({ "type": "gateway-browser-session-started" }).to_string()
++    );
++    let _replacement =
++        connect_gateway(gateway.port(), GatewayPeerRole::Browser, &browser_secret).await;
++
++    let first_closed = tokio::time::timeout(Duration::from_secs(1), first.next())
++        .await
++        .expect("stale browser controller was not closed after takeover");
++    assert!(
++        first_closed.is_none()
++            || first_closed.as_ref().is_some_and(|event| match event {
++                Err(_) => true,
++                Ok(message) => message.is_close(),
++            }),
++        "stale browser event after takeover: {first_closed:?}"
++    );
++    assert_eq!(
++        relay.next().await.unwrap().unwrap().into_text().unwrap(),
++        json!({ "type": "gateway-browser-session-started" }).to_string()
++    );
++    assert!(gateway.peer_connected(GatewayPeerRole::Browser));
++    gateway.shutdown().await;
++}
++
++#[tokio::test]
++async fn gateway_rejects_messages_larger_than_the_protocol_limit() {
++    let temp = tempfile::tempdir().unwrap();
++    std::fs::write(temp.path().join("index.html"), "<html><head></head></html>").unwrap();
++    let browser_token = BrowserSessionToken::generate();
++    let browser_secret = browser_token.expose_for_launch().to_string();
++    let gateway = BrowserGateway::start(
++        reserve_browser_gateway_port(None).unwrap(),
++        BrowserGatewayConfig {
++            webview_root: temp.path().to_path_buf(),
++            browser_token,
++            relay_token: BrowserSessionToken::generate(),
++            browser_injection_script: String::new(),
++            browser_helper_origin: String::new(),
++        },
++    )
++    .await
++    .unwrap();
++    let mut browser =
++        connect_gateway(gateway.port(), GatewayPeerRole::Browser, &browser_secret).await;
++
++    let oversized = "x".repeat(MAX_GATEWAY_MESSAGE_BYTES + 1);
++    browser.send(Message::Text(oversized.into())).await.unwrap();
++    let response = browser.next().await.unwrap().unwrap().into_text().unwrap();
++
++    assert!(response.contains("message-too-large"));
++    gateway.shutdown().await;
++}
++
++#[tokio::test]
++async fn gateway_rebind_rotates_browser_token_and_preserves_the_relay() {
++    let temp = tempfile::tempdir().unwrap();
++    std::fs::write(temp.path().join("index.html"), "<html><head></head></html>").unwrap();
++    let browser_token = BrowserSessionToken::generate();
++    let browser_secret = browser_token.expose_for_launch().to_string();
++    let relay_token = BrowserSessionToken::generate();
++    let relay_secret = relay_token.expose_for_launch().to_string();
++    let gateway = BrowserGateway::start(
++        reserve_browser_gateway_port(None).unwrap(),
++        BrowserGatewayConfig {
++            webview_root: temp.path().to_path_buf(),
++            browser_token,
++            relay_token,
++            browser_injection_script: String::new(),
++            browser_helper_origin: String::new(),
++        },
++    )
++    .await
++    .unwrap();
++    let old_port = gateway.port();
++    let mut relay = connect_gateway(old_port, GatewayPeerRole::Relay, &relay_secret).await;
++    let mut old_browser =
++        connect_gateway(old_port, GatewayPeerRole::Browser, &browser_secret).await;
++    assert_eq!(
++        relay.next().await.unwrap().unwrap().into_text().unwrap(),
++        json!({ "type": "gateway-browser-session-started" }).to_string()
++    );
++    tokio::time::sleep(Duration::from_millis(20)).await;
++    let preflight = json!({ "type": "apphost", "payload": "preflight" }).to_string();
++    old_browser
++        .send(Message::Text(preflight.clone().into()))
++        .await
++        .unwrap();
++    assert_eq!(
++        relay.next().await.unwrap().unwrap().into_text().unwrap(),
++        preflight
++    );
++
++    let replacement_token = BrowserSessionToken::generate();
++    let replacement_secret = replacement_token.expose_for_launch().to_string();
++    let replacement = reserve_browser_gateway_port(None).unwrap();
++    let replacement_port = replacement.port();
++    gateway
++        .rebind(replacement, replacement_token)
++        .await
++        .unwrap();
++
++    assert_eq!(gateway.port(), replacement_port);
++    let old_browser_closed = tokio::time::timeout(Duration::from_secs(1), old_browser.next())
++        .await
++        .expect("old browser controller was not closed after rebind");
++    assert!(
++        old_browser_closed.is_none()
++            || old_browser_closed
++                .as_ref()
++                .is_some_and(|event| match event {
++                    Err(_) => true,
++                    Ok(message) => message.is_close(),
++                }),
++        "old browser event after rebind: {old_browser_closed:?}"
++    );
++    assert!(
++        reqwest::get(format!("http://127.0.0.1:{old_port}/__codexpp/health"))
++            .await
++            .is_err()
++    );
++
++    let mut stale =
++        connect_gateway_result(replacement_port, GatewayPeerRole::Browser, &browser_secret)
++            .await
++            .unwrap();
++    let stale_response = stale.next().await.unwrap().unwrap().into_text().unwrap();
++    assert!(stale_response.contains("unauthorized"));
++
++    let mut browser = connect_gateway(
++        replacement_port,
++        GatewayPeerRole::Browser,
++        &replacement_secret,
++    )
++    .await;
++    assert_eq!(
++        relay.next().await.unwrap().unwrap().into_text().unwrap(),
++        json!({ "type": "gateway-browser-session-started" }).to_string()
++    );
++    let frame = json!({
++        "type": "apphost",
++        "payload": "{\"method\":\"thread/read\",\"id\":8}"
++    })
++    .to_string();
++    browser
++        .send(Message::Text(frame.clone().into()))
++        .await
++        .unwrap();
++
++    assert_eq!(
++        relay.next().await.unwrap().unwrap().into_text().unwrap(),
++        frame
++    );
++    gateway.shutdown().await;
++}
++
++#[tokio::test]
++async fn gateway_readiness_waits_for_the_hidden_relay_peer() {
++    let temp = tempfile::tempdir().unwrap();
++    std::fs::write(temp.path().join("index.html"), "<html><head></head></html>").unwrap();
++    let relay_token = BrowserSessionToken::generate();
++    let relay_secret = relay_token.expose_for_launch().to_string();
++    let gateway = BrowserGateway::start(
++        reserve_browser_gateway_port(None).unwrap(),
++        BrowserGatewayConfig {
++            webview_root: temp.path().to_path_buf(),
++            browser_token: BrowserSessionToken::generate(),
++            relay_token,
++            browser_injection_script: String::new(),
++            browser_helper_origin: String::new(),
++        },
++    )
++    .await
++    .unwrap();
++
++    assert!(
++        !gateway
++            .wait_for_peer(GatewayPeerRole::Relay, Duration::from_millis(20))
++            .await
++    );
++    let _relay = connect_gateway(gateway.port(), GatewayPeerRole::Relay, &relay_secret).await;
++    assert!(
++        gateway
++            .wait_for_peer(GatewayPeerRole::Relay, Duration::from_secs(1))
++            .await
++    );
++    assert!(gateway.peer_connected(GatewayPeerRole::Relay));
++    gateway.shutdown().await;
++}
++
++#[tokio::test]
++async fn gateway_file_origin_is_restricted_to_the_hidden_relay() {
++    let temp = tempfile::tempdir().unwrap();
++    std::fs::write(temp.path().join("index.html"), "<html><head></head></html>").unwrap();
++    let browser_token = BrowserSessionToken::generate();
++    let browser_secret = browser_token.expose_for_launch().to_string();
++    let relay_token = BrowserSessionToken::generate();
++    let relay_secret = relay_token.expose_for_launch().to_string();
++    let gateway = BrowserGateway::start(
++        reserve_browser_gateway_port(None).unwrap(),
++        BrowserGatewayConfig {
++            webview_root: temp.path().to_path_buf(),
++            browser_token,
++            relay_token,
++            browser_injection_script: String::new(),
++            browser_helper_origin: String::new(),
++        },
++    )
++    .await
++    .unwrap();
++
++    let _relay = connect_gateway_result_with_origin(
++        gateway.port(),
++        GatewayPeerRole::Relay,
++        &relay_secret,
++        "file://",
++    )
++    .await
++    .unwrap();
++    assert!(
++        gateway
++            .wait_for_peer(GatewayPeerRole::Relay, Duration::from_secs(1))
++            .await
++    );
++
++    let mut browser = connect_gateway_result_with_origin(
++        gateway.port(),
++        GatewayPeerRole::Browser,
++        &browser_secret,
++        "file://",
++    )
++    .await
++    .unwrap();
++    let unauthorized = browser.next().await.unwrap().unwrap().into_text().unwrap();
++    assert_eq!(
++        serde_json::from_str::<serde_json::Value>(&unauthorized).unwrap(),
++        json!({ "type": "error", "code": "unauthorized" })
++    );
++    assert!(!gateway.peer_connected(GatewayPeerRole::Browser));
++    gateway.shutdown().await;
++}
++
++async fn connect_gateway(
++    port: u16,
++    role: GatewayPeerRole,
++    token: &str,
++) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
++    let mut socket = connect_gateway_result(port, role, token).await.unwrap();
++    if role == GatewayPeerRole::Browser {
++        let acknowledgement = tokio::time::timeout(Duration::from_secs(1), socket.next())
++            .await
++            .expect("gateway did not acknowledge browser authentication")
++            .unwrap()
++            .unwrap()
++            .into_text()
++            .unwrap();
++        assert_eq!(
++            acknowledgement,
++            json!({ "type": "authenticated", "role": "browser" }).to_string()
++        );
++    }
++    socket
++}
++
++async fn connect_gateway_result(
++    port: u16,
++    role: GatewayPeerRole,
++    token: &str,
++) -> Result<
++    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
++    tokio_tungstenite::tungstenite::Error,
++> {
++    connect_gateway_result_with_origin(port, role, token, &format!("http://127.0.0.1:{port}")).await
++}
++
++async fn connect_gateway_result_with_origin(
++    port: u16,
++    role: GatewayPeerRole,
++    token: &str,
++    origin: &str,
++) -> Result<
++    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
++    tokio_tungstenite::tungstenite::Error,
++> {
++    let request = tokio_tungstenite::tungstenite::http::Request::builder()
++        .uri(format!("ws://127.0.0.1:{port}/__codexpp/ws"))
++        .header("Host", format!("127.0.0.1:{port}"))
++        .header("Origin", origin)
++        .header("Upgrade", "websocket")
++        .header("Connection", "Upgrade")
++        .header("Sec-WebSocket-Version", "13")
++        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
++        .header("Sec-WebSocket-Protocol", "codexpp-browser-v1")
++        .body(())
++        .unwrap();
++    let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
++    socket
++        .send(Message::Text(
++            json!({
++                "type": "authenticate",
++                "role": role,
++                "token": token
++            })
++            .to_string()
++            .into(),
++        ))
++        .await?;
++    Ok(socket)
++}
+diff --git a/crates/codex-plus-core/tests/launcher.rs b/crates/codex-plus-core/tests/launcher.rs
+index 511ad6f..27e28e0 100644
+--- a/crates/codex-plus-core/tests/launcher.rs
++++ b/crates/codex-plus-core/tests/launcher.rs
+@@ -949,6 +949,19 @@ fn ports_non_windows_keeps_requested_even_when_busy() {
+     assert_eq!(selected, 9229);
+ }
+ 
++#[test]
++fn default_helper_selects_an_available_port_when_the_request_is_busy() {
++    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
++    let requested = listener.local_addr().unwrap().port();
++    let hooks = DefaultLaunchHooks::default();
++
++    let selected = hooks.select_helper_port(requested);
++
++    assert_ne!(selected, requested);
++    assert_ne!(selected, 0);
++    assert!(codex_plus_core::ports::can_bind_loopback_port(selected));
++}
++
+ #[tokio::test]
+ async fn default_helper_serves_backend_status_over_http() {
+     let hooks = DefaultLaunchHooks::default();

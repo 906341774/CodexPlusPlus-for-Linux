@@ -59,7 +59,7 @@ $ErrorActionPreference = "Stop"
 [string]$CodexPlusPlusGitHubRepo = 'https://github.com/BigPizzaV3/CodexPlusPlus'
 # Upstream version pinned by this adapter release.
 # 当前适配项目固定对应的上游 Codex++ 版本。
-[string]$CodexPlusPlusUpstreamVersion = '1.2.34'
+[string]$CodexPlusPlusUpstreamVersion = '1.2.41'
 [string]$CodexPlusPlusReleaseTag = "v$CodexPlusPlusUpstreamVersion"
 [string]$CodexPlusPlusVersionZipUrl = "https://github.com/BigPizzaV3/CodexPlusPlus/archive/refs/tags/$CodexPlusPlusReleaseTag.zip"
 [string]$CodexPlusPlusMainZipUrl = 'https://github.com/BigPizzaV3/CodexPlusPlus/archive/refs/heads/main.zip'

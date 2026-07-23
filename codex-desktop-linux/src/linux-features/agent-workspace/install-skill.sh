@@ -5,18 +5,6 @@ warn() {
     echo "WARN: $*" >&2
 }
 
-files_match() {
-    local left="$1"
-    local right="$2"
-
-    if command -v cmp >/dev/null 2>&1; then
-        cmp -s "$left" "$right"
-        return
-    fi
-    command -v cksum >/dev/null 2>&1 || return 1
-    [ "$(cksum <"$left")" = "$(cksum <"$right")" ]
-}
-
 if [ -z "${CODEX_LINUX_FEATURES_DIR:-}" ]; then
     warn "CODEX_LINUX_FEATURES_DIR is not set; skipping Agent Workspaces skill install"
     exit 0
@@ -45,7 +33,7 @@ if ! mkdir -p "$target_dir"; then
     exit 0
 fi
 
-if [ -f "$target_skill" ] && files_match "$skill_source" "$target_skill"; then
+if [ -f "$target_skill" ] && cmp -s "$skill_source" "$target_skill"; then
     echo "Agent Workspaces skill already current at $target_skill" >&2
     exit 0
 fi

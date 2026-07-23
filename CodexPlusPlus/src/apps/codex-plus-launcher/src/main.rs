@@ -1,6 +1,10 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 use anyhow::{Context, Result};
+use codex_plus_core::headless_browser::{
+    BrowserAuthMode, BrowserGateway, BrowserGatewayConfig, BrowserInstanceState,
+    BrowserInstanceStatus, BrowserSessionToken, BrowserStateStore, reserve_browser_gateway_port,
+};
 use codex_plus_core::launcher::{
     DefaultLaunchHooks, LaunchHooks, LaunchOptions, launch_and_inject_with_hooks,
 };
@@ -8,8 +12,6 @@ use codex_plus_core::models::{DeleteResult, ExportResult, SessionRef};
 use codex_plus_core::routes::{BridgeContext, BridgeDataService, BridgeRuntimeService};
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -47,6 +49,9 @@ async fn main() -> Result<()> {
         hooks.shutdown_helper(options.helper_port).await;
         return Ok(());
     }
+    if let Some(headless) = parse_headless_browser_options(&args)? {
+        return run_headless_browser(options, headless).await;
+    }
     let Some(_guard) = acquire_single_instance_guard(options.debug_port)? else {
         activate_existing_codex_app(&options).await?;
         return Ok(());
@@ -60,6 +65,481 @@ async fn main() -> Result<()> {
     let handle = launch_and_inject_with_hooks(options, &hooks).await?;
     handle.wait_for_codex_exit().await?;
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeadlessBrowserOptions {
+    requested_port: Option<u16>,
+}
+
+fn parse_headless_browser_options<I, S>(args: I) -> anyhow::Result<Option<HeadlessBrowserOptions>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let args = args
+        .into_iter()
+        .map(|arg| arg.as_ref().to_string())
+        .collect::<Vec<_>>();
+    if !args.iter().any(|arg| arg == "--headless-browser") {
+        return Ok(None);
+    }
+    let mut requested_port = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg != "--browser-port" {
+            continue;
+        }
+        let value = iter
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("--browser-port requires a value"))?;
+        let port = value
+            .parse::<u16>()
+            .map_err(|_| anyhow::anyhow!("--browser-port must be a numeric port"))?;
+        if !(49_152..=65_535).contains(&port) {
+            anyhow::bail!("--browser-port must be between 49152 and 65535");
+        }
+        requested_port = Some(port);
+    }
+    Ok(Some(HeadlessBrowserOptions { requested_port }))
+}
+
+async fn run_headless_browser(
+    mut options: LaunchOptions,
+    headless: HeadlessBrowserOptions,
+) -> anyhow::Result<()> {
+    let hooks = LauncherHooks::default();
+    let settings = hooks.load_settings().await?;
+    let helper_port = select_headless_helper_port(&hooks, options.helper_port, &settings);
+    options.helper_port = helper_port;
+    let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
+    let browser_token = required_browser_token("CODEX_LINUX_BROWSER_SESSION_TOKEN")?;
+    let relay_token_text = browser_secret("CODEX_LINUX_BROWSER_RELAY_TOKEN")?;
+    let relay_token = BrowserSessionToken::from_exposed(&relay_token_text).ok_or_else(|| {
+        anyhow::anyhow!("CODEX_LINUX_BROWSER_RELAY_TOKEN is not a valid browser session token")
+    })?;
+    let reservation = reserve_browser_gateway_port(headless.requested_port)
+        .context("failed to reserve the browser gateway port")?;
+    let port = reservation.port();
+    let webview_root = app_dir.join("content").join("webview");
+    let gateway = BrowserGateway::start(
+        reservation,
+        BrowserGatewayConfig {
+            webview_root,
+            browser_token: browser_token.clone(),
+            relay_token,
+            browser_injection_script: codex_plus_core::assets::injection_script_with_settings(
+                helper_port,
+                &settings,
+            ),
+            browser_helper_origin: format!("http://127.0.0.1:{}", helper_port),
+        },
+    )
+    .await?;
+    let gateway_url = format!("http://127.0.0.1:{port}");
+    unsafe {
+        std::env::set_var("CODEX_LINUX_BROWSER_GATEWAY_URL", &gateway_url);
+        std::env::set_var("CODEX_LINUX_BROWSER_RELAY_TOKEN", &relay_token_text);
+    }
+    write_browser_access_file(&gateway_url, browser_token.expose_for_launch())?;
+
+    let state_store = browser_state_store();
+    let instance_id = std::env::var("CODEX_LINUX_BROWSER_INSTANCE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("browser-{}-{}", std::process::id(), current_time_ms()));
+    let tmux_session = std::env::var("CODEX_LINUX_BROWSER_TMUX_SESSION").unwrap_or_default();
+    let started_at_ms = current_time_ms();
+    save_browser_state(
+        &state_store,
+        &instance_id,
+        BrowserInstanceStatus::Starting,
+        "starting Codex Desktop and browser relay",
+        started_at_ms,
+        tmux_session.as_str(),
+        Some(port),
+        &app_dir,
+    );
+
+    let handle = match launch_and_inject_with_hooks(options, &hooks).await {
+        Ok(handle) => handle,
+        Err(error) => {
+            save_browser_state(
+                &state_store,
+                &instance_id,
+                BrowserInstanceStatus::Failed,
+                &error.to_string(),
+                started_at_ms,
+                tmux_session.as_str(),
+                Some(port),
+                &app_dir,
+            );
+            gateway.shutdown().await;
+            return Err(error);
+        }
+    };
+    save_browser_state(
+        &state_store,
+        &instance_id,
+        if gateway
+            .wait_for_peer(
+                codex_plus_core::headless_browser::GatewayPeerRole::Relay,
+                std::time::Duration::from_secs(30),
+            )
+            .await
+        {
+            BrowserInstanceStatus::Running
+        } else {
+            BrowserInstanceStatus::Degraded
+        },
+        if gateway.peer_connected(codex_plus_core::headless_browser::GatewayPeerRole::Relay) {
+            "browser gateway, relay, and Codex Desktop are running"
+        } else {
+            "Codex Desktop started, but the browser relay is not connected"
+        },
+        started_at_ms,
+        tmux_session.as_str(),
+        Some(port),
+        &app_dir,
+    );
+    let result = wait_for_headless_browser_exit(
+        &handle,
+        &gateway,
+        &state_store,
+        &instance_id,
+        started_at_ms,
+        tmux_session.as_str(),
+        &app_dir,
+    )
+    .await;
+    save_browser_state(
+        &state_store,
+        &instance_id,
+        if result.is_ok() {
+            BrowserInstanceStatus::Stopped
+        } else {
+            BrowserInstanceStatus::Failed
+        },
+        result
+            .as_ref()
+            .map(|_| "Codex Desktop exited".to_string())
+            .unwrap_or_else(|error| error.to_string()),
+        started_at_ms,
+        tmux_session.as_str(),
+        Some(gateway.port()),
+        &app_dir,
+    );
+    gateway.shutdown().await;
+    result
+}
+
+fn select_headless_helper_port(
+    hooks: &LauncherHooks,
+    requested: u16,
+    settings: &codex_plus_core::settings::BackendSettings,
+) -> u16 {
+    if settings.active_relay_uses_protocol_proxy() {
+        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT
+    } else {
+        hooks.select_helper_port(requested)
+    }
+}
+
+#[derive(Debug)]
+struct BrowserControlRequest {
+    browser_port: u16,
+}
+
+fn parse_browser_control_request(body: &str) -> anyhow::Result<BrowserControlRequest> {
+    let request: Value =
+        serde_json::from_str(body).context("browser control request is not valid JSON")?;
+    if request.get("type").and_then(Value::as_str) != Some("rebind") {
+        anyhow::bail!("browser control request type is not supported");
+    }
+    let browser_port = request
+        .get("browserPort")
+        .and_then(Value::as_u64)
+        .and_then(|port| u16::try_from(port).ok())
+        .context("browser control request is missing a numeric browserPort")?;
+    if !(49_152..=65_535).contains(&browser_port) {
+        anyhow::bail!("browser control port must be between 49152 and 65535");
+    }
+    Ok(BrowserControlRequest { browser_port })
+}
+
+async fn wait_for_headless_browser_exit(
+    handle: &codex_plus_core::launcher::LaunchHandle,
+    gateway: &BrowserGateway,
+    state_store: &BrowserStateStore,
+    instance_id: &str,
+    started_at_ms: u64,
+    tmux_session: &str,
+    app_dir: &Path,
+) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        if let Some(control_path) = std::env::var_os("CODEX_LINUX_BROWSER_CONTROL_SOCKET") {
+            let control_path = PathBuf::from(control_path);
+            let listener = bind_browser_control_socket(&control_path)?;
+            let result = tokio::select! {
+                result = handle.wait_for_codex_exit() => result,
+                control_result = browser_control_loop(
+                    listener,
+                    gateway,
+                    state_store,
+                    instance_id,
+                    started_at_ms,
+                    tmux_session,
+                    app_dir,
+                ) => {
+                    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                        "headless_browser.control_socket_stopped",
+                        json!({ "message": control_result.as_ref().err().map(|error| error.to_string()) }),
+                    );
+                    handle.wait_for_codex_exit().await
+                }
+            };
+            let _ = std::fs::remove_file(control_path);
+            return result;
+        }
+    }
+
+    handle.wait_for_codex_exit().await
+}
+
+#[cfg(unix)]
+fn bind_browser_control_socket(path: &Path) -> anyhow::Result<tokio::net::UnixListener> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let _ = std::fs::remove_file(path);
+    let listener = tokio::net::UnixListener::bind(path)
+        .with_context(|| format!("failed to bind browser control socket {}", path.display()))?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
+#[cfg(unix)]
+async fn browser_control_loop(
+    listener: tokio::net::UnixListener,
+    gateway: &BrowserGateway,
+    state_store: &BrowserStateStore,
+    instance_id: &str,
+    started_at_ms: u64,
+    tmux_session: &str,
+    app_dir: &Path,
+) -> anyhow::Result<()> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).await?;
+        let response = match parse_browser_control_request(&line) {
+            Ok(request) => {
+                rebind_browser_gateway(
+                    request.browser_port,
+                    gateway,
+                    state_store,
+                    instance_id,
+                    started_at_ms,
+                    tmux_session,
+                    app_dir,
+                )
+                .await
+            }
+            Err(error) => json!({ "status": "failed", "message": error.to_string() }),
+        };
+        let mut encoded = serde_json::to_vec(&response)?;
+        encoded.push(b'\n');
+        reader.get_mut().write_all(&encoded).await?;
+    }
+}
+
+#[cfg(unix)]
+async fn rebind_browser_gateway(
+    port: u16,
+    gateway: &BrowserGateway,
+    state_store: &BrowserStateStore,
+    instance_id: &str,
+    started_at_ms: u64,
+    tmux_session: &str,
+    app_dir: &Path,
+) -> Value {
+    let reservation = match reserve_browser_gateway_port(Some(port)) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            return json!({
+                "status": "failed",
+                "message": format!("browser gateway port is unavailable: {error}"),
+            });
+        }
+    };
+    let token = BrowserSessionToken::generate();
+    save_browser_state(
+        state_store,
+        instance_id,
+        BrowserInstanceStatus::Reconfiguring,
+        "replacing the browser gateway listener",
+        started_at_ms,
+        tmux_session,
+        Some(port),
+        app_dir,
+    );
+    if let Err(error) = gateway.rebind(reservation, token.clone()).await {
+        save_browser_state(
+            state_store,
+            instance_id,
+            BrowserInstanceStatus::Degraded,
+            format!("browser gateway rebind failed: {error}"),
+            started_at_ms,
+            tmux_session,
+            Some(gateway.port()),
+            app_dir,
+        );
+        return json!({ "status": "failed", "message": error.to_string() });
+    }
+    let gateway_url = format!("http://127.0.0.1:{port}");
+    if let Err(error) = write_browser_access_file(&gateway_url, token.expose_for_launch()) {
+        save_browser_state(
+            state_store,
+            instance_id,
+            BrowserInstanceStatus::Degraded,
+            format!("browser access file update failed: {error}"),
+            started_at_ms,
+            tmux_session,
+            Some(port),
+            app_dir,
+        );
+        return json!({ "status": "failed", "message": error.to_string() });
+    }
+    save_browser_state(
+        state_store,
+        instance_id,
+        if gateway.peer_connected(codex_plus_core::headless_browser::GatewayPeerRole::Relay) {
+            BrowserInstanceStatus::Running
+        } else {
+            BrowserInstanceStatus::Degraded
+        },
+        if gateway.peer_connected(codex_plus_core::headless_browser::GatewayPeerRole::Relay) {
+            "browser gateway port changed without restarting Codex Desktop"
+        } else {
+            "browser gateway port changed, but the browser relay is not connected"
+        },
+        started_at_ms,
+        tmux_session,
+        Some(port),
+        app_dir,
+    );
+    json!({
+        "status": "ok",
+        "message": "browser gateway port changed",
+        "browserPort": port,
+    })
+}
+
+fn required_browser_token(name: &str) -> anyhow::Result<BrowserSessionToken> {
+    let value = browser_secret(name)?;
+    BrowserSessionToken::from_exposed(value.trim())
+        .ok_or_else(|| anyhow::anyhow!("{name} is not a valid browser session token"))
+}
+
+fn browser_secret(name: &str) -> anyhow::Result<String> {
+    if let Ok(value) = std::env::var(name) {
+        if !value.trim().is_empty() {
+            return Ok(value);
+        }
+    }
+    let file_name = format!("{name}_FILE");
+    let path = std::env::var(&file_name)
+        .with_context(|| format!("{name} or {file_name} is required for headless browser mode"))?;
+    let value = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read headless browser secret file {path}"))?;
+    if value.trim().is_empty() {
+        anyhow::bail!("headless browser secret file {path} is empty");
+    }
+    Ok(value.trim().to_string())
+}
+
+fn browser_state_store() -> BrowserStateStore {
+    let path = std::env::var("CODEX_LINUX_BROWSER_STATE_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            codex_plus_core::paths::default_app_state_dir().join("browser-instance.json")
+        });
+    BrowserStateStore::new(path)
+}
+
+fn write_browser_access_file(gateway_url: &str, token: &str) -> anyhow::Result<()> {
+    let Ok(path) = std::env::var("CODEX_LINUX_BROWSER_ACCESS_FILE") else {
+        return Ok(());
+    };
+    let path = PathBuf::from(path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let contents = format!("{gateway_url}/#codexpp_session={token}\n");
+    codex_plus_core::settings::atomic_write(&path, contents.as_bytes())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+fn current_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn save_browser_state(
+    store: &BrowserStateStore,
+    instance_id: &str,
+    status: BrowserInstanceStatus,
+    message: impl Into<String>,
+    started_at_ms: u64,
+    tmux_session: &str,
+    access_port: Option<u16>,
+    app_dir: &Path,
+) {
+    let codex_pids = codex_plus_core::watcher::find_codex_processes();
+    let state = BrowserInstanceState {
+        instance_id: instance_id.to_string(),
+        status,
+        message: message.into(),
+        started_at_ms,
+        tmux_session: tmux_session.to_string(),
+        access_port,
+        auth_mode: browser_auth_mode(),
+        gateway_pid: Some(std::process::id()),
+        relay_pid: None,
+        electron_pid: codex_pids.first().copied(),
+        owned_pids: std::iter::once(std::process::id())
+            .chain(codex_pids)
+            .collect(),
+        failure_code: None,
+    };
+    if let Err(error) = store.save(&state) {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "headless_browser.state_save_failed",
+            serde_json::json!({ "app_dir": app_dir, "message": error.to_string() }),
+        );
+    }
+}
+
+fn browser_auth_mode() -> BrowserAuthMode {
+    let status = codex_plus_core::relay_config::default_relay_status();
+    match (status.configured, status.authenticated) {
+        (true, false) => BrowserAuthMode::PureApi,
+        (false, true) => BrowserAuthMode::ChatgptOauth,
+        (true, true) => BrowserAuthMode::MixedApi,
+        (false, false) => BrowserAuthMode::NotAuthenticated,
+    }
 }
 
 fn acquire_single_instance_guard(
@@ -216,17 +696,12 @@ fn update_prompt_disabled_by_environment(value: Option<&str>) -> bool {
 }
 
 fn open_manager_with_update_prompt() -> anyhow::Result<()> {
-    let manager_path = manager_exe_path();
-    let mut command = std::process::Command::new(&manager_path);
-    command.arg("--show-update");
-    #[cfg(windows)]
-    {
-        command.creation_flags(codex_plus_core::windows_create_no_window());
-    }
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
+    codex_plus_core::install::spawn_companion(
+        codex_plus_core::install::MANAGER_BINARY,
+        ["--show-update"],
+    )
+    .map(|_| ())
+    .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
 }
 
 fn parse_launch_options<I, S>(args: I) -> LaunchOptions
@@ -373,6 +848,12 @@ impl LaunchHooks for LauncherHooks {
 
     async fn inject(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         self.core.inject(debug_port, helper_port).await
+    }
+
+    async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+        self.core
+            .start_bridge_watchdog(debug_port, helper_port)
+            .await
     }
 
     async fn start_computer_use_guard_watchdog(
@@ -583,23 +1064,14 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     }
 
     async fn open_manager(&self) -> anyhow::Result<Value> {
-        let manager_path = manager_exe_path();
-        #[cfg(windows)]
-        {
-            std::process::Command::new(&manager_path)
-                .creation_flags(codex_plus_core::windows_create_no_window())
-                .spawn()
-                .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
-        }
-        #[cfg(not(windows))]
-        {
-            std::process::Command::new(&manager_path)
-                .spawn()
-                .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
-        }
+        let target = codex_plus_core::install::spawn_companion(
+            codex_plus_core::install::MANAGER_BINARY,
+            std::iter::empty::<&str>(),
+        )
+        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
         Ok(json!({
             "status": "ok",
-            "path": manager_path.to_string_lossy()
+            "path": target
         }))
     }
 
@@ -771,9 +1243,7 @@ async fn try_inject_with_context(
                     }),
                 );
             }
-            Err(error) => {
-                last_error = Some(error);
-            }
+            Err(error) => last_error = Some(error),
         }
     }
     if main_injected {
@@ -819,10 +1289,6 @@ fn open_url(url: &str) -> anyhow::Result<()> {
         let _ = url;
         anyhow::bail!("opening DevTools URL is not supported on this platform")
     }
-}
-
-fn manager_exe_path() -> PathBuf {
-    codex_plus_core::install::companion_binary_path(codex_plus_core::install::MANAGER_BINARY)
 }
 
 fn default_user_script_manager() -> UserScriptManager {
@@ -876,6 +1342,64 @@ mod tests {
 
         assert_eq!(options.debug_port, LaunchOptions::default().debug_port);
         assert_eq!(options.helper_port, LaunchOptions::default().helper_port);
+    }
+
+    #[test]
+    fn parse_headless_browser_options_is_opt_in_and_accepts_a_high_port() {
+        assert_eq!(
+            parse_headless_browser_options(["--debug-port", "9333"]).unwrap(),
+            None
+        );
+
+        let options =
+            parse_headless_browser_options(["--headless-browser", "--browser-port", "58444"])
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(options.requested_port, Some(58444));
+    }
+
+    #[test]
+    fn parse_headless_browser_options_rejects_low_or_invalid_ports() {
+        assert!(
+            parse_headless_browser_options(["--headless-browser", "--browser-port", "1024"])
+                .is_err()
+        );
+        assert!(
+            parse_headless_browser_options(["--headless-browser", "--browser-port", "invalid"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn browser_control_request_accepts_only_high_port_rebinds() {
+        let request =
+            parse_browser_control_request(r#"{"type":"rebind","browserPort":58444}"#).unwrap();
+
+        assert_eq!(request.browser_port, 58444);
+        assert!(parse_browser_control_request(r#"{"type":"rebind","browserPort":9229}"#).is_err());
+        assert!(
+            parse_browser_control_request(r#"{"type":"shutdown","browserPort":58444}"#).is_err()
+        );
+    }
+
+    #[test]
+    fn headless_browser_classifies_configured_api_key_without_oauth_as_pure_api() {
+        let source = include_str!("main.rs");
+        let start = source.find("fn browser_auth_mode()").unwrap();
+        let body = &source[start..source[start..].find("\n}\n").unwrap() + start];
+
+        assert!(body.contains("(true, false) => BrowserAuthMode::PureApi"));
+    }
+
+    #[test]
+    fn launcher_headless_source_reads_tokens_from_environment_not_command_arguments() {
+        let source = include_str!("main.rs");
+
+        assert!(source.contains("CODEX_LINUX_BROWSER_SESSION_TOKEN"));
+        assert!(source.contains("CODEX_LINUX_BROWSER_RELAY_TOKEN"));
+        assert!(!source.contains("\"--browser-token\""));
+        assert!(!source.contains("\"--relay-token\""));
     }
 
     #[test]
@@ -939,30 +1463,6 @@ mod tests {
     }
 
     #[test]
-    fn launcher_hooks_forward_computer_use_guard_methods() {
-        let source = include_str!("main.rs");
-
-        assert!(source.contains("async fn ensure_computer_use_config"));
-        assert!(source.contains("self.core.ensure_computer_use_config(settings).await"));
-        assert!(source.contains("async fn ensure_plugin_marketplace_config"));
-        assert!(source.contains("self.core.ensure_plugin_marketplace_config(settings).await"));
-        assert!(source.contains("async fn start_computer_use_guard_watchdog"));
-        assert!(source.contains("self.core"));
-        assert!(source.contains(".start_computer_use_guard_watchdog(settings)"));
-    }
-
-    #[test]
-    fn manager_update_prompt_uses_sidecar_manager_binary_name() {
-        let path = manager_exe_path();
-
-        assert!(
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.contains(codex_plus_core::install::MANAGER_BINARY))
-        );
-    }
-
-    #[test]
     fn update_prompt_can_be_disabled_for_fixed_baseline_validation() {
         assert!(update_prompt_disabled_by_environment(Some("1")));
         assert!(update_prompt_disabled_by_environment(Some("true")));
@@ -971,6 +1471,39 @@ mod tests {
         assert!(!update_prompt_disabled_by_environment(None));
         assert!(!update_prompt_disabled_by_environment(Some("0")));
         assert!(!update_prompt_disabled_by_environment(Some("false")));
+    }
+
+    #[test]
+    fn headless_browser_gateway_uses_the_preselected_helper_port() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("async fn run_headless_browser")
+            .expect("headless browser runner should exist");
+        let end = source[start..]
+            .find("struct BrowserControlRequest")
+            .map(|offset| start + offset)
+            .expect("headless browser runner should end before control requests");
+        let body = &source[start..end];
+
+        assert!(body.contains("select_headless_helper_port"));
+        assert!(body.contains("options.helper_port = helper_port;"));
+        assert!(body.contains("injection_script_with_settings(\n                helper_port,"));
+        assert!(body.contains("format!(\"http://127.0.0.1:{}\", helper_port)"));
+    }
+
+    #[test]
+    fn launcher_hooks_forward_runtime_watchdogs_and_computer_use_guard_methods() {
+        let source = include_str!("main.rs");
+
+        assert!(source.contains("async fn start_bridge_watchdog"));
+        assert!(source.contains(".start_bridge_watchdog(debug_port, helper_port)"));
+        assert!(source.contains("async fn ensure_computer_use_config"));
+        assert!(source.contains("self.core.ensure_computer_use_config(settings).await"));
+        assert!(source.contains("async fn ensure_plugin_marketplace_config"));
+        assert!(source.contains("self.core.ensure_plugin_marketplace_config(settings).await"));
+        assert!(source.contains("async fn start_computer_use_guard_watchdog"));
+        assert!(source.contains("self.core"));
+        assert!(source.contains(".start_computer_use_guard_watchdog(settings)"));
     }
 }
 

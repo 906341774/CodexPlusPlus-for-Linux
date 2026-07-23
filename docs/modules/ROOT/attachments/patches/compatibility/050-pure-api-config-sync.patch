@@ -1,8 +1,8 @@
 diff --git a/apps/codex-plus-manager/src/App.tsx b/apps/codex-plus-manager/src/App.tsx
-index e9f83d1..a2dd7d2 100644
+index 9eb21a9..850e588 100644
 --- a/apps/codex-plus-manager/src/App.tsx
 +++ b/apps/codex-plus-manager/src/App.tsx
-@@ -6244,7 +6244,7 @@ function buildRelayConfigToml(
+@@ -7889,7 +7889,7 @@ function buildRelayConfigToml(
    profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol">,
    options: { includeBearerToken: boolean },
  ): string {
@@ -11,7 +11,7 @@ index e9f83d1..a2dd7d2 100644
    const apiKey = profile.apiKey.trim();
    const rootLines = [
      profile.model.trim() ? `model = "${tomlString(profile.model.trim())}"` : null,
-@@ -6256,13 +6256,32 @@ function buildRelayConfigToml(
+@@ -7901,13 +7901,32 @@ function buildRelayConfigToml(
      "[model_providers.custom]",
      'name = "custom"',
      'wire_api = "responses"',
@@ -22,7 +22,7 @@ index e9f83d1..a2dd7d2 100644
      "",
    ].filter((line): line is string => line !== null).join("\n");
  }
-
+ 
 +function effectiveCodexBaseUrl(raw: string): string {
 +  const trimmed = raw.trim();
 +  try {
@@ -45,7 +45,7 @@ index e9f83d1..a2dd7d2 100644
  function buildRelayAuthJson(profile: Pick<RelayProfile, "apiKey">): string {
    return `${JSON.stringify({ OPENAI_API_KEY: profile.apiKey.trim() }, null, 2)}\n`;
  }
-@@ -6347,8 +6366,8 @@ function applyRelayProfilePatchToFiles(
+@@ -7992,8 +8011,8 @@ function applyRelayProfilePatchToFiles(
      next.baseUrl = patch.upstreamBaseUrl || "";
    }
    if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch) {
@@ -56,10 +56,10 @@ index e9f83d1..a2dd7d2 100644
      next.configContents = removeRootTomlKey(next.configContents, CHAT_UPSTREAM_BASE_URL_KEY);
    }
    if ("contextWindow" in patch) {
-@@ -6508,13 +6527,13 @@ function setRootTomlLine(contents: string, key: string, lineText: string): strin
+@@ -8153,13 +8172,13 @@ function setRootTomlLine(contents: string, key: string, lineText: string): strin
    return ensureTrailingNewline(lines.join("\n").trimEnd());
  }
-
+ 
 -function setCodexProviderStringKey(contents: string, key: string, value: string): string {
 +function setCodexProviderStringKey(contents: string, key: string, value: string, requiresOpenAiAuth = true): string {
    const provider = rootTomlStringValue(contents, "model_provider") || "custom";
@@ -71,11 +71,11 @@ index e9f83d1..a2dd7d2 100644
 +  next = ensureCodexProviderDefaults(next, provider, requiresOpenAiAuth);
    return setTomlSectionStringKey(next, `model_providers.${provider}`, key, value);
  }
-
-@@ -6530,12 +6549,12 @@ function removeCodexExperimentalBearerToken(contents: string): string {
+ 
+@@ -8175,12 +8194,12 @@ function removeCodexExperimentalBearerToken(contents: string): string {
    return removeTomlSectionKey(contents, `model_providers.${provider}`, "experimental_bearer_token");
  }
-
+ 
 -function ensureCodexProviderDefaults(contents: string, provider: string): string {
 +function ensureCodexProviderDefaults(contents: string, provider: string, requiresOpenAiAuth = true): string {
    let next = contents;
@@ -85,10 +85,10 @@ index e9f83d1..a2dd7d2 100644
 -  return setTomlSectionBoolKey(next, section, "requires_openai_auth", true);
 +  return setTomlSectionBoolKey(next, section, "requires_openai_auth", requiresOpenAiAuth);
  }
-
+ 
  function setTomlSectionBoolKey(contents: string, sectionName: string, key: string, value: boolean): string {
 diff --git a/crates/codex-plus-core/src/relay_config.rs b/crates/codex-plus-core/src/relay_config.rs
-index 21076b5..9ed6674 100644
+index 2463a6d..0bc4f13 100644
 --- a/crates/codex-plus-core/src/relay_config.rs
 +++ b/crates/codex-plus-core/src/relay_config.rs
 @@ -5,6 +5,7 @@ use std::collections::HashSet;
@@ -96,9 +96,9 @@ index 21076b5..9ed6674 100644
  use std::time::{SystemTime, UNIX_EPOCH};
  use toml_edit::{DocumentMut, Item, Table, TableLike};
 +use url::Host;
-
+ 
  use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol};
-
+ 
 @@ -217,7 +218,6 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
          .unwrap_or(false);
      RelayConfigStatus {
@@ -107,7 +107,7 @@ index 21076b5..9ed6674 100644
              && (has_bearer_token || codex_auth_api_key(&auth_contents).is_some())
              && has_base_url,
          requires_openai_auth,
-@@ -247,7 +247,7 @@ pub fn apply_relay_config_to_home_with_protocol(
+@@ -261,7 +261,7 @@ pub fn apply_relay_config_to_home_with_protocol(
      protocol: RelayProtocol,
      proxy_port: u16,
  ) -> anyhow::Result<RelayApplyResult> {
@@ -116,7 +116,7 @@ index 21076b5..9ed6674 100644
      if base_url.is_empty() {
          anyhow::bail!("中转 Base URL 不能为空");
      }
-@@ -255,8 +255,8 @@ pub fn apply_relay_config_to_home_with_protocol(
+@@ -269,8 +269,8 @@ pub fn apply_relay_config_to_home_with_protocol(
      if bearer_token.is_empty() {
          anyhow::bail!("中转 Key 不能为空");
      }
@@ -127,7 +127,7 @@ index 21076b5..9ed6674 100644
      let auth_contents = serde_json::to_string_pretty(&json!({
          "OPENAI_API_KEY": bearer_token
      }))?;
-@@ -472,7 +472,7 @@ pub fn apply_pure_api_config_to_home_with_protocol(
+@@ -486,7 +486,7 @@ pub fn apply_pure_api_config_to_home_with_protocol(
      protocol: RelayProtocol,
      proxy_port: u16,
  ) -> anyhow::Result<RelayApplyResult> {
@@ -136,7 +136,7 @@ index 21076b5..9ed6674 100644
      if base_url.is_empty() {
          anyhow::bail!("中转 Base URL 不能为空");
      }
-@@ -480,8 +480,8 @@ pub fn apply_pure_api_config_to_home_with_protocol(
+@@ -494,8 +494,8 @@ pub fn apply_pure_api_config_to_home_with_protocol(
      if bearer_token.is_empty() {
          anyhow::bail!("中转 Key 不能为空");
      }
@@ -147,10 +147,10 @@ index 21076b5..9ed6674 100644
      let auth_contents = serde_json::to_string_pretty(&json!({
          "OPENAI_API_KEY": bearer_token
      }))?;
-@@ -585,6 +585,35 @@ fn relay_profile_test_payload(protocol: RelayProtocol, model: &str) -> Value {
+@@ -599,6 +599,35 @@ fn relay_profile_test_payload(protocol: RelayProtocol, model: &str) -> Value {
      }
  }
-
+ 
 +fn effective_codex_base_url(base_url: &str) -> String {
 +    let trimmed = base_url.trim();
 +    let Ok(mut parsed) = url::Url::parse(trimmed) else {
@@ -183,7 +183,7 @@ index 21076b5..9ed6674 100644
  fn codex_base_url_for_protocol(base_url: &str, protocol: RelayProtocol, proxy_port: u16) -> String {
      match protocol {
          RelayProtocol::Responses => base_url.to_string(),
-@@ -1052,8 +1081,10 @@ fn write_codex_live_atomic(
+@@ -1084,8 +1113,10 @@ fn write_codex_live_atomic(
      std::fs::create_dir_all(home)?;
      let config_path = home.join("config.toml");
      let auth_path = home.join("auth.json");
@@ -195,7 +195,7 @@ index 21076b5..9ed6674 100644
          Some(config_text) if preserve_computer_use_guard => {
              let notify_exe = crate::computer_use_guard::find_computer_use_notify_exe(home);
              let marketplace_path =
-@@ -1069,11 +1100,13 @@ fn write_codex_live_atomic(
+@@ -1101,11 +1132,13 @@ fn write_codex_live_atomic(
              };
              Some(guarded)
          }
@@ -207,19 +207,19 @@ index 21076b5..9ed6674 100644
      let config_text = guarded_config_text.as_deref();
 +    #[cfg(not(windows))]
 +    let config_text = normalized_config_text.as_deref();
-
+ 
      let config_text = match config_text {
-         Some(config_text) => Some(preserve_live_marketplace_configs(home, config_text)?),
-@@ -1393,7 +1426,7 @@ fn validate_toml_config(config_text: &str, path: &Path) -> anyhow::Result<()> {
+         Some(config_text) => {
+@@ -1428,7 +1461,7 @@ fn validate_toml_config(config_text: &str, path: &Path) -> anyhow::Result<()> {
  }
-
+ 
  fn normalize_config_text_for_write(config_text: &str) -> String {
 -    config_text.trim_start_matches('\u{feff}').to_string()
 +    normalize_duplicate_toml_text(config_text.trim_start_matches('\u{feff}'))
  }
-
- fn validate_auth_json(auth_bytes: &[u8], path: &Path) -> anyhow::Result<()> {
-@@ -2523,6 +2556,7 @@ fn upsert_model_provider_config(
+ 
+ fn preserve_live_desktop_settings(home: &Path, config_text: &str) -> anyhow::Result<String> {
+@@ -2636,6 +2669,7 @@ fn upsert_model_provider_config(
      contents: &str,
      base_url: &str,
      bearer_token: &str,
@@ -227,7 +227,7 @@ index 21076b5..9ed6674 100644
  ) -> anyhow::Result<String> {
      let mut doc = parse_toml_document(contents)?;
      let provider_id = active_or_default_provider_id(&doc);
-@@ -2537,7 +2571,7 @@ fn upsert_model_provider_config(
+@@ -2650,7 +2684,7 @@ fn upsert_model_provider_config(
      let provider = ensure_provider_table(&mut doc, &provider_id)?;
      provider["name"] = toml_edit::value(provider_id.as_str());
      provider["wire_api"] = toml_edit::value("responses");
@@ -235,4 +235,4 @@ index 21076b5..9ed6674 100644
 +    provider["requires_openai_auth"] = toml_edit::value(requires_openai_auth);
      provider["base_url"] = toml_edit::value(base_url);
      provider["experimental_bearer_token"] = toml_edit::value(bearer_token);
-
+ 

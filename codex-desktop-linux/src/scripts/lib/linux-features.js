@@ -54,6 +54,16 @@ function linuxFeaturesConfigPath(featuresRoot, options = {}) {
   return path.join(featuresRoot, "features.example.json");
 }
 
+function linuxFeaturesEnvironmentConfig() {
+  const raw = process.env.CODEX_LINUX_FEATURES?.trim();
+  if (!raw) {
+    return null;
+  }
+  return {
+    enabled: raw.split(",").map((item) => item.trim()).filter(Boolean),
+  };
+}
+
 function readJsonFile(filePath, label) {
   try {
     return JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -65,8 +75,21 @@ function readJsonFile(filePath, label) {
 
 function readLinuxFeaturesConfig(options = {}) {
   const featuresRoot = linuxFeaturesRoot(options);
+  const explicitConfigPath = options.featuresConfigPath != null
+    || Boolean(process.env.CODEX_LINUX_FEATURES_CONFIG?.trim());
+  const localConfigPath = path.join(featuresRoot, "features.json");
+  if (!explicitConfigPath && !fs.existsSync(localConfigPath)) {
+    const environmentConfig = linuxFeaturesEnvironmentConfig();
+    if (environmentConfig != null) {
+      return { config: environmentConfig, configPath: "<CODEX_LINUX_FEATURES>" };
+    }
+  }
   const configPath = linuxFeaturesConfigPath(featuresRoot, options);
   if (!fs.existsSync(configPath)) {
+    const environmentConfig = linuxFeaturesEnvironmentConfig();
+    if (environmentConfig != null) {
+      return { config: environmentConfig, configPath: "<CODEX_LINUX_FEATURES>" };
+    }
     return { config: null, configPath };
   }
 

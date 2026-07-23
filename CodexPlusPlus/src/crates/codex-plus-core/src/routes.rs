@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -440,14 +440,13 @@ impl BridgeRuntimeService for CoreRuntimeService {
     }
 
     async fn open_manager(&self) -> anyhow::Result<Value> {
-        let manager_path = manager_exe_path();
-        if !manager_path.exists() {
-            anyhow::bail!("未找到管理工具：{}", manager_path.display());
-        }
-        spawn_manager(&manager_path)?;
+        let target = crate::install::spawn_companion(
+            crate::install::MANAGER_BINARY,
+            std::iter::empty::<&str>(),
+        )?;
         Ok(json!({
             "status": "ok",
-            "path": manager_path.to_string_lossy()
+            "path": target
         }))
     }
 
@@ -601,23 +600,6 @@ impl BridgeDataService for UnavailableDataService {
     }
 }
 
-fn manager_exe_path() -> PathBuf {
-    crate::install::option_or_current_exe(&None, crate::install::MANAGER_BINARY)
-}
-
-fn spawn_manager(manager_path: &Path) -> anyhow::Result<()> {
-    let mut command = std::process::Command::new(manager_path);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(crate::windows_create_no_window());
-    }
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
-}
-
 fn settings_payload_value(
     settings: BackendSettings,
     codex_app_version: String,
@@ -625,6 +607,14 @@ fn settings_payload_value(
     let mut value = serde_json::to_value(settings)?;
     if let Some(object) = value.as_object_mut() {
         object.remove("codexAppStepwiseApiKey");
+        object.insert(
+            "codexDefaultServiceTier".to_string(),
+            crate::codex_app_state::default_service_tier(
+                &crate::codex_home::default_codex_home_dir(),
+            )
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+        );
         object.insert(
             "codexAppVersion".to_string(),
             Value::String(codex_app_version),

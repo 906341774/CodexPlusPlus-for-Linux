@@ -6,6 +6,7 @@ const {
 } = require("../../../../descriptor.js");
 const {
   applyLinuxAboutDialogPatch,
+  applyLinuxAppReloadShortcutsPatch,
   applyLinuxApplicationMenuPatch,
   applyLinuxWindowOptionsPatch,
   applyLinuxNativeTitlebarPatch,
@@ -18,17 +19,39 @@ const {
 const {
   applyLinuxFileManagerPatch,
   patchLinuxWorkerFileManagerTarget,
+  patchLinuxHostProcessEnvironmentTargets,
+  applyLinuxTerminalHostEnvironmentPatch,
   applyLinuxTerminalUserPathPatch,
   applyLinuxGitOriginsSourceFallbackPatch,
+  applyLinuxX11ProjectPickerPatch,
 } = require("../../../../impl/main-process/misc.js");
 const {
   applyLinuxBuildInfoTrayPatch,
   applyLinuxTrayPatch,
   applyLinuxSingleInstancePatch,
 } = require("../../../../impl/main-process/tray.js");
-const { applyLinuxAvatarOverlayMousePassthroughPatch } = require("../../../../impl/avatar-overlay.js");
+const {
+  applyLinuxAvatarOverlayMousePassthroughPatch,
+  applyLinuxQueryCacheInvalidationBroadcastPatch,
+} = require("../../../../impl/avatar-overlay.js");
 
 module.exports = [
+  extractedAppPatch({
+    id: "linux-host-child-process-environment",
+    phase: "extracted-app:pre-webview",
+    order: -10,
+    ciPolicy: "optional",
+    apply: patchLinuxHostProcessEnvironmentTargets,
+    status: (result, warnings) => {
+      if (result?.changed) {
+        return warnings.length > 0 ? "applied-with-warnings" : "applied";
+      }
+      if (warnings.length > 0 || result?.matched === 0 || result?.reason != null) {
+        return { status: "skipped-optional", reason: result?.reason ?? warnings[0] };
+      }
+      return "already-applied";
+    },
+  }),
   mainBundlePatch({
     id: "linux-about-dialog",
     phase: "main-bundle",
@@ -56,6 +79,13 @@ module.exports = [
     order: 65,
     ciPolicy: "optional",
     apply: applyLinuxApplicationMenuPatch,
+  }),
+  mainBundlePatch({
+    id: "linux-app-reload-shortcuts",
+    phase: "main-bundle",
+    order: 67,
+    ciPolicy: "optional",
+    apply: applyLinuxAppReloadShortcutsPatch,
   }),
   mainBundlePatch({
     id: "linux-native-titlebar",
@@ -93,11 +123,25 @@ module.exports = [
     apply: applyLinuxOpaqueBackgroundPatch,
   }),
   mainBundlePatch({
+    id: "linux-x11-project-picker",
+    phase: "main-bundle",
+    order: 82,
+    ciPolicy: "optional",
+    apply: applyLinuxX11ProjectPickerPatch,
+  }),
+  mainBundlePatch({
     id: "linux-avatar-overlay-mouse-passthrough",
     phase: "main-bundle",
     order: 90,
     ciPolicy: "required-upstream",
     apply: applyLinuxAvatarOverlayMousePassthroughPatch,
+  }),
+  mainBundlePatch({
+    id: "linux-avatar-settings-sync",
+    phase: "main-bundle",
+    order: 92,
+    ciPolicy: "optional",
+    apply: applyLinuxQueryCacheInvalidationBroadcastPatch,
   }),
   mainBundlePatch({
     id: "linux-file-manager",
@@ -121,6 +165,13 @@ module.exports = [
       }
       return "already-applied";
     },
+  }),
+  mainBundlePatch({
+    id: "linux-terminal-host-environment",
+    phase: "main-bundle",
+    order: 104,
+    ciPolicy: "optional",
+    apply: applyLinuxTerminalHostEnvironmentPatch,
   }),
   mainBundlePatch({
     id: "linux-terminal-user-path",

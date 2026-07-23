@@ -1,4 +1,6 @@
 (() => {
+  const codexPlusIsWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent || "");
+
   function installCodexPlusFastStartup() {
     const config = window.__CODEX_PLUS_FAST_STARTUP__;
     if (!config || config.enabled !== true) return;
@@ -92,11 +94,148 @@
 
   function installCodexPlusForceChineseLocale() {
     const config = window.__CODEX_PLUS_FORCE_CHINESE_LOCALE__;
-    if (!config || config.enabled !== true) return;
-    if (window.__codexPlusForceChineseLocaleInstalled === "1") return;
-    window.__codexPlusForceChineseLocaleInstalled = "1";
+    if (!config) return;
+    const enabled = config.enabled === true;
     const locale = typeof config.locale === "string" && config.locale ? config.locale : "zh-CN";
+    const installationKey = `2:${enabled ? "on" : "off"}:${locale}`;
+    if (window.__codexPlusForceChineseLocaleInstalled === installationKey) return;
+    window.__codexPlusForceChineseLocaleInstalled = installationKey;
     const languages = [locale, "zh", "en-US", "en"];
+    const managedLocaleStorageKey = "codexPlus.forceChineseLocale.managed.v1";
+    const localeReloadStorageKey = "codexPlus.forceChineseLocale.reload.v1";
+
+    const readManagedLocale = () => {
+      try {
+        const value = JSON.parse(window.localStorage.getItem(managedLocaleStorageKey) || "null");
+        return value && typeof value === "object" ? value : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const writeManagedLocale = (value) => {
+      try {
+        if (value) {
+          window.localStorage.setItem(managedLocaleStorageKey, JSON.stringify(value));
+        } else {
+          window.localStorage.removeItem(managedLocaleStorageKey);
+        }
+      } catch {
+      }
+    };
+
+    const waitForElectronBridge = () => new Promise((resolve) => {
+      const startedAt = Date.now();
+      const check = () => {
+        const bridge = window.electronBridge;
+        if (bridge && typeof bridge.sendMessageFromView === "function") {
+          resolve(bridge);
+          return;
+        }
+        if (Date.now() - startedAt >= 5000) {
+          resolve(null);
+          return;
+        }
+        window.setTimeout(check, 50);
+      };
+      check();
+    });
+
+    const callCodexSettingApi = (bridge, method, params) => new Promise((resolve, reject) => {
+      const requestId = typeof crypto?.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `codex-plus-locale-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      let timeout;
+      const cleanup = () => {
+        window.clearTimeout(timeout);
+        window.removeEventListener("message", onMessage);
+      };
+      const onMessage = (event) => {
+        const message = event?.data;
+        if (!message || message.type !== "fetch-response" || message.requestId !== requestId) return;
+        cleanup();
+        if (message.responseType !== "success") {
+          reject(new Error(message.error || `Codex ${method} failed`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(message.bodyJsonString || "null"));
+        } catch (error) {
+          reject(error);
+        }
+      };
+      window.addEventListener("message", onMessage);
+      timeout = window.setTimeout(() => {
+        cleanup();
+        reject(new Error(`Codex ${method} timed out`));
+      }, 5000);
+      const message = {
+        type: "fetch",
+        requestId,
+        method: "POST",
+        url: `vscode://codex/${method}`,
+        body: JSON.stringify({ params }),
+      };
+      Promise.resolve(bridge.sendMessageFromView(message)).catch((error) => {
+        cleanup();
+        reject(error);
+      });
+    });
+
+    const reloadAfterLocaleChange = (value) => {
+      const marker = JSON.stringify(value);
+      try {
+        if (window.sessionStorage.getItem(localeReloadStorageKey) === marker) return;
+        window.sessionStorage.setItem(localeReloadStorageKey, marker);
+      } catch {
+      }
+      window.location.reload();
+    };
+
+    const clearLocaleReloadMarker = () => {
+      try {
+        window.sessionStorage.removeItem(localeReloadStorageKey);
+      } catch {
+      }
+    };
+
+    const syncOfficialLocaleSetting = async () => {
+      const managed = readManagedLocale();
+      if (!enabled && !managed) return;
+      const bridge = await waitForElectronBridge();
+      if (!bridge) return;
+      const response = await callCodexSettingApi(bridge, "get-setting", { key: "localeOverride" });
+      const currentValue = response?.value ?? null;
+
+      if (enabled) {
+        if (currentValue === locale) {
+          clearLocaleReloadMarker();
+          return;
+        }
+        if (!managed) {
+          writeManagedLocale({ appliedLocale: locale, previousValue: currentValue });
+        }
+        await callCodexSettingApi(bridge, "set-setting", { key: "localeOverride", value: locale });
+        reloadAfterLocaleChange(locale);
+        return;
+      }
+
+      if (currentValue !== managed.appliedLocale) {
+        writeManagedLocale(null);
+        clearLocaleReloadMarker();
+        return;
+      }
+      const previousValue = managed.previousValue ?? null;
+      await callCodexSettingApi(bridge, "set-setting", {
+        key: "localeOverride",
+        value: previousValue,
+      });
+      writeManagedLocale(null);
+      reloadAfterLocaleChange(previousValue);
+    };
+
+    syncOfficialLocaleSetting().catch(() => {});
+    if (!enabled) return;
 
     const defineNavigatorGetter = (name, value) => {
       try {
@@ -329,7 +468,7 @@
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
   const codexServiceTierRequestOverrideVersion = "3";
-  const codexAppServerModelRequestPatchVersion = "1";
+  const codexAppServerModelRequestPatchVersion = "2";
   const codexPluginMarketplaceUnlockVersion = "12";
   const codexPluginAutoExpandVersion = "1";
   const codexPluginAutoExpandMaxClicks = 80;
@@ -343,7 +482,13 @@
   const codexThreadScrollRouteHooksVersion = "dispatcher:2";
   const codexThreadScrollListenerVersion = "4";
   const codexThreadScrollUserIntentVersion = "dispatcher:2";
+  const codexProjectlessMainWindowVersion = "5";
+  const codexProjectlessMainWindowSetting = { key: "hotkey-window-projectless-default-enabled", default: false };
+  const codexProjectlessMainWindowRetryDelaysMs = [0, 250, 750, 1500, 3000];
   const codexPlusImageOverlayId = "codex-plus-image-overlay";
+  const codexPlusDreamSkinStyleId = "codex-dream-skin-style";
+  const codexPlusDreamSkinPlatform = String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || "macos");
+  const codexPlusDreamSkinRevision = String(window.__CODEX_PLUS_DREAM_SKIN_REVISION__ || "1");
   window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
   const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
   clearTimeout(window.__codexProjectMoveProjectionTimer);
@@ -1056,6 +1201,19 @@
       .codex-plus-service-tier-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 5px 8px; white-space: nowrap; }
       .codex-plus-service-tier-button[data-active="true"] { border-color: #10a37f; background: rgba(16,163,127,.22); color: #6ee7b7; }
       .codex-plus-service-tier-button:disabled { opacity: .55; cursor: not-allowed; }
+      @media (max-width: 480px) {
+        .codex-plus-modal-content { width: calc(100vw - 24px); max-height: calc(100vh - 24px); border-radius: 14px; }
+        .codex-plus-modal-header { padding: 14px 14px 8px; }
+        .codex-plus-modal-title { font-size: 16px; }
+        .codex-plus-tabs { flex-wrap: wrap; gap: 6px; padding: 0 14px 6px; }
+        .codex-plus-modal-body { overflow-x: hidden; padding: 4px 14px 14px; }
+        .codex-plus-row > :first-child { min-width: 0; overflow-wrap: anywhere; }
+        .codex-plus-row[data-codex-service-tier-controls] { flex-direction: column; }
+        .codex-plus-service-tier-control { min-width: 0; width: 100%; justify-items: stretch; }
+        .codex-plus-service-tier-status { text-align: left; }
+        .codex-plus-service-tier-actions { justify-content: flex-start; }
+        .codex-plus-service-tier-thread-label { flex: 1 0 100%; }
+      }
       .${codexServiceTierBadgeClass} {
         display: inline-flex;
         align-items: center;
@@ -1154,7 +1312,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, pluginAutoExpand: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, stepwise: false };
+    return { pluginMarketplaceUnlock: true, pluginAutoExpand: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1171,16 +1329,22 @@
     upstreamWorktreeCreate: "codexAppUpstreamWorktreeCreate",
     nativeMenuPlacement: "codexAppNativeMenuPlacement",
     serviceTierControls: "codexAppServiceTierControls",
+    petRealMouseLook: "codexAppPetRealMouseLook",
     stepwise: "codexAppStepwiseEnabled",
     pasteFix: "codexAppPasteFix",
+    dreamSkinEnabled: "codexAppDreamSkinEnabled",
+    dreamSkinPaused: "codexAppDreamSkinPaused",
+    dreamSkinThemeConfig: "codexAppDreamSkinThemeConfig",
+    dreamSkinImagePath: "codexAppDreamSkinImagePath",
   };
   const codexPlusBackendMappedSettings = new Set(Object.keys(codexPlusBackendSettingMap));
 
   function backendCodexPlusSettings() {
     const settings = {};
     Object.entries(codexPlusBackendSettingMap).forEach(([localKey, backendKey]) => {
-      if (typeof codexPlusBackendSettings[backendKey] === "boolean") {
-        settings[localKey] = codexPlusBackendSettings[backendKey];
+      const value = codexPlusBackendSettings[backendKey];
+      if (typeof value === "boolean" || typeof value === "string" || (value && typeof value === "object" && !Array.isArray(value))) {
+        settings[localKey] = value;
       }
     });
     return settings;
@@ -1205,7 +1369,12 @@
         upstreamWorktreeCreate: false,
         nativeMenuPlacement: false,
         serviceTierControls: false,
+        petRealMouseLook: false,
         stepwise: false,
+        dreamSkinEnabled: false,
+        dreamSkinPaused: false,
+        dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {},
+        dreamSkinImagePath: "",
       };
     }
     try {
@@ -1225,6 +1394,587 @@
     }
   }
 
+  // Dream skin runtime is adapted from Fei-Away/Codex-Dream-Skin's renderer injection.
+  function dreamSkinStylePreset(id, stylePreset) {
+    const preset = String(stylePreset || "").trim();
+    if (preset && preset !== "dream-original") return preset;
+    return ({
+      "caishen-lite": "caishen-lite",
+      "caishen-max": "caishen-max",
+      "caishen-readable": "caishen-readable",
+      "export-night": "export-night",
+      "global-founder-bright": "global-founder-bright",
+      "mythic-guardian-noir": "mythic-guardian-noir",
+      "codex-snow-skin": "codex-snow",
+      "glass-vision": "glass-vision",
+      "preset-midnight-aurora": "midnight-aurora",
+      "preset-amber-dusk": "amber-dusk",
+      "preset-forest-mist": "forest-mist",
+      "preset-cyber-neon": "cyber-neon",
+      "preset-sakura-dawn": "sakura-dawn",
+    })[String(id || "").trim()] || "dream-original";
+  }
+
+  function dreamSkinThemeConfig(theme) {
+    const fallback = window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {};
+    const value = theme && typeof theme === "object" ? theme : fallback;
+    const colors = value.colors && typeof value.colors === "object" ? value.colors : fallback.colors || {};
+    return {
+      schemaVersion: value.schemaVersion === 1 ? 1 : 1,
+      id: String(value.id || fallback.id || "custom"),
+      name: String(value.name || fallback.name || "Dream Skin"),
+      stylePreset: dreamSkinStylePreset(
+        value.id || fallback.id,
+        value.stylePreset || fallback.stylePreset,
+      ),
+      brandSubtitle: String(value.brandSubtitle || fallback.brandSubtitle || "CODEX DREAM SKIN"),
+      statusText: String(value.statusText || fallback.statusText || "DREAM SKIN ONLINE"),
+      quote: String(value.quote || fallback.quote || "MAKE SOMETHING WONDERFUL"),
+      tagline: String(value.tagline || fallback.tagline || "把喜欢的画面变成可交互的 Codex 工作台。"),
+      projectPrefix: String(value.projectPrefix || fallback.projectPrefix || "选择项目 · "),
+      projectLabel: String(value.projectLabel || fallback.projectLabel || "◉  选择项目"),
+      colors: { ...(fallback.colors || {}), ...colors },
+    };
+  }
+
+  function dreamSkinCssString(value) {
+    return JSON.stringify(String(value ?? ""));
+  }
+
+  function dreamSkinParseRgb(value) {
+    if (!value || value === "transparent") return null;
+    const text = String(value).trim();
+    const hex = text.match(/^#([\da-f]{3}|[\da-f]{6}|[\da-f]{8})$/i)?.[1];
+    if (hex) {
+      const normalized = hex.length === 3
+        ? hex.split("").map((part) => `${part}${part}`).join("")
+        : hex.slice(0, 6);
+      return {
+        r: Number.parseInt(normalized.slice(0, 2), 16),
+        g: Number.parseInt(normalized.slice(2, 4), 16),
+        b: Number.parseInt(normalized.slice(4, 6), 16),
+      };
+    }
+    const match = text.match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i);
+    if (!match) return null;
+    return { r: Number(match[1]), g: Number(match[2]), b: Number(match[3]) };
+  }
+
+  function dreamSkinLuminance({ r, g, b }) {
+    const linear = [r, g, b].map((color) => {
+      const value = color / 255;
+      return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+  }
+
+  function detectDreamSkinShellMode() {
+    const root = document.documentElement;
+    const body = document.body;
+    const classText = `${root?.className || ""} ${body?.className || ""}`.toLowerCase();
+
+    if (/\b(dark|theme-dark|appearance-dark)\b/.test(classText)) return "dark";
+    if (/\b(light|theme-light|appearance-light)\b/.test(classText)) return "light";
+
+    const dataTheme = (
+      root?.getAttribute("data-theme") ||
+      root?.getAttribute("data-appearance") ||
+      root?.getAttribute("data-color-mode") ||
+      body?.getAttribute("data-theme") ||
+      body?.getAttribute("data-appearance") ||
+      ""
+    ).toLowerCase();
+    if (dataTheme.includes("dark")) return "dark";
+    if (dataTheme.includes("light")) return "light";
+
+    const checked = document.querySelector('input[name="appearance-theme"]:checked');
+    if (checked) {
+      const label = (checked.getAttribute("aria-label") || checked.value || "").toLowerCase();
+      if (label.includes("暗") || label.includes("dark")) return "dark";
+      if (label.includes("浅") || label.includes("light")) return "light";
+      if (label.includes("系统") || label.includes("system")) {
+        return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ? "dark" : "light";
+      }
+    }
+
+    try {
+      const colorScheme = getComputedStyle(root).colorScheme || "";
+      if (colorScheme.includes("dark") && !colorScheme.includes("light")) return "dark";
+      if (colorScheme.includes("light") && !colorScheme.includes("dark")) return "light";
+    } catch {
+    }
+
+    const samples = [
+      body,
+      document.querySelector("main.main-surface"),
+      document.querySelector("aside.app-shell-left-panel"),
+    ].filter(Boolean);
+    let lightVotes = 0;
+    let darkVotes = 0;
+    for (const element of samples) {
+      try {
+        const rgb = dreamSkinParseRgb(getComputedStyle(element).backgroundColor);
+        if (!rgb) continue;
+        const luminance = dreamSkinLuminance(rgb);
+        if (luminance >= 0.55) lightVotes += 1;
+        else if (luminance <= 0.25) darkVotes += 1;
+      } catch {
+      }
+    }
+    if (lightVotes > darkVotes) return "light";
+    if (darkVotes > lightVotes) return "dark";
+
+    try {
+      if (window.matchMedia("(prefers-color-scheme: dark)").matches) return "dark";
+    } catch {
+    }
+    return "light";
+  }
+
+  function dreamSkinThemeShellMode(theme) {
+    const background = dreamSkinParseRgb(theme?.colors?.background);
+    if (background) return dreamSkinLuminance(background) < 0.36 ? "dark" : "light";
+    return detectDreamSkinShellMode();
+  }
+
+  function dreamSkinArtBlobUrl(artDataUrl) {
+    if (!artDataUrl || !artDataUrl.startsWith("data:")) return "";
+    const comma = artDataUrl.indexOf(",");
+    if (comma < 0) return "";
+    const mime = /^data:([^;,]+)/.exec(artDataUrl)?.[1] || "image/png";
+    const binary = atob(artDataUrl.slice(comma + 1));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return URL.createObjectURL(new Blob([bytes], { type: mime }));
+  }
+
+  function independentThemeDescriptor(stylePreset) {
+    const custom = (name, chromeMarkup) => ({
+      rootClass: `codex-theme-${name}`,
+      homeClass: `theme-${name}-home`,
+      shellClass: `theme-${name}-home-shell`,
+      chromeId: "codex-theme-chrome",
+      chromeClass: `theme-chrome-${name}`,
+      chromeMarkup,
+    });
+    const descriptors = {
+      "caishen-lite": custom("caishen-lite", `
+        <div class="csl-caption" data-theme-field="name"></div><div class="csl-seal">吉</div>`),
+      "caishen-max": custom("caishen-max", `
+        <div class="csm-banner" data-theme-field="name"></div><div class="csm-coins">◇ ◇ ◇</div>`),
+      "caishen-readable": custom("caishen-readable", ""),
+      "export-night": custom("export-night", `
+        <div class="exn-titlebar"><span data-theme-field="name"></span><span class="exn-cursor">█</span></div>`),
+      "global-founder-bright": custom("global-founder-bright", `
+        <div class="gfb-masthead"><span data-theme-field="name"></span><small data-theme-field="status"></small></div>`),
+      "mythic-guardian-noir": custom("mythic-guardian-noir", `
+        <div class="mgn-sigil"></div><div class="mgn-line"></div>`),
+      "midnight-aurora": custom("midnight-aurora", `
+        <div class="mda-arc"></div><div class="mda-star">✦</div>`),
+      "amber-dusk": custom("amber-dusk", `
+        <div class="abd-sun"></div><div class="abd-horizon"></div>`),
+      "forest-mist": custom("forest-mist", `
+        <div class="fm-branch"></div><div class="fm-leaf">⌁</div>`),
+      "cyber-neon": custom("cyber-neon", `
+        <div class="cn-index" data-theme-field="status"></div><div class="cn-scan"></div>`),
+      "sakura-dawn": custom("sakura-dawn", `
+        <div class="sd-petal">✿</div><div class="sd-rule"></div>`),
+      "codex-snow": {
+        rootClass: "codex-dream-skin",
+        homeClass: "dream-home",
+        shellClass: "dream-home-shell",
+        chromeId: "codex-dream-skin-chrome",
+        chromeClass: "",
+        chromeMarkup: `
+          <div class="dream-brand"><span class="dream-note">SKI</span><span><b>Snowline Codex</b><small>ice-blue training mode</small></span></div>
+          <div class="dream-signature">Freeski focus</div>
+          <div class="dream-sparkles"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="dream-ribbon"><span>slopestyle</span><strong>double cork energy</strong><span>halfpipe</span></div>
+          <div class="dream-polaroid"></div>`,
+      },
+      "glass-vision": {
+        rootClass: "codex-glass-vision-skin",
+        homeClass: "glass-vision-home",
+        shellClass: "glass-vision-home-shell",
+        taskShellClass: "glass-vision-task-shell",
+        chromeId: "codex-glass-vision-skin-chrome",
+        chromeClass: "",
+        chromeMarkup: `
+          <div class="glass-vision-brand"><span class="glass-vision-orbit-mark"><i></i></span><span><b>GLASS VISION</b><small>SILVER BLUE · CELESTIAL</small></span></div>
+          <div class="glass-vision-status"><i></i><span>CRYSTAL FIELD</span></div>
+          <div class="glass-vision-atmosphere"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="glass-vision-orbit-lines"><i></i><i></i><i></i></div><div class="glass-vision-prism"></div>`,
+      },
+    };
+    if (descriptors[stylePreset]) return descriptors[stylePreset];
+    if (codexPlusDreamSkinPlatform === "windows") {
+      return {
+        rootClass: "codex-dream-skin",
+        homeClass: "dream-home",
+        shellClass: "dream-home-shell",
+        taskClass: "dream-task",
+        chromeId: "codex-dream-skin-chrome",
+        chromeClass: "",
+        chromeMarkup: "",
+      };
+    }
+    return {
+      rootClass: "codex-dream-skin",
+      homeClass: "dream-skin-home",
+      shellClass: "dream-skin-home-shell",
+      chromeId: "codex-dream-skin-chrome",
+      chromeClass: "",
+      chromeMarkup: `
+        <div class="dream-skin-brand"><span class="dream-skin-portal-mark">◉</span><span><b data-theme-field="name"></b><small data-theme-field="subtitle"></small></span></div>
+        <div class="dream-skin-status"><i></i><span data-theme-field="status"></span></div>
+        <div class="dream-skin-quote" data-theme-field="quote"></div>
+        <div class="dream-skin-particles"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="dream-skin-orbit"></div>`,
+    };
+  }
+
+  function clearDreamSkinPresentation() {
+    const root = document.documentElement;
+    for (const className of [...(root?.classList || [])]) {
+      if (
+        className === "codex-dream-skin"
+        || className === "codex-glass-vision-skin"
+        || className.startsWith("codex-theme-")
+      ) {
+        root?.classList.remove(className);
+      }
+    }
+    root?.removeAttribute("data-dream-shell");
+    root?.removeAttribute("data-codex-plus-dream-skin");
+    root?.style.removeProperty("--dream-art");
+    root?.style.removeProperty("--dream-skin-art");
+    [
+      "--ds-bg",
+      "--ds-panel",
+      "--ds-panel-2",
+      "--ds-green",
+      "--ds-lime",
+      "--ds-cyan",
+      "--ds-purple",
+      "--ds-text",
+      "--ds-muted",
+      "--ds-line",
+      "--dream-ink",
+      "--dream-purple",
+      "--dream-violet",
+      "--dream-pink",
+      "--dream-blush",
+      "--dream-pearl",
+      "--dream-line",
+      "--dream-skin-name",
+      "--dream-skin-tagline",
+      "--dream-skin-project-prefix",
+      "--dream-skin-project-label",
+    ].forEach((name) => root?.style.removeProperty(name));
+    document.querySelectorAll(".dream-home").forEach((node) => node.classList.remove("dream-home"));
+    document.querySelectorAll(".dream-home-shell").forEach((node) => node.classList.remove("dream-home-shell"));
+    document.querySelectorAll(".dream-skin-home").forEach((node) => node.classList.remove("dream-skin-home"));
+    document.querySelectorAll(".dream-skin-home-shell").forEach((node) => node.classList.remove("dream-skin-home-shell"));
+    document.querySelectorAll("[class]").forEach((node) => {
+      for (const className of [...node.classList]) {
+        if (
+          /^theme-[a-z0-9-]+-(?:home|home-shell|task|task-shell)$/.test(className)
+          || /^glass-vision-(?:home|home-shell|task|task-shell)$/.test(className)
+        ) {
+          node.classList.remove(className);
+        }
+      }
+    });
+    document.getElementById(codexPlusDreamSkinStyleId)?.remove();
+    document.getElementById("codex-plus-dream-skin-style")?.remove();
+    document.getElementById("codex-dream-skin-chrome")?.remove();
+    document.getElementById("codex-glass-vision-skin-chrome")?.remove();
+    document.getElementById("codex-theme-chrome")?.remove();
+    const state = window.__CODEX_DREAM_SKIN_STATE__;
+    const descriptor = state?.descriptor;
+    if (descriptor) {
+      root?.classList.remove(descriptor.rootClass);
+      for (const className of [descriptor.homeClass, descriptor.shellClass, descriptor.taskClass, descriptor.taskShellClass]) {
+        if (!className) continue;
+        document.querySelectorAll(`.${className}`).forEach((node) => node.classList.remove(className));
+      }
+      document.getElementById(descriptor.chromeId)?.remove();
+    }
+    root?.classList.remove("dream-theme-dark", "dream-theme-light");
+    root?.removeAttribute("data-codex-theme");
+    root?.removeAttribute("data-codex-theme-root");
+    [
+      "--theme-bg", "--theme-panel", "--theme-panel-alt", "--theme-accent",
+      "--theme-accent-alt", "--theme-secondary", "--theme-highlight", "--theme-text",
+      "--theme-muted", "--theme-line", "--theme-art", "--glass-vision-art",
+      "--dream-accent", "--dream-accent-ink",
+    ].forEach((name) => root?.style.removeProperty(name));
+  }
+
+  function cleanupDreamSkin() {
+    window.__CODEX_DREAM_SKIN_DISABLED__ = true;
+    const state = window.__CODEX_DREAM_SKIN_STATE__;
+    if (typeof state?.cleanup === "function" && state.cleanup !== cleanupDreamSkin) {
+      try {
+        state.cleanup();
+      } catch {
+      }
+    }
+    const remainingState = window.__CODEX_DREAM_SKIN_STATE__;
+    remainingState?.observer?.disconnect();
+    if (remainingState?.timer) clearInterval(remainingState.timer);
+    if (remainingState?.scheduler?.timeout) clearTimeout(remainingState.scheduler.timeout);
+    if (remainingState?.resizeHandler) window.removeEventListener("resize", remainingState.resizeHandler);
+    if (remainingState?.mediaHandler && remainingState?.mediaQuery) {
+      try {
+        remainingState.mediaQuery.removeEventListener("change", remainingState.mediaHandler);
+      } catch {
+      }
+    }
+    if (remainingState?.artUrl) URL.revokeObjectURL(remainingState.artUrl);
+    delete window.__CODEX_DREAM_SKIN_STATE__;
+    window.__CODEX_GLASS_VISION_SKIN_DISABLED__ = true;
+    const glassState = window.__CODEX_GLASS_VISION_SKIN_STATE__;
+    try {
+      glassState?.cleanup?.();
+    } catch {
+    }
+    delete window.__CODEX_GLASS_VISION_SKIN_STATE__;
+    clearDreamSkinPresentation();
+  }
+
+  window.__CODEX_PLUS_CLEAR_DREAM_SKIN__ = cleanupDreamSkin;
+
+  function dreamSkinContentSignature(value) {
+    const text = String(value || "");
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `${text.length}-${(hash >>> 0).toString(16)}`;
+  }
+
+  function applyIndependentThemeVariables(root, shell, theme, descriptor, artSource) {
+    const colors = theme.colors || {};
+    const accent = colors.accent || (shell === "light" ? "#d85c6c" : "#76e6cc");
+    const accentAlt = colors.accentAlt || accent;
+    const secondary = colors.secondary || (shell === "light" ? "#e7a3ad" : "#65bde8");
+    const variables = {
+      "--theme-bg": colors.background || (shell === "light" ? "#f6f3f4" : "#071116"),
+      "--theme-panel": colors.panel || (shell === "light" ? "#ffffff" : "#0b1a20"),
+      "--theme-panel-alt": colors.panelAlt || (shell === "light" ? "#fff8f9" : "#10272c"),
+      "--theme-accent": accent,
+      "--theme-accent-alt": accentAlt,
+      "--theme-secondary": secondary,
+      "--theme-highlight": colors.highlight || accentAlt,
+      "--theme-text": colors.text || (shell === "light" ? "#201b1c" : "#edf7f3"),
+      "--theme-muted": colors.muted || (shell === "light" ? "#6c6062" : "#9db7ae"),
+      "--theme-line": colors.line || (shell === "light" ? "rgba(90, 64, 68, .18)" : "rgba(150, 220, 200, .24)"),
+      "--theme-art": artSource,
+      "--dream-art": artSource,
+      "--dream-skin-art": artSource,
+      "--glass-vision-art": artSource,
+      "--dream-accent": accent,
+      "--dream-accent-ink": colors.panel || "#ffffff",
+    };
+    for (const [name, value] of Object.entries(variables)) {
+      if (typeof value === "string" && value) root.style.setProperty(name, value);
+    }
+    root.style.setProperty("--dream-skin-name", dreamSkinCssString(theme.name || "Codex Dream Skin"));
+    root.style.setProperty("--dream-skin-tagline", dreamSkinCssString(theme.tagline || "把喜欢的画面变成可交互的 Codex 工作台。"));
+    root.style.setProperty("--dream-skin-project-prefix", dreamSkinCssString(theme.projectPrefix || "选择项目 · "));
+    root.style.setProperty("--dream-skin-project-label", dreamSkinCssString(theme.projectLabel || "◉  选择项目"));
+    root.classList.toggle("dream-theme-dark", shell === "dark");
+    root.classList.toggle("dream-theme-light", shell === "light");
+    const preset = theme.stylePreset || "dream-original";
+    if (root.getAttribute("data-codex-theme") !== preset) root.setAttribute("data-codex-theme", preset);
+    if (root.getAttribute("data-codex-theme-root") !== descriptor.rootClass) {
+      root.setAttribute("data-codex-theme-root", descriptor.rootClass);
+    }
+  }
+
+  function installDreamSkin(settings) {
+    const theme = dreamSkinThemeConfig(settings.dreamSkinThemeConfig);
+    const styles = window.__CODEX_PLUS_DREAM_SKIN_STYLES__ || {};
+    const descriptor = independentThemeDescriptor(theme.stylePreset);
+    const cssText = String(styles[theme.stylePreset] || styles["dream-original"] || "");
+    const artDataUrl = String(window.__CODEX_PLUS_DREAM_SKIN_ART__ || "");
+    const themeSignature = dreamSkinContentSignature(JSON.stringify(theme));
+    const artSignature = String(window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ || dreamSkinContentSignature(artDataUrl));
+    const version = `codex-plus:independent:${codexPlusDreamSkinPlatform}:r${codexPlusDreamSkinRevision}:${theme.stylePreset}:${themeSignature}:${artSignature}:${cssText.length}`;
+    const existingState = window.__CODEX_DREAM_SKIN_STATE__;
+    if (existingState?.version === version && typeof existingState.ensure === "function") {
+      window.__CODEX_DREAM_SKIN_DISABLED__ = false;
+      existingState.ensure();
+      return;
+    }
+
+    cleanupDreamSkin();
+    window.__CODEX_DREAM_SKIN_DISABLED__ = false;
+    const artUrl = dreamSkinArtBlobUrl(artDataUrl);
+    const artSource = artUrl ? `url("${artUrl}")` : "none";
+
+    const ensureStyle = (root) => {
+      let style = document.getElementById(codexPlusDreamSkinStyleId);
+      if (!style) {
+        style = document.createElement("style");
+        style.id = codexPlusDreamSkinStyleId;
+        (document.head || root).appendChild(style);
+      }
+      if (style.dataset.independentThemeVersion !== version) {
+        style.textContent = cssText;
+        style.dataset.independentThemeVersion = version;
+      }
+    };
+
+    const ensure = () => {
+      if (window.__CODEX_DREAM_SKIN_DISABLED__) return;
+      const root = document.documentElement;
+      if (!root || !document.body) return;
+      const shellMain = document.querySelector("main.main-surface") || document.querySelector("main");
+      if (!shellMain) {
+        clearDreamSkinPresentation();
+        return;
+      }
+
+      root.classList.add(descriptor.rootClass);
+      root.setAttribute("data-codex-plus-dream-skin", "true");
+      const shell = dreamSkinThemeShellMode(theme);
+      root.setAttribute("data-dream-shell", shell);
+      applyIndependentThemeVariables(root, shell, theme, descriptor, artSource);
+      ensureStyle(root);
+
+      const homeIndicator = document.querySelector('[data-testid="home-icon"]');
+      const home = homeIndicator?.closest('[role="main"]')
+        || [...document.querySelectorAll('[role="main"]')].find((candidate) =>
+          candidate.querySelector('[data-feature="game-source"]')
+          && candidate.querySelector('.group\\/home-suggestions'))
+        || null;
+      for (const candidate of document.querySelectorAll(`[role="main"].${descriptor.homeClass}`)) {
+        if (candidate !== home) candidate.classList.remove(descriptor.homeClass);
+      }
+      if (home) home.classList.add(descriptor.homeClass);
+      if (descriptor.taskClass) {
+        for (const candidate of document.querySelectorAll('[role="main"]')) {
+          candidate.classList.toggle(descriptor.taskClass, candidate !== home);
+        }
+      }
+      shellMain.classList.toggle(descriptor.shellClass, Boolean(home));
+      if (descriptor.taskShellClass) shellMain.classList.toggle(descriptor.taskShellClass, !home);
+
+      let chrome = document.getElementById(descriptor.chromeId);
+      if (!chrome || chrome.parentElement !== document.body) {
+        chrome?.remove();
+        chrome = document.createElement("div");
+        chrome.id = descriptor.chromeId;
+        chrome.setAttribute("aria-hidden", "true");
+        chrome.innerHTML = descriptor.chromeMarkup;
+        document.body.appendChild(chrome);
+      }
+      if (chrome.className !== descriptor.chromeClass) chrome.className = descriptor.chromeClass;
+      const fields = {
+        name: theme.name || "Codex Dream Skin",
+        subtitle: theme.brandSubtitle || "CODEX DREAM SKIN",
+        status: theme.statusText || "THEME ONLINE",
+        quote: theme.quote || "MAKE SOMETHING WONDERFUL",
+      };
+      for (const [field, value] of Object.entries(fields)) {
+        const target = chrome.querySelector(`[data-theme-field="${field}"]`);
+        if (target && target.textContent !== value) target.textContent = value;
+      }
+      const shellBox = shellMain.getBoundingClientRect();
+      chrome.style.left = `${Math.round(shellBox.left)}px`;
+      chrome.style.top = `${Math.round(shellBox.top)}px`;
+      chrome.style.width = `${Math.round(shellBox.width)}px`;
+      chrome.style.height = `${Math.round(shellBox.height)}px`;
+      chrome.classList.toggle(descriptor.shellClass, Boolean(home));
+      if (descriptor.taskShellClass) chrome.classList.toggle(descriptor.taskShellClass, !home);
+      chrome.dataset.dreamShell = shell;
+    };
+
+    const scheduler = { timeout: null };
+    const scheduleEnsure = () => {
+      if (scheduler.timeout) clearTimeout(scheduler.timeout);
+      scheduler.timeout = setTimeout(() => {
+        scheduler.timeout = null;
+        ensure();
+      }, 180);
+    };
+    const observer = new MutationObserver(scheduleEnsure);
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class", "data-theme", "data-appearance", "data-color-mode"],
+    });
+    const timer = setInterval(ensure, 4000);
+    const resizeHandler = scheduleEnsure;
+    window.addEventListener("resize", resizeHandler, { passive: true });
+
+    let mediaQuery = null;
+    let mediaHandler = null;
+    try {
+      mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+      mediaHandler = scheduleEnsure;
+      mediaQuery.addEventListener("change", mediaHandler);
+    } catch {
+    }
+
+    window.__CODEX_DREAM_SKIN_STATE__ = {
+      ensure,
+      cleanup: cleanupDreamSkin,
+      observer,
+      timer,
+      scheduler,
+      resizeHandler,
+      mediaQuery,
+      mediaHandler,
+      artUrl,
+      version,
+      descriptor,
+      themeId: theme.id || "custom",
+      detectShellMode: detectDreamSkinShellMode,
+    };
+    ensure();
+  }
+
+  function refreshDreamSkin() {
+    const settings = codexPlusSettings();
+    if (window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__) {
+      if (codexPlusBackendSettingsLoaded && (!settings.dreamSkinEnabled || settings.dreamSkinPaused)) {
+        cleanupDreamSkin();
+      } else {
+        const state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
+        state?.ensure?.();
+      }
+      return;
+    }
+    if (!settings.dreamSkinEnabled || settings.dreamSkinPaused) {
+      cleanupDreamSkin();
+      return;
+    }
+    installDreamSkin(settings);
+  }
+
+  function applyDreamSkinLiveUpdate(payload) {
+    if (!payload || String(payload.revision || "") !== codexPlusDreamSkinRevision) return false;
+    if (typeof payload.artDataUrl === "string" && payload.artDataUrl) {
+      window.__CODEX_PLUS_DREAM_SKIN_ART__ = payload.artDataUrl;
+    }
+    window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = String(payload.artSignature || "");
+    window.__CODEX_PLUS_DREAM_SKIN_THEME__ = payload.theme && typeof payload.theme === "object" ? payload.theme : {};
+    codexPlusBackendSettings.codexAppDreamSkinEnabled = true;
+    codexPlusBackendSettings.codexAppDreamSkinPaused = false;
+    codexPlusBackendSettings.codexAppDreamSkinThemeConfig = window.__CODEX_PLUS_DREAM_SKIN_THEME__;
+    refreshDreamSkin();
+    return true;
+  }
+
+  window.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__ = codexPlusDreamSkinRevision;
+  window.__CODEX_PLUS_APPLY_DREAM_SKIN__ = applyDreamSkinLiveUpdate;
+
   function setCodexPlusSetting(key, value) {
     const backendKey = codexPlusBackendSettingMap[key];
     if (backendKey) {
@@ -1233,6 +1983,8 @@
         if (key === "stepwise") {
           Promise.resolve(window.__codexStepwisePanel?.loadSettings?.()).then(() => syncStepwisePanel(value));
         }
+      }).catch(() => {
+        void loadBackendSettings();
       });
       return;
     }
@@ -1404,6 +2156,7 @@
   const codexAppAssetTextPromises = new Map();
   const codexAppAssetFeatureFallbacks = {
     "setting-storage-": [
+      ["default-service-tier", "dispatchMessage"],
       ["default-service-tier", "dispatchMessage", "service_tier"],
       ["pending-worktree-create", "dispatchMessage", "service_tier"],
     ],
@@ -1416,6 +2169,7 @@
   const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5", "gpt-5.6"]);
   const codexThreadServiceTierModes = new Set(["inherit", "standard", "fast"]);
   const codexServiceTierControlModes = new Set(["inherit", "global-standard", "global-fast", "custom"]);
+  ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].forEach((model) => codexServiceTierSupportedFastModels.add(model));
 
   function codexAppAssetCandidateUrls() {
     return Array.from(new Set([
@@ -1427,14 +2181,13 @@
   }
 
   function codexAppAssetImportableUrl(url) {
-    if (!url) return "";
-    if (url.startsWith("app://-/assets/")) return "";
+    if (!url || url.startsWith("app://-/assets/")) return "";
     return url;
   }
 
   function codexAppAssetUrl(namePart) {
-    const urls = codexAppAssetCandidateUrls();
-    const url = urls.find((url) => url.includes("/assets/") && url.includes(namePart) && url.split("?")[0].endsWith(".js")) || "";
+    const url = codexAppAssetCandidateUrls()
+      .find((candidate) => candidate.includes(namePart)) || "";
     return codexAppAssetImportableUrl(url);
   }
 
@@ -1460,7 +2213,7 @@
       if (!match) continue;
       const href = new URL(match[1], src).href;
       if (!codexAppAssetImportableUrl(href)) continue;
-      return new URL(match[1], src).href;
+      return href;
     }
     return "";
   }
@@ -1473,8 +2226,7 @@
       if (!text) continue;
       if (featureSets.some((features) => features.every((feature) => text.includes(feature)))) {
         const importableUrl = codexAppAssetImportableUrl(url);
-        if (!importableUrl) continue;
-        return importableUrl;
+        if (importableUrl) return importableUrl;
       }
     }
     return "";
@@ -1497,6 +2249,16 @@
     return await codexServiceTierModulePromises.get(namePart);
   }
 
+  async function loadOptionalCodexAppModule(namePart) {
+    try {
+      return await loadCodexAppModule(namePart);
+    } catch (error) {
+      const message = String(error?.message || error);
+      if (message.includes(`未找到 Codex App asset: ${namePart}`)) return null;
+      throw error;
+    }
+  }
+
   async function codexSettingStorageModule() {
     const module = await loadCodexAppModule("setting-storage-");
     if (typeof module.n !== "function" || typeof module.s !== "function") {
@@ -1510,6 +2272,10 @@
       const settingStorage = await codexSettingStorageModule();
       return await settingStorage.n(codexDefaultServiceTierSetting);
     } catch (error) {
+      const settings = await postJson("/settings/get", {});
+      if (settings && Object.prototype.hasOwnProperty.call(settings, "codexDefaultServiceTier")) {
+        return settings.codexDefaultServiceTier;
+      }
       if (typeof codexStateCall === "function") {
         const result = await codexStateCall("get-setting", { params: { key: codexDefaultServiceTierSetting.key } });
         return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : codexDefaultServiceTierSetting.default;
@@ -2214,11 +2980,17 @@
     return message;
   }
 
-  function findCodexDispatcherClass(module) {
-    return Object.values(module || {}).find((value) => {
-      if (typeof value !== "function" || typeof value.getInstance !== "function") return false;
-      return String(value).includes("dispatchMessage") && String(value).includes("subscribe") && String(value).includes("handleMessage");
-    }) || null;
+  function codexServiceTierDispatcherFromModule(module) {
+    const values = module && typeof module === "object" ? Object.values(module) : [];
+    const singleton = values.find((candidate) => candidate
+      && typeof candidate === "object"
+      && typeof candidate.dispatchMessage === "function"
+      && typeof candidate.subscribe === "function");
+    if (singleton) return singleton;
+    const dispatcherClass = values.find((candidate) => typeof candidate === "function"
+      && typeof candidate.getInstance === "function"
+      && typeof candidate.prototype?.dispatchMessage === "function");
+    return dispatcherClass?.getInstance?.() || null;
   }
 
   function isCodexHotkeyWindowRoute() {
@@ -2233,26 +3005,34 @@
 
   function installCodexServiceTierDispatcherPatch() {
     if (window.__codexServiceTierRequestOverrideInstalled === codexServiceTierRequestOverrideVersion) return;
+    const loadDispatcher = async () => {
+      const errors = [];
+      for (const assetPrefix of ["setting-storage-", "vscode-api-"]) {
+        try {
+          const module = await loadCodexAppModule(assetPrefix);
+          const dispatcher = codexServiceTierDispatcherFromModule(module);
+          if (dispatcher) return { dispatcher, assetPrefix };
+          errors.push(`${assetPrefix}: dispatcher export unavailable`);
+        } catch (error) {
+          errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
+        }
+      }
+      throw new Error(`Codex dispatcher unavailable (${errors.join("; ")})`);
+    };
     const patch = async () => {
       try {
         if (isCodexHotkeyWindowRoute()) return;
-        const module = await loadCodexAppModule("setting-storage-");
-        const dispatcherClass = findCodexDispatcherClass(module);
-        const dispatcher = dispatcherClass?.getInstance?.();
-        if (!dispatcher || typeof dispatcher.dispatchMessage !== "function") throw new Error("Codex dispatcher unavailable");
+        const { dispatcher, assetPrefix } = await loadDispatcher();
         if (dispatcher.__codexServiceTierOriginalDispatchMessage) {
           window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
           return;
         }
         dispatcher.__codexServiceTierOriginalDispatchMessage = dispatcher.dispatchMessage.bind(dispatcher);
         dispatcher.dispatchMessage = (type, payload) => {
-          const message = codexServiceTierRequestOverride({ ...(payload || {}), type });
-          const nextType = message?.type || type;
-          const { type: _type, ...nextPayload } = message || {};
-          return dispatcher.__codexServiceTierOriginalDispatchMessage(nextType, nextPayload);
+          return dispatchCodexPlusMessage(dispatcher, type, payload);
         };
         window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
-        sendCodexPlusDiagnostic("service_tier_dispatcher_patch_installed", {});
+        sendCodexPlusDiagnostic("service_tier_dispatcher_patch_installed", { assetPrefix });
       } catch (error) {
         sendCodexPlusDiagnostic("service_tier_dispatcher_patch_failed", {
           errorName: error?.name || "",
@@ -2597,6 +3377,10 @@
               <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮；Fast 仅支持 ${codexServiceTierFastModelListLabel()}，其他模型按 Standard 发送。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
             </div>
+            ${codexPlusIsWindowsPlatform ? `<div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">桌宠跟随真实鼠标</div><div class="codex-plus-row-description">仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="petRealMouseLook"><span></span></button>
+            </div>` : ""}
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">Stepwise</div><div class="codex-plus-row-description">在当前 Codex 页面显示可拖动的下一步建议浮层，可在设置页配置模型和直接发送。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="stepwise"><span></span></button>
@@ -4639,7 +5423,10 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload || {}),
         });
-        const value = await response.json();
+        const originalResponseJson = window.__codexPlusModelJsonResponseOriginals?.responseJson;
+        const value = typeof originalResponseJson === "function"
+          ? await originalResponseJson.call(response)
+          : await response.json();
         if (!response.ok && value && typeof value === "object" && !("status" in value)) {
           value.status = "failed";
         }
@@ -4804,6 +5591,426 @@
     return await codexStateCall("set-global-state", { params: { key, value } });
   }
 
+  const codexProjectlessMainWindowStateDefaults = {
+    loaded: false,
+    enabled: false,
+    intent: "",
+    source: "",
+    revision: 0,
+    contextRevision: 0,
+    draftContext: null,
+    contextPromise: null,
+    lastGenericBeginAt: 0,
+    homeRouteRevision: -1,
+  };
+  const codexProjectlessMainWindowState = window.__codexProjectlessMainWindowState
+    && typeof window.__codexProjectlessMainWindowState === "object"
+    ? window.__codexProjectlessMainWindowState
+    : {};
+  Object.entries(codexProjectlessMainWindowStateDefaults).forEach(([key, value]) => {
+    if (!Object.prototype.hasOwnProperty.call(codexProjectlessMainWindowState, key)) {
+      codexProjectlessMainWindowState[key] = value;
+    }
+  });
+  window.__codexProjectlessMainWindowState = codexProjectlessMainWindowState;
+
+  function codexProjectlessMainWindowEnabled() {
+    return codexProjectlessMainWindowState.loaded
+      && codexProjectlessMainWindowState.enabled
+      && codexPlusBackendSettings.enhancementsEnabled !== false;
+  }
+
+  function clearCodexProjectlessMainWindowTimers() {
+    (window.__codexProjectlessMainWindowTimers || []).forEach((timer) => clearTimeout(timer));
+    window.__codexProjectlessMainWindowTimers = [];
+  }
+
+  function setCodexProjectlessMainWindowIntent(intent, source) {
+    const normalizedIntent = intent === "generic" || intent === "project" ? intent : "";
+    codexProjectlessMainWindowState.intent = normalizedIntent;
+    codexProjectlessMainWindowState.source = String(source || "");
+    codexProjectlessMainWindowState.revision += 1;
+    codexProjectlessMainWindowState.contextRevision = codexProjectlessMainWindowState.revision;
+    codexProjectlessMainWindowState.draftContext = null;
+    codexProjectlessMainWindowState.contextPromise = null;
+    if (normalizedIntent !== "generic") clearCodexProjectlessMainWindowTimers();
+  }
+
+  function codexProjectlessMainWindowShouldEnforce() {
+    return codexProjectlessMainWindowEnabled()
+      && codexProjectlessMainWindowState.intent === "generic";
+  }
+
+  function codexProjectlessContextValid(context) {
+    return !!context
+      && typeof context === "object"
+      && typeof context.cwd === "string"
+      && context.cwd.trim().length > 0
+      && typeof context.projectlessOutputDirectory === "string"
+      && context.projectlessOutputDirectory.trim().length > 0
+      && Array.isArray(context.workspaceRoots)
+      && context.workspaceRoots.length > 0;
+  }
+
+  function codexProjectlessPromptFromValue(value, visited = new WeakSet(), depth = 0) {
+    if (typeof value === "string") return depth > 0 ? value.trim() : "";
+    if (!value || typeof value !== "object" || depth > 5 || visited.has(value)) return "";
+    visited.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (item?.type === "text" && typeof item.text === "string" && item.text.trim()) return item.text.trim();
+        const prompt = codexProjectlessPromptFromValue(item, visited, depth + 1);
+        if (prompt) return prompt;
+      }
+      return "";
+    }
+    for (const key of ["input", "prompt", "message", "params", "request", "payload"]) {
+      const prompt = codexProjectlessPromptFromValue(value[key], visited, depth + 1);
+      if (prompt) return prompt;
+    }
+    return "";
+  }
+
+  async function prepareCodexProjectlessDraftContext(prompt = "") {
+    if (!codexProjectlessMainWindowShouldEnforce()) return null;
+    const revision = codexProjectlessMainWindowState.revision;
+    if (codexProjectlessMainWindowState.contextRevision === revision
+        && codexProjectlessContextValid(codexProjectlessMainWindowState.draftContext)) {
+      return codexProjectlessMainWindowState.draftContext;
+    }
+    if (codexProjectlessMainWindowState.contextRevision === revision
+        && codexProjectlessMainWindowState.contextPromise) {
+      return await codexProjectlessMainWindowState.contextPromise;
+    }
+    const contextPromise = Promise.resolve().then(async () => {
+      const module = await loadCodexAppModule("projectless-thread-");
+      if (typeof module.n !== "function") throw new Error("Codex projectless-thread 生成器不可用");
+      const options = String(prompt || "").trim() ? { prompt: String(prompt).trim() } : {};
+      const context = await module.n(["~"], options);
+      if (!codexProjectlessContextValid(context)) throw new Error("Codex projectless-thread 返回了无效目录");
+      return {
+        cwd: context.cwd,
+        projectlessOutputDirectory: context.projectlessOutputDirectory,
+        workspaceRoots: [...context.workspaceRoots],
+      };
+    });
+    codexProjectlessMainWindowState.contextRevision = revision;
+    codexProjectlessMainWindowState.contextPromise = contextPromise;
+    try {
+      const context = await contextPromise;
+      if (revision === codexProjectlessMainWindowState.revision
+          && codexProjectlessMainWindowShouldEnforce()) {
+        codexProjectlessMainWindowState.draftContext = context;
+      }
+      return context;
+    } finally {
+      if (codexProjectlessMainWindowState.contextPromise === contextPromise) {
+        codexProjectlessMainWindowState.contextPromise = null;
+      }
+    }
+  }
+
+  function codexProjectlessStartParams(message) {
+    if (!message || typeof message !== "object") return null;
+    if (message.type === "send-cli-request-for-host" && message.method === "thread/start") return message.params;
+    if ((message.type === "mcp-request" || message.type === "worker-request")
+        && message.request?.method === "thread/start") return message.request.params;
+    if (message.type === "thread-prewarm-start" && message.request?.params) return message.request.params;
+    if (message.type === "prewarm-thread-start-for-host" && message.params) return message.params;
+    if (message.type === "start-conversation" || message.type === "start-thread-for-host") return message;
+    return null;
+  }
+
+  function patchCodexProjectlessStartParams(params, context) {
+    if (!params || typeof params !== "object" || !codexProjectlessContextValid(context)) return params;
+    const next = {
+      ...params,
+      cwd: context.cwd,
+      workspaceRoots: [...context.workspaceRoots],
+      workspaceKind: "projectless",
+      projectlessOutputDirectory: context.projectlessOutputDirectory,
+    };
+    delete next.projectAssignment;
+    if (next.permissions && typeof next.permissions === "object") {
+      const permissions = { ...next.permissions, runtimeWorkspaceRoots: [...context.workspaceRoots] };
+      if (permissions.sandboxPolicy?.type === "workspaceWrite") {
+        permissions.sandboxPolicy = {
+          ...permissions.sandboxPolicy,
+          writableRoots: [...context.workspaceRoots],
+        };
+      }
+      next.permissions = permissions;
+    }
+    return next;
+  }
+
+  function applyCodexProjectlessRequestOverride(message, context) {
+    const params = codexProjectlessStartParams(message);
+    if (!params) return message;
+    const nextParams = patchCodexProjectlessStartParams(params, context);
+    if (nextParams === params) return message;
+    if (message.type === "send-cli-request-for-host") return { ...message, params: nextParams };
+    if (message.type === "mcp-request" || message.type === "worker-request") {
+      return { ...message, request: { ...message.request, params: nextParams } };
+    }
+    if (message.type === "thread-prewarm-start") {
+      return { ...message, request: { ...message.request, params: nextParams } };
+    }
+    if (message.type === "prewarm-thread-start-for-host") return { ...message, params: nextParams };
+    return nextParams;
+  }
+
+  function codexProjectlessRequestNeedsOverride(message) {
+    if (!codexProjectlessMainWindowShouldEnforce()) return false;
+    const params = codexProjectlessStartParams(message);
+    if (!params) return false;
+    return params.workspaceKind !== "projectless"
+      || typeof params.projectlessOutputDirectory !== "string"
+      || !params.projectlessOutputDirectory.trim();
+  }
+
+  function dispatchCodexPlusMessage(dispatcher, type, payload) {
+    const originalMessage = { ...(payload || {}), type };
+    const dispatch = (message) => {
+      const serviceTierMessage = codexServiceTierRequestOverride(message);
+      const nextType = serviceTierMessage?.type || type;
+      const { type: _type, ...nextPayload } = serviceTierMessage || {};
+      return dispatcher.__codexServiceTierOriginalDispatchMessage(nextType, nextPayload);
+    };
+    if (!codexProjectlessRequestNeedsOverride(originalMessage)) return dispatch(originalMessage);
+    const revision = codexProjectlessMainWindowState.revision;
+    const prompt = codexProjectlessPromptFromValue(originalMessage);
+    return prepareCodexProjectlessDraftContext(prompt).then((context) => {
+      if (revision !== codexProjectlessMainWindowState.revision
+          || !codexProjectlessMainWindowShouldEnforce()) {
+        return dispatch(originalMessage);
+      }
+      const message = applyCodexProjectlessRequestOverride(originalMessage, context);
+      sendCodexPlusDiagnostic("projectless_thread_start_overridden", {
+        type: String(type || ""),
+        workspaceRootCount: context.workspaceRoots.length,
+        hasOutputDirectory: !!context.projectlessOutputDirectory,
+      });
+      return dispatch(message);
+    }).catch((error) => {
+      sendCodexPlusDiagnostic("projectless_thread_start_override_failed", {
+        type: String(type || ""),
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+      showToast("无项目会话准备失败，请重试", null);
+      throw error;
+    });
+  }
+
+  function codexProjectlessMainWindowLooksLikeHome() {
+    return Array.from(document.querySelectorAll("button, [role='button']")).some((element) => {
+      const label = String(
+        element.getAttribute?.("aria-label")
+        || element.getAttribute?.("title")
+        || element.innerText
+        || element.textContent
+        || ""
+      ).replace(/\s+/g, " ").trim();
+      return /^(select|choose) project$/i.test(label) || /^(选择|选取)项目$/.test(label);
+    });
+  }
+
+  async function navigateCodexProjectlessMainWindowHome(source, revision) {
+    if (!codexProjectlessMainWindowShouldEnforce()
+        || revision !== codexProjectlessMainWindowState.revision
+        || codexProjectlessMainWindowState.homeRouteRevision === revision
+        || !codexProjectlessMainWindowLooksLikeHome()) {
+      return false;
+    }
+    const module = await loadCodexAppModule("vscode-api-");
+    const dispatcher = module?.g;
+    if (!dispatcher || typeof dispatcher.dispatchHostMessage !== "function") {
+      throw new Error("Codex 内部导航接口不可用");
+    }
+    dispatcher.dispatchHostMessage({
+      type: "navigate-to-route",
+      path: "/",
+      state: { focusComposerNonce: Date.now() },
+    });
+    codexProjectlessMainWindowState.homeRouteRevision = revision;
+    sendCodexPlusDiagnostic("projectless_main_window_home_route_cleared", {
+      source: String(source || "runtime"),
+    });
+    return true;
+  }
+
+  async function enforceCodexProjectlessMainWindow(source, revision) {
+    if (!codexProjectlessMainWindowShouldEnforce()) return false;
+    if (revision != null && revision !== codexProjectlessMainWindowState.revision) return false;
+    let changed = false;
+    try {
+      const activeRoots = await getCodexGlobalState("active-workspace-roots").catch(() => null);
+      if (!codexProjectlessMainWindowShouldEnforce()) return false;
+      if (revision != null && revision !== codexProjectlessMainWindowState.revision) return false;
+      if (!Array.isArray(activeRoots) || activeRoots.length > 0) {
+        await setCodexGlobalState("active-workspace-roots", []);
+        sendCodexPlusDiagnostic("projectless_main_window_runtime_prepared", {
+          source: String(source || "runtime"),
+          previousRootCount: Array.isArray(activeRoots) ? activeRoots.length : activeRoots == null ? 0 : 1,
+        });
+        changed = true;
+      }
+      if (await navigateCodexProjectlessMainWindowHome(
+        source,
+        revision == null ? codexProjectlessMainWindowState.revision : revision
+      )) changed = true;
+    } catch (error) {
+      sendCodexPlusDiagnostic("projectless_main_window_runtime_failed", {
+        source: String(source || "runtime"),
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+    }
+    return changed;
+  }
+
+  function scheduleCodexProjectlessMainWindowEnforcement(source) {
+    clearCodexProjectlessMainWindowTimers();
+    if (!codexProjectlessMainWindowShouldEnforce()) return;
+    const revision = codexProjectlessMainWindowState.revision;
+    window.__codexProjectlessMainWindowTimers = codexProjectlessMainWindowRetryDelaysMs.map((delay) => setTimeout(() => {
+      void enforceCodexProjectlessMainWindow(source, revision);
+    }, delay));
+  }
+
+  function codexProjectlessMainWindowTriggerKind(target) {
+    if (!target?.closest) return "";
+    const explicitProject = target.closest(
+      'button[aria-label^="Start new chat in "], [data-app-action-sidebar-project-row][data-app-action-sidebar-project-id], [role="menuitem"][data-project-id], [role="menuitem"][data-workspace-root]'
+    );
+    if (explicitProject) return "project";
+    const trigger = target.closest('button, a, [role="button"], [role="menuitem"]');
+    if (!trigger) return "";
+    const labels = [
+      trigger.getAttribute?.("aria-label"),
+      trigger.getAttribute?.("title"),
+      trigger.innerText || trigger.textContent,
+    ].map((value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase()).filter(Boolean);
+    return labels.some((label) => /^(new (task|chat)|quick chat|新建(任务|对话)|快速对话)(?:\s|ctrl\+|cmd\+|⌘|$)/i.test(label))
+      ? "generic"
+      : "";
+  }
+
+  function beginCodexProjectlessGenericNewTask(source) {
+    const now = Date.now();
+    if (codexProjectlessMainWindowState.intent !== "generic"
+        || now - codexProjectlessMainWindowState.lastGenericBeginAt > 400) {
+      setCodexProjectlessMainWindowIntent("generic", source);
+    } else {
+      codexProjectlessMainWindowState.source = String(source || "");
+    }
+    codexProjectlessMainWindowState.lastGenericBeginAt = now;
+    try {
+      sessionStorage.removeItem(upstreamProjectContextKey);
+    } catch {
+    }
+    scheduleCodexProjectlessMainWindowEnforcement(source);
+  }
+
+  function installCodexProjectlessNewTaskButtons() {
+    if (!codexProjectlessMainWindowEnabled()) return;
+    Array.from(document.querySelectorAll("button, a, [role='button'], [role='menuitem']")).forEach((trigger) => {
+      if (trigger.closest?.('[data-app-action-sidebar-project-row][data-app-action-sidebar-project-id]')) return;
+      if (codexProjectlessMainWindowTriggerKind(trigger) !== "generic") return;
+      if (trigger.dataset?.codexProjectlessMainWindow === codexProjectlessMainWindowVersion) return;
+      if (trigger.dataset) trigger.dataset.codexProjectlessMainWindow = codexProjectlessMainWindowVersion;
+      trigger.addEventListener("click", () => beginCodexProjectlessGenericNewTask("generic-new-task-button"), true);
+    });
+  }
+
+  function handleCodexProjectlessMainWindowNavigation(event) {
+    const target = event?.target?.closest ? event.target : event?.target?.parentElement;
+    const kind = codexProjectlessMainWindowTriggerKind(target);
+    if (kind === "project") {
+      setCodexProjectlessMainWindowIntent("project", "explicit-project");
+      return;
+    }
+    if (kind !== "generic") return;
+    beginCodexProjectlessGenericNewTask("generic-new-task");
+  }
+
+  function installCodexProjectlessMainWindowProtection() {
+    if (window.__codexProjectlessMainWindowProtectionVersion === codexProjectlessMainWindowVersion) return;
+    document.removeEventListener("pointerdown", window.__codexProjectlessMainWindowNavigationHandler, true);
+    document.removeEventListener("click", window.__codexProjectlessMainWindowNavigationHandler, true);
+    window.__codexProjectlessMainWindowNavigationHandler = handleCodexProjectlessMainWindowNavigation;
+    document.addEventListener("pointerdown", window.__codexProjectlessMainWindowNavigationHandler, true);
+    document.addEventListener("click", window.__codexProjectlessMainWindowNavigationHandler, true);
+    window.__codexProjectlessMainWindowProtectionVersion = codexProjectlessMainWindowVersion;
+  }
+
+  async function getCodexProjectlessMainWindowSetting() {
+    try {
+      const settingStorage = await codexSettingStorageModule();
+      return await settingStorage.n(codexProjectlessMainWindowSetting);
+    } catch (error) {
+      if (typeof codexStateCall === "function") {
+        const result = await codexStateCall("get-setting", { params: { key: codexProjectlessMainWindowSetting.key } });
+        return result && Object.prototype.hasOwnProperty.call(result, "value")
+          ? result.value
+          : codexProjectlessMainWindowSetting.default;
+      }
+      throw error;
+    }
+  }
+
+  async function loadCodexProjectlessMainWindowSetting(attempt = 0) {
+    try {
+      codexProjectlessMainWindowState.enabled = (await getCodexProjectlessMainWindowSetting()) === true;
+      codexProjectlessMainWindowState.loaded = true;
+      if (!codexProjectlessMainWindowState.enabled) {
+        setCodexProjectlessMainWindowIntent("", "setting-disabled");
+        return;
+      }
+      if (!codexProjectlessMainWindowState.intent) {
+        setCodexProjectlessMainWindowIntent("generic", "startup");
+      }
+      installAppServerModelRequestPatch();
+      scheduleCodexProjectlessMainWindowEnforcement("startup");
+      installCodexProjectlessNewTaskButtons();
+    } catch (error) {
+      if (attempt < 60) {
+        setTimeout(() => void loadCodexProjectlessMainWindowSetting(attempt + 1), 250);
+        return;
+      }
+      sendCodexPlusDiagnostic("projectless_main_window_setting_failed", {
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+    }
+  }
+
+  if (window.__CODEX_PLUS_TEST_PROJECTLESS__) {
+    window.__codexPlusProjectlessTest = {
+      triggerKind: codexProjectlessMainWindowTriggerKind,
+      setEnabled: (enabled) => {
+        codexProjectlessMainWindowState.loaded = true;
+        codexProjectlessMainWindowState.enabled = enabled === true;
+      },
+      setIntent: setCodexProjectlessMainWindowIntent,
+      shouldEnforce: codexProjectlessMainWindowShouldEnforce,
+      requestNeedsOverride: codexProjectlessRequestNeedsOverride,
+      applyRequestOverride: applyCodexProjectlessRequestOverride,
+      appServerRequestNeedsOverride: codexProjectlessAppServerRequestNeedsOverride,
+      applyAppServerRequestOverride: applyCodexProjectlessAppServerRequestOverride,
+      patchAppServerClient: patchAppServerModelRequestClient,
+      contextValid: codexProjectlessContextValid,
+      setDraftContext: (context) => {
+        codexProjectlessMainWindowState.contextRevision = codexProjectlessMainWindowState.revision;
+        codexProjectlessMainWindowState.draftContext = context;
+        codexProjectlessMainWindowState.contextPromise = null;
+      },
+      dispatchMessage: dispatchCodexPlusMessage,
+      state: () => ({ ...codexProjectlessMainWindowState }),
+    };
+  }
+
   function objectGlobalState(value) {
     return value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
   }
@@ -4826,6 +6033,9 @@
       applyServiceTierOverride: (method, params, threadIdHint = "") => applyCodexServiceTierRequestOverride(method, params, threadIdHint),
       requestOverride: (message) => codexServiceTierRequestOverride(message),
       diagnostics: () => [...(window.__codexPlusServiceTierTestDiagnostics || [])],
+      currentModelName: () => codexServiceTierCurrentModelName(),
+      fastAvailability: (modelName = codexServiceTierCurrentModelName()) => codexServiceTierFastAvailability(modelName),
+      modelDescriptor: (modelName) => codexPlusModelDescriptor(modelName),
       setModelCatalog: (catalog = {}) => {
         codexModelCatalog = {
           status: "ok",
@@ -4858,6 +6068,7 @@
           ...state,
         }));
       },
+      dispatcherFromModule: codexServiceTierDispatcherFromModule,
     };
     return;
   }
@@ -4917,22 +6128,58 @@
     return codexModelCatalogPromise;
   }
 
-  function modelReasoningEfforts() {
-    return ["minimal", "low", "medium", "high", "xhigh"].map((reasoningEffort) => ({ reasoningEffort, description: `${reasoningEffort} effort` }));
+  function codexPlusModelMetadata(modelName) {
+    const metadata = codexModelCatalog.modelMetadata || codexModelCatalog.model_metadata;
+    const normalizedName = codexServiceTierModelFromValue(modelName);
+    const exact = metadata && typeof metadata === "object" ? metadata[normalizedName] : null;
+    const matchedKey = !exact && metadata && typeof metadata === "object"
+      ? Object.keys(metadata).find((key) => key.toLowerCase() === normalizedName.toLowerCase())
+      : null;
+    const value = exact || (matchedKey ? metadata[matchedKey] : null);
+    return value && typeof value === "object" ? value : null;
+  }
+
+  function modelReasoningEfforts(modelName) {
+    const supported = codexPlusModelMetadata(modelName)?.supportedReasoningEfforts;
+    if (Array.isArray(supported) && supported.length > 0) {
+      return supported.map((entry) => ({ ...entry }));
+    }
+    return ["low", "medium", "high", "xhigh"].map((reasoningEffort) => ({ reasoningEffort, description: `${reasoningEffort} effort` }));
+  }
+
+  function applyCodexPlusModelMetadata(descriptor, modelName) {
+    const metadata = codexPlusModelMetadata(modelName);
+    if (!descriptor || !metadata) return false;
+    let changed = false;
+    for (const key of ["displayName", "description", "defaultReasoningEffort"]) {
+      if (typeof metadata[key] === "string" && metadata[key] && descriptor[key] !== metadata[key]) {
+        descriptor[key] = metadata[key];
+        changed = true;
+      }
+    }
+    if (Array.isArray(metadata.supportedReasoningEfforts) && metadata.supportedReasoningEfforts.length > 0) {
+      const nextEfforts = modelReasoningEfforts(modelName);
+      if (JSON.stringify(descriptor.supportedReasoningEfforts || []) !== JSON.stringify(nextEfforts)) {
+        descriptor.supportedReasoningEfforts = nextEfforts;
+        changed = true;
+      }
+    }
+    return changed;
   }
 
   function codexPlusModelDescriptor(modelName) {
+    const metadata = codexPlusModelMetadata(modelName);
     return {
       model: modelName,
       id: modelName,
       slug: modelName,
       name: modelName,
-      displayName: modelName,
-      description: codexModelCatalog.provider_name || codexModelCatalog.model_provider || "Custom model",
+      displayName: metadata?.displayName || modelName,
+      description: metadata?.description || codexModelCatalog.provider_name || codexModelCatalog.model_provider || "Custom model",
       hidden: false,
       isDefault: (codexModelCatalog.default_model || codexModelCatalog.model) === modelName,
-      defaultReasoningEffort: "medium",
-      supportedReasoningEfforts: modelReasoningEfforts(),
+      defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
+      supportedReasoningEfforts: modelReasoningEfforts(modelName),
     };
   }
 
@@ -4967,9 +6214,12 @@
     let changed = false;
     const existing = new Map(models.map((item) => [item.model, item]));
     models.forEach((item) => {
-      if (customModels.includes(item.model) && item.hidden !== false) {
-        item.hidden = false;
-        changed = true;
+      if (customModels.includes(item.model)) {
+        if (item.hidden !== false) {
+          item.hidden = false;
+          changed = true;
+        }
+        if (applyCodexPlusModelMetadata(item, item.model)) changed = true;
       }
     });
     customModels.forEach((modelName) => {
@@ -5347,16 +6597,85 @@
     return result;
   }
 
+  function codexProjectlessAppServerStartRequest(method, params) {
+    const requestMethod = String(method || "");
+    if (requestMethod === "send-cli-request-for-host"
+        && params?.method === "thread/start"
+        && params.params
+        && typeof params.params === "object") {
+      return {
+        params: params.params,
+        apply: (nextParams) => ({ ...params, params: nextParams }),
+      };
+    }
+    if (requestMethod === "prewarm-thread-start-for-host"
+        && params?.params
+        && typeof params.params === "object") {
+      return {
+        params: params.params,
+        apply: (nextParams) => ({ ...params, params: nextParams }),
+      };
+    }
+    if (requestMethod === "start-conversation"
+        || requestMethod === "start-thread-for-host"
+        || requestMethod === "prewarm-thread-start-for-host"
+        || requestMethod === "thread/start") {
+      return params && typeof params === "object"
+        ? { params, apply: (nextParams) => nextParams }
+        : null;
+    }
+    return null;
+  }
+
+  function codexProjectlessAppServerRequestNeedsOverride(method, params) {
+    if (!codexProjectlessMainWindowShouldEnforce()) return false;
+    const request = codexProjectlessAppServerStartRequest(method, params);
+    if (!request) return false;
+    return request.params.workspaceKind !== "projectless"
+      || typeof request.params.projectlessOutputDirectory !== "string"
+      || !request.params.projectlessOutputDirectory.trim();
+  }
+
+  function applyCodexProjectlessAppServerRequestOverride(method, params, context) {
+    const request = codexProjectlessAppServerStartRequest(method, params);
+    if (!request) return params;
+    return request.apply(patchCodexProjectlessStartParams(request.params, context));
+  }
+
   function patchAppServerModelRequestClient(client) {
     if (!client || typeof client.sendRequest !== "function") return false;
     if (client.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) return true;
     const originalSendRequest = client.__codexPlusModelOriginalSendRequest || client.sendRequest.bind(client);
     client.__codexPlusModelOriginalSendRequest = originalSendRequest;
     client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
-      const result = await originalSendRequest(method, params, options);
+      let nextParams = params;
+      if (codexProjectlessAppServerRequestNeedsOverride(method, params)) {
+        const revision = codexProjectlessMainWindowState.revision;
+        try {
+          const context = await prepareCodexProjectlessDraftContext(codexProjectlessPromptFromValue(params));
+          if (revision === codexProjectlessMainWindowState.revision
+              && codexProjectlessMainWindowShouldEnforce()) {
+            nextParams = applyCodexProjectlessAppServerRequestOverride(method, params, context);
+            sendCodexPlusDiagnostic("projectless_app_server_start_overridden", {
+              method: String(method || ""),
+              workspaceRootCount: context.workspaceRoots.length,
+              hasOutputDirectory: !!context.projectlessOutputDirectory,
+            });
+          }
+        } catch (error) {
+          sendCodexPlusDiagnostic("projectless_app_server_start_override_failed", {
+            method: String(method || ""),
+            errorName: error?.name || "",
+            errorMessage: error?.message || String(error),
+          });
+          showToast("无项目会话准备失败，请重试", null);
+          throw error;
+        }
+      }
+      const result = await originalSendRequest(method, nextParams, options);
       if (!codexPlusModelUnlockEnabled()) return result;
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-      return patchAppServerModelResult(appServerModelRequestMethod(String(method || ""), params), result);
+      return patchAppServerModelResult(appServerModelRequestMethod(String(method || ""), nextParams), result);
     };
     client.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
     return true;
@@ -5394,29 +6713,50 @@
     if (appServerModelRequestPatchDisabled) return;
     const patch = async () => {
       try {
-        const module = await loadCodexAppModule("app-server-manager-signals-");
-        const candidates = Object.values(module).filter((value) => value && typeof value === "object");
+        const modules = [];
+        for (const assetPrefix of ["use-host-config-", "app-server-manager-signals-"]) {
+          const module = await loadOptionalCodexAppModule(assetPrefix);
+          if (module) modules.push({ assetPrefix, module });
+        }
+        if (modules.length === 0) {
+          window.__codexPlusAppServerModelRequestPatchInstalled = codexAppServerModelRequestPatchVersion;
+          sendCodexPlusDiagnostic("model_app_server_request_patch_skipped", {
+            reason: "app_server_request_assets_missing",
+          });
+          return;
+        }
+        let candidateCount = 0;
         let patchedCount = 0;
-        for (const candidate of candidates) {
-          if (patchAppServerModelRequestClient(candidate)) patchedCount += 1;
-          if (typeof candidate.sendRequest !== "function" && typeof candidate.get === "function") {
-            try {
-              if (patchAppServerModelRequestClient(candidate.get())) patchedCount += 1;
-            } catch {
+        const patchedAssets = [];
+        for (const { assetPrefix, module } of modules) {
+          const candidates = Object.values(module).filter((value) => value && typeof value === "object");
+          candidateCount += candidates.length;
+          let assetPatchedCount = 0;
+          for (const candidate of candidates) {
+            if (patchAppServerModelRequestClient(candidate)) assetPatchedCount += 1;
+            if (typeof candidate.sendRequest !== "function" && typeof candidate.get === "function") {
+              try {
+                if (patchAppServerModelRequestClient(candidate.get())) assetPatchedCount += 1;
+              } catch {
+              }
             }
           }
+          if (assetPatchedCount > 0) patchedAssets.push(assetPrefix);
+          patchedCount += assetPatchedCount;
         }
         if (patchedCount > 0) {
           appServerModelRequestPatchMissCount = 0;
           window.__codexPlusAppServerModelRequestPatchInstalled = codexAppServerModelRequestPatchVersion;
           sendCodexPlusDiagnostic("model_app_server_request_patch_installed", {
-            candidateCount: candidates.length,
+            candidateCount,
             patchedCount,
+            assets: patchedAssets,
           });
         } else {
           noteAppServerModelRequestPatchMiss("model_app_server_request_patch_not_found", {
-            exportCount: Object.keys(module || {}).length,
-            candidateCount: candidates.length,
+            exportCount: modules.reduce((count, entry) => count + Object.keys(entry.module || {}).length, 0),
+            candidateCount,
+            assets: modules.map((entry) => entry.assetPrefix),
           });
         }
       } catch (error) {
@@ -8520,6 +9860,7 @@
   function scanLightweight() {
     installStyle();
     installCodexServiceTierDispatcherPatch();
+    installCodexProjectlessNewTaskButtons();
     installCodexPlusMenu();
     localizeCodexMenus();
     updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));
@@ -9143,6 +10484,7 @@
         }
       }
     }
+    refreshDreamSkin();
     refreshThreadIdBadges();
     sessionRows().forEach(tryAttachButton);
     updateDeleteButtonOffsets();
@@ -9252,7 +10594,8 @@
   }
 
   void loadBackendSettingsForStartup();
-  void loadCodexServiceTierState();
+  installCodexProjectlessMainWindowProtection();
+  if (!window.__CODEX_PLUS_TEST_PROJECTLESS__) void loadCodexProjectlessMainWindowSetting();
   installUpstreamBranchDropdownAdapter();
   installUpstreamWorktreeNativeAdapter();
   scan();

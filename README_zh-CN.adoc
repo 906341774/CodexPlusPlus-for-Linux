@@ -7,7 +7,7 @@ link:README.adoc[English] | 简体中文
 `CodexPlusPlus-on-Linux` 是面向 `BigPizzaV3/CodexPlusPlus` 的源码级 Linux 适配项目。
 它记录并重新应用必要补丁，使 Codex++ 可以配合 `ilysenko/codex-desktop-linux` 生成的非官方 Linux Codex Desktop 构建使用。
 
-项目版本：`1.2.34`，与上游 Codex++ `v1.2.34` 同步。
+项目版本：`1.2.41`，与上游 Codex++ `v1.2.41` 同步。
 
 本仓库作为下列项目的 fork/适配版本维护：
 
@@ -90,7 +90,7 @@ Copy-Item -Path "contrib/user-local-install/files/.local/share/applications/code
 `example-feature` 与 `local` 之外所有带描述文件的顶层 feature，写入 gitignored
 的 `linux-features/features.json`，同时导出 `CODEX_LINUX_FEATURES` 和
 `CODEX_LINUX_FEATURES_CONFIG`，并要求两份 build-info 文件精确记录发现结果。
-`v1.2.34` 基线当前启用 23 个 Linux features；若出现
+`v1.2.41` 基线当前可发现 29 个 Linux features；若出现
 `Enabled features: None`，构建会直接判定失败。
 
 `ydotool` 的安装命令本身因发行版而异；当前包名和服务配置请参考 `ilysenko/codex-desktop-linux` 的 `docs/linux-computer-use.md`。

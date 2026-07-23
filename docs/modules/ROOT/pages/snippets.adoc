@@ -9,7 +9,7 @@ The table is intended for maintainers; the JSON manifest is parsed by `scripts/d
 
 == Patch categories
 
-Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility/` are required for the Linux port. Enhancement patches under `docs/modules/ROOT/attachments/patches/enhancements/` are optional and reserved for future user-selectable features.
+Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility/` are required for the Linux port. Enhancement patches under `docs/modules/ROOT/attachments/patches/enhancements/` are optional user-selectable features.
 
 == Snippet table
 
@@ -26,7 +26,7 @@ Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility
 
 |`020-cdp-multi-target-injection`
 |Required
-|`Cargo.lock`, `crates/codex-plus-core/Cargo.toml`, `crates/codex-plus-core/src/cdp.rs`, `apps/codex-plus-launcher/src/main.rs`
+|`crates/codex-plus-core/src/cdp.rs`, `apps/codex-plus-launcher/src/main.rs`
 |Inject all live Codex webview page targets while preferring the primary window over the hotkey window.
 |Needed when Linux webview exposes several unlabeled CDP page targets or the first target is not the main window.
 |xref:attachment$patches/compatibility/020-cdp-multi-target-injection.patch[patch]
@@ -54,7 +54,7 @@ Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility
 
 |`060-renderer-linux-compatibility`
 |Required
-|`apps/codex-plus-manager/src/App.tsx`, `apps/codex-plus-manager/src/i18n-en.ts`, `assets/inject/renderer-inject.js`
+|`apps/codex-plus-manager/src/App.tsx`, `apps/codex-plus-manager/src/i18n-en.ts`, and the three renderer injection assets
 |Stabilize Linux renderer injection for plugin marketplace requests/details, Pure API synthetic accounts, delete behavior, floating-control placement, and Fast/Standard switching. Fast supports GPT-5.4, GPT-5.5, GPT-5.6, GPT-5.6 model suffixes, localized labels, and Linux composer-footer discovery; transient backend checks do not block a known local model, and Codex++ cleanup leaves the official Fast control untouched. This patch deliberately does not restore the removed sidebar-entry unlock, ChatGPT authentication spoofing, or disabled-button mutation.
 |Needed while upstream renderer injection does not account for Linux Codex Desktop DOM and MCP response differences.
 |xref:attachment$patches/compatibility/060-renderer-linux-compatibility.patch[patch]
@@ -73,10 +73,17 @@ Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility
 |Needed when Codex++ can list local sessions but Linux Codex Desktop project sidebars show no conversations, when source-less remote catalog rows remain visible as empty history entries, or when shown conversations never load after click, after a Codex storage schema update.
 |xref:attachment$patches/compatibility/080-linux-local-thread-catalog-sync.patch[patch]
 
+|`100-browser-native-rehosting`
+|Enabled enhancement
+|Codex++ launcher, Manager, gateway core, browser shim, and focused tests
+|Run the original Codex Desktop React UI in a normal browser through an authenticated loopback gateway while reusing the server-side Electron AppHost and Codex++ Pure API/API Key state.
+|Enable for headless Linux servers that need a browser-resizable DOM instead of VNC or pixel streaming. Runtime activation remains explicit and preserves normal foreground launch paths.
+|xref:attachment$patches/enhancements/100-browser-native-rehosting.patch[patch]
+
 |`900-regression-tests`
 |Optional
-|Nine focused test files under `apps/codex-plus-manager`, `crates/codex-plus-core/tests`, and `crates/codex-plus-data/tests`
-|Add regression coverage for the nine production patches, including GPT-5.6 Fast/Standard variants, coexistence with the official Fast control, Linux user-script URL aliasing, real-title catalog backfill, idempotent catalog sync, and projectless exclusion.
+|The focused compatibility test files and aggregate test configuration under `apps/codex-plus-manager`, `crates/codex-plus-core/tests`, and `crates/codex-plus-data/tests`
+|Add regression coverage for the compatibility patches, including GPT-5.6 Fast/Standard variants, coexistence with the official Fast control, Linux user-script URL aliasing, real-title catalog backfill, idempotent catalog sync, and projectless exclusion.
 |Recommended for source builds and CI; can be disabled for a faster production-only patch.
 |xref:attachment$patches/compatibility/900-regression-tests.patch[patch]
 |===
@@ -107,9 +114,7 @@ The manager script extracts the JSON block between the markers below.
     "kind": "production",
     "patch": "docs/modules/ROOT/attachments/patches/compatibility/020-cdp-multi-target-injection.patch",
     "targets": [
-      "Cargo.lock",
       "apps/codex-plus-launcher/src/main.rs",
-      "crates/codex-plus-core/Cargo.toml",
       "crates/codex-plus-core/src/cdp.rs"
     ],
     "purpose": "Inject every live Codex webview target and prefer the primary Codex window."
@@ -161,7 +166,9 @@ The manager script extracts the JSON block between the markers below.
     "targets": [
       "apps/codex-plus-manager/src/App.tsx",
       "apps/codex-plus-manager/src/i18n-en.ts",
-      "assets/inject/renderer-inject.js"
+      "assets/inject/renderer-inject.js",
+      "assets/inject/upstream/cidala-tiger/macos/renderer-inject.js",
+      "assets/inject/upstream/dream-skin/macos/renderer-inject.js"
     ],
     "purpose": "Patch Linux renderer compatibility for marketplace requests/details, Pure API account reads, delete and menu behavior, and GPT-5.6 Fast/Standard switching while preserving official Fast controls and refusing legacy plugin-entry auth spoofing."
   },
@@ -189,12 +196,37 @@ The manager script extracts the JSON block between the markers below.
     "purpose": "Backfill Codex Desktop local_thread_catalog rows from rollout-backed sessions with real titles, exclude projectless threads, and keep unchanged syncs idempotent; companion CodexDesktop snapshot patches preserve and hydrate those rows."
   },
   {
+    "id": "100-browser-native-rehosting",
+    "required": false,
+    "defaultEnabled": true,
+    "kind": "enhancement",
+    "patch": "docs/modules/ROOT/attachments/patches/enhancements/100-browser-native-rehosting.patch",
+    "targets": [
+      "Cargo.lock",
+      "apps/codex-plus-launcher/src/main.rs",
+      "apps/codex-plus-manager/src-tauri/src/commands.rs",
+      "apps/codex-plus-manager/src-tauri/src/lib.rs",
+      "apps/codex-plus-manager/src/App.tsx",
+      "apps/codex-plus-manager/src/headless-browser.test.ts",
+      "apps/codex-plus-manager/src/headless-browser.ts",
+      "apps/codex-plus-manager/src/i18n-en.ts",
+      "apps/codex-plus-manager/src/styles.css",
+      "crates/codex-plus-core/Cargo.toml",
+      "crates/codex-plus-core/assets/browser-shim.js",
+      "crates/codex-plus-core/src/headless_browser.rs",
+      "crates/codex-plus-core/src/lib.rs",
+      "crates/codex-plus-core/tests/headless_browser.rs"
+    ],
+    "purpose": "Add opt-in browser-native Codex Desktop rehosting with an authenticated loopback gateway, Electron AppHost relay, tmux/Xvfb lifecycle, Manager controls, and server-side OAuth or Pure API/API Key reuse."
+  },
+  {
     "id": "900-regression-tests",
     "required": false,
     "defaultEnabled": true,
     "kind": "test",
     "patch": "docs/modules/ROOT/attachments/patches/compatibility/900-regression-tests.patch",
     "targets": [
+      "apps/codex-plus-manager/package.json",
       "apps/codex-plus-manager/src/relay-config-contract.test.mjs",
       "crates/codex-plus-core/tests/bridge_routes.rs",
       "crates/codex-plus-core/tests/cdp_bridge.rs",
@@ -202,6 +234,7 @@ The manager script extracts the JSON block between the markers below.
       "crates/codex-plus-core/tests/installers.rs",
       "crates/codex-plus-core/tests/launcher.rs",
       "crates/codex-plus-core/tests/relay_config.rs",
+      "crates/codex-plus-core/tests/upstream_theme_assets.rs",
       "crates/codex-plus-core/tests/watcher.rs",
       "crates/codex-plus-data/tests/provider_sync.rs"
     ],
@@ -277,6 +310,14 @@ include::attachment$patches/compatibility/070-linux-user-scripts-compatibility.p
 [source,diff]
 ----
 include::attachment$patches/compatibility/080-linux-local-thread-catalog-sync.patch[]
+----
+
+[#snippet-100-browser-native-rehosting]
+=== 100 Browser-native rehosting
+
+[source,diff]
+----
+include::attachment$patches/enhancements/100-browser-native-rehosting.patch[]
 ----
 
 [#snippet-900-regression-tests]

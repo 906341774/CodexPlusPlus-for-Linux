@@ -7,7 +7,7 @@ English | link:README_zh-CN.adoc[简体中文]
 `CodexPlusPlus-on-Linux` is a source-level Linux adaptation project for `BigPizzaV3/CodexPlusPlus`.
 It records and reapplies the patches needed to make Codex++ work with the unofficial Linux Codex Desktop build produced by `ilysenko/codex-desktop-linux`.
 
-Project version: `1.2.34`, synchronized with upstream Codex++ `v1.2.34`.
+Project version: `1.2.41`, synchronized with upstream Codex++ `v1.2.41`.
 
 This repository is maintained as a fork/adaptation of:
 
@@ -90,8 +90,8 @@ The build script discovers every documented top-level feature in the pinned
 `codex-desktop-linux` source except `example-feature` and `local`. It writes the
 git-ignored `linux-features/features.json`, exports both
 `CODEX_LINUX_FEATURES` and `CODEX_LINUX_FEATURES_CONFIG`, and rejects the build
-unless both build-info files record the exact discovered set. The `v1.2.34`
-baseline currently enables 23 Linux features; `Enabled features: None` is a
+unless both build-info files record the exact discovered set. The `v1.2.41`
+baseline currently discovers 29 Linux features; `Enabled features: None` is a
 hard build failure.
 
 The `ydotool` installation command itself is distribution-specific; follow `docs/linux-computer-use.md` in `ilysenko/codex-desktop-linux` for the current package name and service setup.

@@ -1,8 +1,8 @@
 diff --git a/apps/codex-plus-manager/src/App.tsx b/apps/codex-plus-manager/src/App.tsx
-index a2dd7d2..397f669 100644
+index 850e588..4c7fa08 100644
 --- a/apps/codex-plus-manager/src/App.tsx
 +++ b/apps/codex-plus-manager/src/App.tsx
-@@ -2667,7 +2667,7 @@ function EnhanceScreen({
+@@ -3445,7 +3445,7 @@ function EnhanceScreen({
                <FeatureToggle title={t("插件市场解锁")} detail={t("API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。")} checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
                <FeatureToggle title={t("插件列表全量展示")} detail={t("进入插件页后自动连续展开“更多”，尽量一次显示完整插件列表。")} checked={form.codexAppPluginAutoExpand} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginAutoExpand", value)} />
                <FeatureToggle title={t("模型白名单解锁")} detail={t("从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。")} checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
@@ -12,25 +12,25 @@ index a2dd7d2..397f669 100644
                  <div>
                    <strong>{t("官方远端插件缓存")}</strong>
 diff --git a/apps/codex-plus-manager/src/i18n-en.ts b/apps/codex-plus-manager/src/i18n-en.ts
-index d690dfa..df14a35 100644
+index b1d813d..b7c03ed 100644
 --- a/apps/codex-plus-manager/src/i18n-en.ts
 +++ b/apps/codex-plus-manager/src/i18n-en.ts
-@@ -384,8 +384,8 @@ export const EN_PLAIN: Record<string, string> = {
-   "日志已复制。": "Logs copied.",
+@@ -517,8 +517,8 @@ export const EN_PLAIN: Record<string, string> = {
    "时间": "Time",
+   "桌宠跟随真实鼠标": "Real-mouse pet look",
    "释放并注册内置缓存": "Extract and register embedded cache",
 -  "显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。":
 -    "Show the service-tier toggle button; Fast only supports gpt-5.4 / gpt-5.5, other models are sent as Standard.",
 +  "显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5 / gpt-5.6，其他模型按 Standard 发送。":
 +    "Show the service-tier toggle button; Fast only supports gpt-5.4 / gpt-5.5 / gpt-5.6; other models are sent as Standard.",
    "普通推荐": "Regular recommendations",
+   "多模态模型（支持图片输入的模型）请保持 send-as-is。": "Keep send-as-is for multimodal models that support image input.",
    "暂无": "None",
-   "暂无启动状态。": "No launch status yet.",
 diff --git a/assets/inject/renderer-inject.js b/assets/inject/renderer-inject.js
-index af63557..c87747f 100644
+index 6083212..e3e0b48 100644
 --- a/assets/inject/renderer-inject.js
 +++ b/assets/inject/renderer-inject.js
-@@ -1401,30 +1401,80 @@
+@@ -2140,31 +2140,79 @@
    const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
    const codexServiceTierFallbackFastValue = "priority";
    const codexServiceTierModulePromises = new Map();
@@ -50,7 +50,8 @@ index af63557..c87747f 100644
 +  const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5", "gpt-5.6"]);
    const codexThreadServiceTierModes = new Set(["inherit", "standard", "fast"]);
    const codexServiceTierControlModes = new Set(["inherit", "global-standard", "global-fast", "custom"]);
-
+   ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].forEach((model) => codexServiceTierSupportedFastModels.add(model));
+ 
 -  function codexAppAssetUrl(namePart) {
 -    const urls = [
 +  function codexAppAssetCandidateUrls() {
@@ -65,14 +66,13 @@ index af63557..c87747f 100644
 +  }
 +
 +  function codexAppAssetImportableUrl(url) {
-+    if (!url) return "";
-+    if (url.startsWith("app://-/assets/")) return "";
++    if (!url || url.startsWith("app://-/assets/")) return "";
 +    return url;
 +  }
 +
 +  function codexAppAssetUrl(namePart) {
-+    const urls = codexAppAssetCandidateUrls();
-+    const url = urls.find((url) => url.includes("/assets/") && url.includes(namePart) && url.split("?")[0].endsWith(".js")) || "";
++    const url = codexAppAssetCandidateUrls()
++      .find((candidate) => candidate.includes(namePart)) || "";
 +    return codexAppAssetImportableUrl(url);
 +  }
 +
@@ -87,7 +87,7 @@ index af63557..c87747f 100644
 +    }
 +    return await codexAppAssetTextPromises.get(url);
    }
-
+ 
    async function codexAppAssetUrlFromScriptText(namePart) {
      const scripts = Array.from(document.scripts || []).map((script) => script.src).filter(Boolean);
      for (const src of scripts) {
@@ -105,7 +105,7 @@ index af63557..c87747f 100644
 +      if (!match) continue;
 +      const href = new URL(match[1], src).href;
 +      if (!codexAppAssetImportableUrl(href)) continue;
-+      return new URL(match[1], src).href;
++      return href;
 +    }
 +    return "";
 +  }
@@ -118,12 +118,11 @@ index af63557..c87747f 100644
 +      if (!text) continue;
 +      if (featureSets.some((features) => features.every((feature) => text.includes(feature)))) {
 +        const importableUrl = codexAppAssetImportableUrl(url);
-+        if (!importableUrl) continue;
-+        return importableUrl;
++        if (importableUrl) return importableUrl;
        }
      }
      return "";
-@@ -1433,7 +1483,9 @@
+@@ -2173,7 +2221,9 @@
    async function loadCodexAppModule(namePart) {
      if (!codexServiceTierModulePromises.has(namePart)) {
        const promise = Promise.resolve().then(async () => {
@@ -134,10 +133,10 @@ index af63557..c87747f 100644
          if (!url) throw new Error(`未找到 Codex App asset: ${namePart}`);
          return await import(url);
        }).catch((error) => {
-@@ -1483,6 +1535,30 @@
+@@ -2233,6 +2283,30 @@
      return String(model || "").trim().toLowerCase();
    }
-
+ 
 +  function codexServiceTierSupportedModelFromLabelText(text) {
 +    const normalized = String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
 +    if (!normalized || normalized.length > 160) return "";
@@ -165,10 +164,10 @@ index af63557..c87747f 100644
    function codexServiceTierModelFromValue(value, visited = new WeakSet(), depth = 0) {
      if (typeof value === "string") return value.trim();
      if (!value || typeof value !== "object" || visited.has(value) || depth > 3) return "";
-@@ -1498,16 +1574,74 @@
+@@ -2248,16 +2322,74 @@
      return "";
    }
-
+ 
 +  function codexServiceTierModelFromElementText(element) {
 +    const values = [
 +      element?.textContent,
@@ -229,33 +228,33 @@ index af63557..c87747f 100644
 +    if (catalogModel) return codexServiceTierCanonicalModelName(catalogModel) || catalogModel;
 +    return codexServiceTierModelFromComposerFooter();
    }
-
+ 
    function codexServiceTierModelForRequest(params, modelHint = "") {
 -    return codexServiceTierModelFromValue(params) || codexServiceTierModelFromValue(modelHint) || codexServiceTierCurrentModelName();
 +    const modelName = codexServiceTierModelFromValue(params) || codexServiceTierModelFromValue(modelHint) || codexServiceTierCurrentModelName();
 +    return codexServiceTierCanonicalModelName(modelName) || modelName;
    }
-
+ 
    function codexServiceTierFastSupportedForModel(modelName) {
 -    return codexServiceTierSupportedFastModels.has(normalizeCodexServiceTierModelName(modelName));
 +    return !!codexServiceTierCanonicalModelName(modelName)
 +      || codexServiceTierSupportedFastModels.has(normalizeCodexServiceTierModelName(modelName));
    }
-
+ 
    function codexServiceTierFastUnsupportedMessage(modelName = codexServiceTierCurrentModelName()) {
-@@ -1715,7 +1849,7 @@
+@@ -2465,7 +2597,7 @@
    }
-
+ 
    function setCodexServiceTierControlMode(mode) {
 -    if (codexPlusBackendStatus.status !== "ok") {
 +    if (codexServiceTierBackendBlocksLocalOverride()) {
        showToast("后端未连接，无法切换服务模式", null);
        refreshCodexServiceTierControls();
        return;
-@@ -1789,9 +1923,14 @@
+@@ -2539,9 +2671,14 @@
      };
    }
-
+ 
 +  function codexServiceTierBackendBlocksLocalOverride() {
 +    const status = codexPlusBackendStatus.status;
 +    return !!status && status !== "ok" && status !== "checking";
@@ -269,7 +268,7 @@ index af63557..c87747f 100644
      if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: "服务模式：正在读取" };
      if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: "服务模式：读取失败" };
      const fastAvailability = codexServiceTierFastAvailability();
-@@ -1827,9 +1966,10 @@
+@@ -2577,9 +2714,10 @@
      const featureEnabled = !!codexPlusSettings().serviceTierControls;
      const backendConnected = codexPlusBackendStatus.status === "ok";
      const backendChecking = codexPlusBackendStatus.status === "checking";
@@ -281,7 +280,7 @@ index af63557..c87747f 100644
      const fastTitle = fastAvailability.supported
        ? "Fast：使用 service_tier=\"priority\""
        : codexServiceTierFastUnsupportedMessage(fastAvailability.modelName);
-@@ -1844,11 +1984,11 @@
+@@ -2594,11 +2732,11 @@
          : "未启用";
      });
      document.querySelectorAll("[data-codex-service-tier-inherit]").forEach((button) => {
@@ -295,7 +294,7 @@ index af63557..c87747f 100644
        button.dataset.active = String(codexServiceTierState.controlMode === "global-standard");
      });
      document.querySelectorAll("[data-codex-service-tier-fast]").forEach((button) => {
-@@ -1857,16 +1997,16 @@
+@@ -2607,16 +2745,16 @@
        button.title = fastTitle;
      });
      document.querySelectorAll("[data-codex-service-tier-custom]").forEach((button) => {
@@ -315,35 +314,28 @@ index af63557..c87747f 100644
        button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "standard");
      });
      document.querySelectorAll("[data-codex-service-tier-thread-fast]").forEach((button) => {
-@@ -1909,7 +2049,7 @@
+@@ -2659,7 +2797,7 @@
    }
-
+ 
    function setCodexThreadServiceTierMode(mode) {
 -    if (codexPlusBackendStatus.status !== "ok") {
 +    if (codexServiceTierBackendBlocksLocalOverride()) {
        showToast("后端未连接，无法切换服务模式", null);
        refreshCodexServiceTierControls();
        return;
-@@ -1932,7 +2072,7 @@
+@@ -2682,7 +2820,7 @@
    }
-
+ 
    function toggleCodexServiceTierFromBadge() {
 -    if (codexPlusBackendStatus.status !== "ok") {
 +    if (codexServiceTierBackendBlocksLocalOverride()) {
        showToast("后端未连接，无法切换服务模式", null);
        refreshCodexServiceTierControls();
        return;
-@@ -2074,12 +2214,30 @@
-     return message;
+@@ -2837,6 +2975,16 @@
+     return dispatcherClass?.getInstance?.() || null;
    }
-
-+  function findCodexDispatcherClass(module) {
-+    return Object.values(module || {}).find((value) => {
-+      if (typeof value !== "function" || typeof value.getInstance !== "function") return false;
-+      return String(value).includes("dispatchMessage") && String(value).includes("subscribe") && String(value).includes("handleMessage");
-+    }) || null;
-+  }
-+
+ 
 +  function isCodexHotkeyWindowRoute() {
 +    try {
 +      const params = new URLSearchParams(location.search || "");
@@ -356,19 +348,19 @@ index af63557..c87747f 100644
 +
    function installCodexServiceTierDispatcherPatch() {
      if (window.__codexServiceTierRequestOverrideInstalled === codexServiceTierRequestOverrideVersion) return;
+     const loadDispatcher = async () => {
+@@ -2855,6 +3003,7 @@
+     };
      const patch = async () => {
        try {
 +        if (isCodexHotkeyWindowRoute()) return;
-         const module = await loadCodexAppModule("setting-storage-");
--        const dispatcherClass = typeof module.v === "function" && String(module.v).includes("dispatchMessage") ? module.v : null;
-+        const dispatcherClass = findCodexDispatcherClass(module);
-         const dispatcher = dispatcherClass?.getInstance?.();
-         if (!dispatcher || typeof dispatcher.dispatchMessage !== "function") throw new Error("Codex dispatcher unavailable");
+         const { dispatcher, assetPrefix } = await loadDispatcher();
          if (dispatcher.__codexServiceTierOriginalDispatchMessage) {
-@@ -2811,6 +2969,50 @@
+           window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
+@@ -3586,6 +3735,50 @@
      return !!button.closest?.('[class*="ms-auto"][class*="shrink-0"][class*="items-center"]');
    }
-
+ 
 +  function rectsOverlap(first, second, padding = 0) {
 +    return first.left < second.right + padding &&
 +      first.right > second.left - padding &&
@@ -416,23 +408,23 @@ index af63557..c87747f 100644
    function updateFloatingCodexPlusMenuPosition(menu) {
      if (!menu?.classList?.contains(codexPlusMenuFloatingClass)) return;
      const header = document.querySelector(selectors.appHeader) || document.querySelector("header");
-@@ -2827,6 +3029,7 @@
+@@ -3602,6 +3795,7 @@
        setCssPropIfChanged(menu, "--codex-plus-menu-top", `${anchor.rect.top}px`);
        setCssPropIfChanged(menu, "--codex-plus-menu-height", `${anchor.rect.height}px`);
        setCssPropIfChanged(menu, "--codex-plus-menu-right", `${Math.max(0, window.innerWidth - anchor.rect.left + gap)}px`);
 +      avoidFloatingCodexPlusMenuNativeControlOverlap(menu);
        return;
      }
-
-@@ -2836,6 +3039,7 @@
+ 
+@@ -3611,6 +3805,7 @@
        setCssPropIfChanged(menu, "--codex-plus-menu-height", `${headerRect.height}px`);
      }
      menu.style.removeProperty("--codex-plus-menu-right");
 +    avoidFloatingCodexPlusMenuNativeControlOverlap(menu);
    }
-
+ 
    function installCodexPlusMenu() {
-@@ -3344,6 +3548,14 @@
+@@ -4119,6 +4314,14 @@
        };
      }
      if (message.type === "mcp-request" && message.request && typeof message.request === "object") {
@@ -447,7 +439,7 @@ index af63557..c87747f 100644
        const requestMethod = appServerModelRequestMethod(String(message.request.method || ""), message.request.params);
        if (requestMethod !== "list-plugins" && requestMethod !== "install-plugin") return message;
        const requestParams = patchPluginMarketplaceRequestParams(
-@@ -3488,6 +3700,8 @@
+@@ -4263,6 +4466,8 @@
        window.addEventListener("message", (event) => {
          try {
            patchPluginMarketplaceResponseData(event?.data);
@@ -456,9 +448,9 @@ index af63557..c87747f 100644
          } catch (error) {
            sendCodexPlusDiagnostic("plugin_marketplace_response_message_patch_failed", {
              errorName: error?.name || "",
-@@ -4382,18 +4596,80 @@
+@@ -5157,18 +5362,80 @@
    }
-
+ 
    async function postJson(path, payload) {
 +    const helperBridgeFallbackRoutes = new Set([
 +      "/settings/get",
@@ -547,7 +539,7 @@ index af63557..c87747f 100644
        }
        sendCodexPlusDiagnostic("bridge_missing_for_route", { path });
        return { status: "failed", message: "桥接不可用，请重启启动器" };
-@@ -4405,16 +4681,7 @@
+@@ -5180,16 +5447,7 @@
        ]);
      }
      async function fetchBackendStatusFromHelper(path, payload) {
@@ -565,7 +557,7 @@ index af63557..c87747f 100644
      }
      try {
        if (path === "/backend/status") {
-@@ -4461,6 +4728,9 @@
+@@ -5236,6 +5494,9 @@
          });
          return fallback;
        }
@@ -575,16 +567,16 @@ index af63557..c87747f 100644
        throw error;
      }
    }
-@@ -4548,6 +4818,8 @@
+@@ -5743,6 +6004,8 @@
    let codexModelWhitelistRefreshTimer = 0;
    let codexModelWhitelistRefreshUntil = 0;
    const codexPlusModelListRequestIds = new Set();
 +  const codexPlusAccountReadRequestIds = new Set();
 +  const codexPlusPluginReadRequestIds = new Set();
-
+ 
    if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) {
      window.__codexPlusServiceTierTest = {
-@@ -4572,6 +4844,11 @@
+@@ -5770,6 +6033,11 @@
        setServiceTierState: (state = {}) => {
          codexServiceTierState = { ...codexServiceTierState, ...state };
        },
@@ -596,10 +588,10 @@ index af63557..c87747f 100644
        setThreadState: (state = {}) => {
          localStorage.setItem(codexThreadServiceTierKey, JSON.stringify({
            version: codexThreadServiceTierVersion,
-@@ -4946,6 +5223,91 @@
+@@ -6184,6 +6452,91 @@
      }, true);
    }
-
+ 
 +  function ensureCodexPlusArrayProperty(target, property) {
 +    if (!target || typeof target !== "object") return false;
 +    if (Array.isArray(target[property])) return false;
@@ -688,10 +680,10 @@ index af63557..c87747f 100644
    function patchMcpModelResponseData(data) {
      if (data?.type !== "mcp-response") return false;
      const message = data.message || data.response;
-@@ -5193,6 +5555,35 @@
+@@ -6521,6 +6874,35 @@
      return !!leftPath && !!rightPath && leftPath === rightPath;
    }
-
+ 
 +  function workspaceParentPath(path) {
 +    const normalized = normalizeWorkspacePath(path);
 +    const index = normalized.lastIndexOf("/");
@@ -724,7 +716,7 @@ index af63557..c87747f 100644
    function displayProjectName(path) {
      const trimmed = String(path || "").replace(/\/+$/, "");
      return trimmed.split(/[\\/]+/).filter(Boolean).pop() || trimmed || "未命名项目";
-@@ -5362,14 +5753,14 @@
+@@ -6690,14 +7072,14 @@
    function projectItemMatchesTarget(projectItem, target) {
      const projectRow = projectRowFromListItem(projectItem);
      const projectPath = projectRow?.getAttribute?.("data-app-action-sidebar-project-id") || "";
@@ -734,14 +726,14 @@ index af63557..c87747f 100644
      const labels = uniqueValues([targetLabel(target), displayProjectName(targetPath(target))]).map(normalizeProjectLabel).filter(Boolean);
      return !!actual && labels.includes(actual);
    }
-
+ 
    function findProjectListItem(target) {
 -    const nativeTarget = nativeProjectTargets().find((project) => sameWorkspacePath(project.path, targetPath(target)));
 +    const nativeTarget = nativeProjectTargets().find((project) => sameWorkspaceProjectFamily(project.path, targetPath(target)));
      if (nativeTarget?.listItem) return nativeTarget.listItem;
      const section = projectsSection();
      if (!section) return null;
-@@ -5932,6 +6323,8 @@
+@@ -7260,6 +7642,8 @@
      if (result.status !== "moved") throw new Error(result.message || "移动项目失败");
      await setProjectlessThreadIds(ref, "remove");
      await clearThreadWorkspaceHints(ref);
@@ -749,8 +741,8 @@ index af63557..c87747f 100644
 +    await clearThreadProjectlessOutputDirectories(ref);
      return result;
    }
-
-@@ -6723,8 +7116,9 @@
+ 
+@@ -8051,8 +8435,9 @@
      if (window.__codexUpstreamPendingWorktreeDispatcherPatch === patchVersion) return;
      const patch = async () => {
        try {
@@ -761,8 +753,8 @@ index af63557..c87747f 100644
          const dispatcher = dispatcherClass?.getInstance?.();
          if (!dispatcher || typeof dispatcher.dispatchMessage !== "function") throw new Error("Codex dispatcher unavailable");
          if (!dispatcher.__codexUpstreamWorktreeOriginalDispatchMessage) {
-@@ -6971,16 +7365,21 @@
-
+@@ -8299,16 +8684,21 @@
+ 
    function isCurrentSessionRow(row, ref) {
      if (row.getAttribute("aria-current") === "page" || row.getAttribute("aria-current") === "true") return true;
 +    const currentThreadId = locationThreadId();
@@ -784,9 +776,9 @@ index af63557..c87747f 100644
 -    return !!ref.session_id && window.location.href.includes(ref.session_id);
 +    return true;
    }
-
+ 
    function releaseDeleteFocus(row, button) {
-@@ -6995,7 +7394,7 @@
+@@ -8323,7 +8713,7 @@
      const shouldReload = isCurrentSessionRow(row, ref);
      row.remove();
      if (shouldReload) {
@@ -794,11 +786,11 @@ index af63557..c87747f 100644
 +      showToast("当前会话已删除，请从左侧选择其他会话。", null);
      }
    }
-
-@@ -7706,12 +8105,58 @@
+ 
+@@ -9034,12 +9424,58 @@
        });
    }
-
+ 
 +  function codexServiceTierLinuxFooterClassMatch(element) {
 +    return /\b_footer_[A-Za-z0-9_-]*_\d+\b/.test(String(element?.className || ""));
 +  }
@@ -855,7 +847,7 @@ index af63557..c87747f 100644
        .filter(codexServiceTierBadgeVisibleElement)
        .sort((left, right) => {
          const leftRect = left.getBoundingClientRect();
-@@ -7739,6 +8184,12 @@
+@@ -9067,6 +9503,12 @@
      const candidates = new Set();
      const threadComposer = conversationViewFindComposerEl();
      if (threadComposer && codexServiceTierBadgeVisibleElement(threadComposer)) candidates.add(threadComposer);
@@ -868,10 +860,10 @@ index af63557..c87747f 100644
      codexServiceTierVisibleComposerFooters().forEach((footer) => {
        candidates.add(footer);
        let node = footer.parentElement;
-@@ -7773,6 +8224,14 @@
+@@ -9101,6 +9543,14 @@
      }) || null;
    }
-
+ 
 +  function codexServiceTierDirectChildUnder(parent, node) {
 +    let child = node;
 +    while (child?.parentElement && child.parentElement !== parent) {
@@ -883,10 +875,10 @@ index af63557..c87747f 100644
    function codexServiceTierComposerFooter(composer) {
      if (composer?.matches?.(".composer-footer")) return composer;
      return codexServiceTierBestComposerFooter(composer) || codexServiceTierBestComposerFooter() || null;
-@@ -7791,12 +8250,24 @@
+@@ -9119,12 +9569,24 @@
      return providerGroup || children[children.length - 1] || footer;
    }
-
+ 
 +  function codexServiceTierBadgeInsertionPoint(composer, anchor, group) {
 +    if (anchor?.parentElement) {
 +      const parent = anchor.parentElement;
@@ -909,9 +901,9 @@ index af63557..c87747f 100644
 -    return null;
 +    return codexServiceTierBadgeInsertionPoint(composer, anchor, group);
    }
-
+ 
    function wireCodexServiceTierBadge(badge) {
-@@ -7807,14 +8278,14 @@
+@@ -9135,14 +9597,14 @@
      badge.addEventListener("click", (event) => {
        event.preventDefault();
        event.stopPropagation();
@@ -928,15 +920,15 @@ index af63557..c87747f 100644
        toggleCodexServiceTierFromBadge();
      });
    }
-@@ -8051,6 +8522,7 @@
-     installCodexServiceTierDispatcherPatch();
+@@ -9380,6 +9842,7 @@
+     installCodexProjectlessNewTaskButtons();
      installCodexPlusMenu();
      localizeCodexMenus();
 +    updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));
      scheduleBackendHeartbeat();
      installDeleteButtonEventDelegation();
      updateThreadScrollHandlers();
-@@ -8715,6 +9187,12 @@
+@@ -10045,6 +10508,12 @@
        '[class*="user-message"]',
        '[class*="UserMessage"]',
        ".composer-footer",
@@ -949,12 +941,50 @@ index af63557..c87747f 100644
        selectors.appHeader,
        selectors.archiveNav,
        codexMenuLocalizationScopeSelector(),
-@@ -8799,7 +9277,7 @@
+@@ -10130,7 +10599,7 @@
    window.addEventListener("resize", window.__codexPlusResizeHandler);
    window.__codexSessionDeleteObserver?.disconnect();
    window.__codexSessionDeleteObserver = new MutationObserver(scheduleScan);
 -  window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, { childList: true, subtree: true });
 +  window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "disabled", "aria-disabled", "data-disabled", "aria-current"] });
  })();
-
+ 
  // === 粘贴修复 (CodexPlusPlus 页面增强) ===
+diff --git a/assets/inject/upstream/cidala-tiger/macos/renderer-inject.js b/assets/inject/upstream/cidala-tiger/macos/renderer-inject.js
+index 98328b7..8cd8958 100644
+--- a/assets/inject/upstream/cidala-tiger/macos/renderer-inject.js
++++ b/assets/inject/upstream/cidala-tiger/macos/renderer-inject.js
+@@ -873,12 +873,12 @@
+   });
+   rootObserver.observe(document.documentElement, {
+     attributes: true,
+-    attributeFilter: ["class", "data-theme", "data-appearance", "data-color-mode", "style"],
++    attributeFilter: ["class", "data-theme", "data-appearance", "data-color-mode"],
+   });
+   if (document.body) {
+     rootObserver.observe(document.body, {
+       attributes: true,
+-      attributeFilter: ["class", "data-theme", "data-appearance", "data-color-mode", "style"],
++      attributeFilter: ["class", "data-theme", "data-appearance", "data-color-mode"],
+     });
+   }
+   const timer = setInterval(() => ensure(), 4000);
+diff --git a/assets/inject/upstream/dream-skin/macos/renderer-inject.js b/assets/inject/upstream/dream-skin/macos/renderer-inject.js
+index fe42767..9988cf1 100644
+--- a/assets/inject/upstream/dream-skin/macos/renderer-inject.js
++++ b/assets/inject/upstream/dream-skin/macos/renderer-inject.js
+@@ -751,12 +751,12 @@
+   });
+   rootObserver.observe(document.documentElement, {
+     attributes: true,
+-    attributeFilter: ["class", "data-theme", "data-appearance", "data-color-mode", "style"],
++    attributeFilter: ["class", "data-theme", "data-appearance", "data-color-mode"],
+   });
+   if (document.body) {
+     rootObserver.observe(document.body, {
+       attributes: true,
+-      attributeFilter: ["class", "data-theme", "data-appearance", "data-color-mode", "style"],
++      attributeFilter: ["class", "data-theme", "data-appearance", "data-color-mode"],
+     });
+   }
+   const timer = setInterval(() => ensure(), 4000);

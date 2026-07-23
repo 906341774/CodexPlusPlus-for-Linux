@@ -198,8 +198,25 @@
         "Both build-info files must contain exactly the discovered feature ids"
       ],
       "blackBoxChecks": [
-        "The frozen 60fbcf0 source discovers 23 enabled Linux features",
+        "The frozen 0e51086 source plus the validated adaptation commits discovers 29 enabled Linux features",
         "Linux Desktop settings and both build-info files do not show Enabled features: None"
+      ]
+    },
+    {
+      "id": "browser-native-rehosting",
+      "name": "Browser-native Codex Desktop DOM rehosting",
+      "patchIds": ["100-browser-native-rehosting"],
+      "whiteBoxChecks": [
+        "Gateway tests cover loopback binding, token verification, route allowlisting, frame limits, controller leases, reconnect, and process cleanup",
+        "Manager frontend tests cover headless browser status normalization and controls",
+        "Source marker: pub struct BrowserGateway",
+        "Browser shim marker: getPathForFile returns null"
+      ],
+      "blackBoxChecks": [
+        "Xvfb plus xdotool starts one dedicated tmux instance and Manager reports running state",
+        "A normal browser renders the original Codex React DOM and reconnects after refresh",
+        "Pure API/API Key requests stay server-side and complete through the AppHost relay",
+        "Port changes rotate browser access and stop removes the owned process tree"
       ]
     },
     {

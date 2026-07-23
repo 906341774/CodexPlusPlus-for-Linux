@@ -1,17 +1,17 @@
 diff --git a/apps/codex-plus-launcher/src/main.rs b/apps/codex-plus-launcher/src/main.rs
-index 9bf871a..2d56b13 100644
+index 046b2d9..8f857df 100644
 --- a/apps/codex-plus-launcher/src/main.rs
 +++ b/apps/codex-plus-launcher/src/main.rs
-@@ -13,6 +13,8 @@ use std::os::windows::process::CommandExt;
+@@ -11,6 +11,8 @@ use serde_json::{Value, json};
  use std::path::{Path, PathBuf};
  use std::sync::{Arc, Mutex};
-
+ 
 +const PROVIDER_SYNC_LAUNCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 +
  #[derive(Clone)]
  struct LauncherHooks {
      core: Arc<DefaultLaunchHooks>,
-@@ -40,7 +42,7 @@ async fn main() -> Result<()> {
+@@ -38,7 +40,7 @@ async fn main() -> Result<()> {
      let options = parse_launch_options(args.iter());
      if helper_only {
          let hooks = LauncherHooks::default();
@@ -20,7 +20,7 @@ index 9bf871a..2d56b13 100644
          std::future::pending::<()>().await;
          hooks.shutdown_helper(options.helper_port).await;
          return Ok(());
-@@ -49,9 +51,11 @@ async fn main() -> Result<()> {
+@@ -47,9 +49,11 @@ async fn main() -> Result<()> {
          activate_existing_codex_app(&options).await?;
          return Ok(());
      };
@@ -35,7 +35,7 @@ index 9bf871a..2d56b13 100644
      let hooks = LauncherHooks::default();
      let handle = launch_and_inject_with_hooks(options, &hooks).await?;
      handle.wait_for_codex_exit().await?;
-@@ -136,19 +140,12 @@ fn should_recover_stale_launcher(debug_port: u16) -> bool {
+@@ -134,19 +138,12 @@ fn should_recover_stale_launcher(debug_port: u16) -> bool {
  async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<()> {
      let hooks = LauncherHooks::default();
      let settings = hooks.load_settings().await?;
@@ -59,7 +59,7 @@ index 9bf871a..2d56b13 100644
      let mut activated = false;
      #[cfg(windows)]
      {
-@@ -159,17 +156,10 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
+@@ -157,17 +154,10 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
              }
          }
      }
@@ -81,7 +81,7 @@ index 9bf871a..2d56b13 100644
          hooks.write_status("running").await;
      } else if settings.enhancements_enabled {
          hooks.write_status("running_degraded").await;
-@@ -182,12 +172,12 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
+@@ -180,12 +170,12 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
              "helper_port": options.helper_port,
              "process_ids": process_ids,
              "activated": activated,
@@ -95,12 +95,12 @@ index 9bf871a..2d56b13 100644
 -    launch_result.map(|_| ())
 +    Ok(())
  }
-
+ 
  fn log_launcher_already_running(debug_port: u16) {
-@@ -210,6 +200,21 @@ async fn notify_manager_when_update_available() -> anyhow::Result<bool> {
+@@ -208,6 +198,21 @@ async fn notify_manager_when_update_available() -> anyhow::Result<bool> {
      Ok(true)
  }
-
+ 
 +fn startup_update_prompt_disabled() -> bool {
 +    update_prompt_disabled_by_environment(
 +        std::env::var("CODEX_PLUS_DISABLE_UPDATE_CHECK")
@@ -117,11 +117,11 @@ index 9bf871a..2d56b13 100644
 +}
 +
  fn open_manager_with_update_prompt() -> anyhow::Result<()> {
-     let manager_path = manager_exe_path();
-     let mut command = std::process::Command::new(&manager_path);
-@@ -284,10 +289,23 @@ impl LaunchHooks for LauncherHooks {
+     codex_plus_core::install::spawn_companion(
+         codex_plus_core::install::MANAGER_BINARY,
+@@ -277,10 +282,23 @@ impl LaunchHooks for LauncherHooks {
      }
-
+ 
      async fn run_provider_sync(&self) -> anyhow::Result<()> {
 -        let _ = tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
 -            .await
@@ -145,12 +145,12 @@ index 9bf871a..2d56b13 100644
 +            }
 +        }
      }
-
+ 
      async fn apply_active_relay_profile(
-@@ -311,8 +329,12 @@ impl LaunchHooks for LauncherHooks {
+@@ -304,8 +322,12 @@ impl LaunchHooks for LauncherHooks {
          self.core.ensure_plugin_marketplace_config(settings).await
      }
-
+ 
 -    async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
 -        self.core.start_helper(helper_port).await
 +    async fn start_helper(
@@ -160,9 +160,9 @@ index 9bf871a..2d56b13 100644
 +    ) -> anyhow::Result<()> {
 +        self.core.start_helper(helper_port, bridge_context).await
      }
-
+ 
      async fn launch_codex(
-@@ -445,15 +467,9 @@ impl BridgeDataService for LauncherDataService {
+@@ -444,15 +466,9 @@ impl BridgeDataService for LauncherDataService {
          session: SessionRef,
          target_cwd: String,
      ) -> anyhow::Result<Value> {
@@ -180,10 +180,10 @@ index 9bf871a..2d56b13 100644
          })
          .await
          .map_err(|error| anyhow::anyhow!("move thread workspace task failed: {error}"))
-@@ -871,6 +887,57 @@ mod tests {
+@@ -855,6 +871,68 @@ mod tests {
          assert!(source.contains("launcher.already_running"));
      }
-
+ 
 +    #[test]
 +    fn already_running_launcher_path_does_not_start_second_codex_or_helper() {
 +        let source = include_str!("main.rs");
@@ -235,14 +235,6 @@ index 9bf871a..2d56b13 100644
 +        assert!(body.contains("launcher.provider_sync_launch_timeout"));
 +    }
 +
-     #[test]
-     fn launcher_hooks_forward_computer_use_guard_methods() {
-         let source = include_str!("main.rs");
-@@ -894,6 +961,17 @@ mod tests {
-                 .is_some_and(|name| name.contains(codex_plus_core::install::MANAGER_BINARY))
-         );
-     }
-+
 +    #[test]
 +    fn update_prompt_can_be_disabled_for_fixed_baseline_validation() {
 +        assert!(update_prompt_disabled_by_environment(Some("1")));
@@ -253,11 +245,12 @@ index 9bf871a..2d56b13 100644
 +        assert!(!update_prompt_disabled_by_environment(Some("0")));
 +        assert!(!update_prompt_disabled_by_environment(Some("false")));
 +    }
- }
-
- fn builtin_user_scripts_dir() -> PathBuf {
++
+     #[test]
+     fn launcher_hooks_forward_runtime_watchdogs_and_computer_use_guard_methods() {
+         let source = include_str!("main.rs");
 diff --git a/crates/codex-plus-core/src/launcher.rs b/crates/codex-plus-core/src/launcher.rs
-index 0bba0fa..2717108 100644
+index c125653..ed3add2 100644
 --- a/crates/codex-plus-core/src/launcher.rs
 +++ b/crates/codex-plus-core/src/launcher.rs
 @@ -1,3 +1,4 @@
@@ -265,7 +258,7 @@ index 0bba0fa..2717108 100644
  use std::net::SocketAddr;
  use std::path::{Path, PathBuf};
  use std::process::Stdio;
-@@ -141,7 +142,11 @@ pub trait LaunchHooks: Send + Sync {
+@@ -144,7 +145,11 @@ pub trait LaunchHooks: Send + Sync {
      ) -> anyhow::Result<()> {
          Ok(())
      }
@@ -278,7 +271,7 @@ index 0bba0fa..2717108 100644
      async fn launch_codex(
          &self,
          app_dir: &Path,
-@@ -165,12 +170,21 @@ pub trait LaunchHooks: Send + Sync {
+@@ -168,12 +173,21 @@ pub trait LaunchHooks: Send + Sync {
      ) -> anyhow::Result<()> {
          self.inject(debug_port, helper_port).await
      }
@@ -305,10 +298,10 @@ index 0bba0fa..2717108 100644
              };
              match result {
                  Ok(()) => return true,
-@@ -270,10 +284,10 @@ where
+@@ -284,10 +298,10 @@ where
+         if settings.computer_use_guard_enabled {
              hooks.ensure_computer_use_config(&settings).await?;
          }
-         let home = crate::relay_config::default_codex_home_dir();
 -        match crate::codex_sqlite::sanitize_historical_model_suffixes(&home) {
 +        match crate::codex_sqlite::sanitize_thread_model_suffixes(&home) {
              Ok(result) if result.updated > 0 => {
@@ -318,7 +311,7 @@ index 0bba0fa..2717108 100644
                      serde_json::json!({
                          "scanned": result.scanned,
                          "updated": result.updated
-@@ -283,7 +297,7 @@ where
+@@ -297,7 +311,7 @@ where
              Ok(_) => {}
              Err(error) => {
                  let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -327,7 +320,7 @@ index 0bba0fa..2717108 100644
                      serde_json::json!({
                          "error": error.to_string()
                      }),
-@@ -294,8 +308,15 @@ where
+@@ -308,8 +322,15 @@ where
          if protocol_proxy_enabled {
              helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
          }
@@ -343,8 +336,8 @@ index 0bba0fa..2717108 100644
 +                .await?;
              helper_started = true;
          }
-
-@@ -311,7 +332,7 @@ where
+ 
+@@ -325,7 +346,7 @@ where
          let mut injection_degraded = false;
          if settings.enhancements_enabled {
              let injection_ready = hooks
@@ -353,10 +346,10 @@ index 0bba0fa..2717108 100644
                  .await;
              if injection_ready {
                  keep_launched_on_error = false;
-@@ -607,13 +628,23 @@ impl LaunchHooks for DefaultLaunchHooks {
+@@ -621,13 +642,23 @@ impl LaunchHooks for DefaultLaunchHooks {
          Ok(())
      }
-
+ 
 -    async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
 +    async fn start_helper(
 +        &self,
@@ -378,7 +371,7 @@ index 0bba0fa..2717108 100644
          let _ = crate::diagnostic_log::append_diagnostic_log(
              "helper.listening",
              serde_json::json!({
-@@ -629,8 +660,9 @@ impl LaunchHooks for DefaultLaunchHooks {
+@@ -643,8 +674,9 @@ impl LaunchHooks for DefaultLaunchHooks {
                      _ = &mut shutdown_rx => break,
                      accepted = listener.accept() => {
                          if let Ok((stream, addr)) = accepted {
@@ -389,7 +382,7 @@ index 0bba0fa..2717108 100644
                              });
                          }
                      }
-@@ -749,6 +781,11 @@ impl LaunchHooks for DefaultLaunchHooks {
+@@ -770,6 +802,11 @@ impl LaunchHooks for DefaultLaunchHooks {
              .args(&command[1..])
              .stdout(Stdio::null())
              .stderr(Stdio::null());
@@ -401,15 +394,15 @@ index 0bba0fa..2717108 100644
          #[cfg(windows)]
          child_command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
          let child = child_command
-@@ -928,6 +965,7 @@ impl LaunchHooks for DefaultLaunchHooks {
+@@ -977,6 +1014,7 @@ impl LaunchHooks for DefaultLaunchHooks {
  async fn handle_helper_connection(
      mut stream: tokio::net::TcpStream,
      remote_addr: Option<SocketAddr>,
 +    bridge_context: crate::routes::BridgeContext,
  ) -> anyhow::Result<()> {
-     let request_bytes = read_http_request(&mut stream).await?;
-     let request = String::from_utf8_lossy(&request_bytes);
-@@ -983,6 +1021,17 @@ async fn handle_helper_connection(
+     let request = match read_http_request(&mut stream).await {
+         Ok(request) => request,
+@@ -1062,6 +1100,17 @@ async fn handle_helper_connection(
          )
          .await;
      }
@@ -419,15 +412,15 @@ index 0bba0fa..2717108 100644
 +            bridge_context,
 +            method,
 +            path,
-+            request_body,
++            &request_body,
 +            remote_addr_text,
 +        )
 +        .await;
 +    }
-
+ 
      let (status, body, content_type, log_event) = if path == "/backend/status"
          && matches!(method, "GET" | "POST" | "OPTIONS")
-@@ -1057,11 +1106,11 @@ async fn handle_helper_connection(
+@@ -1147,11 +1196,11 @@ async fn handle_helper_connection(
      );
      let response = if method == "OPTIONS" {
          format!(
@@ -441,10 +434,10 @@ index 0bba0fa..2717108 100644
              body.len()
          )
      };
-@@ -1073,6 +1122,89 @@ async fn handle_helper_connection(
+@@ -1163,6 +1212,89 @@ async fn handle_helper_connection(
      Ok(())
  }
-
+ 
 +fn is_helper_bridge_route(path: &str) -> bool {
 +    matches!(
 +        path,
@@ -531,7 +524,7 @@ index 0bba0fa..2717108 100644
  fn overlay_image_response() -> (String, Vec<u8>, String, &'static str) {
      let not_found = || {
          (
-@@ -1438,7 +1570,7 @@ async fn write_http_response(
+@@ -1654,7 +1786,7 @@ async fn write_http_response(
      body: &[u8],
  ) -> anyhow::Result<()> {
      let response = format!(
@@ -540,7 +533,7 @@ index 0bba0fa..2717108 100644
          body.len()
      );
      stream.write_all(response.as_bytes()).await?;
-@@ -1452,7 +1584,7 @@ async fn write_http_stream_headers(
+@@ -1668,7 +1800,7 @@ async fn write_http_stream_headers(
      content_type: &str,
  ) -> anyhow::Result<()> {
      let response = format!(
@@ -549,7 +542,7 @@ index 0bba0fa..2717108 100644
      );
      stream.write_all(response.as_bytes()).await?;
      Ok(())
-@@ -1661,6 +1793,10 @@ pub fn build_codex_command(app_dir: &Path, debug_port: u16, extra_args: &[String
+@@ -2169,6 +2301,10 @@ pub fn build_codex_command(app_dir: &Path, debug_port: u16, extra_args: &[String
              .to_string_lossy()
              .to_string(),
      ];
@@ -560,7 +553,7 @@ index 0bba0fa..2717108 100644
      command.extend(build_codex_arguments(debug_port, extra_args));
      command
  }
-@@ -1676,6 +1812,10 @@ pub fn build_codex_command_with_native_menu_inspector(
+@@ -2184,6 +2320,10 @@ pub fn build_codex_command_with_native_menu_inspector(
              .to_string_lossy()
              .to_string(),
      ];
@@ -571,10 +564,10 @@ index 0bba0fa..2717108 100644
      command.extend(build_codex_arguments_with_native_menu_inspector(
          debug_port,
          inspector_port,
-@@ -1713,12 +1853,225 @@ pub fn build_packaged_activation_with_native_menu_inspector(
+@@ -2221,12 +2361,225 @@ pub fn build_packaged_activation_with_native_menu_inspector(
      })
  }
-
+ 
 +pub fn codex_process_environment_for_app(app_dir: &Path) -> HashMap<String, String> {
 +    let env = std::env::vars().collect::<HashMap<_, _>>();
 +    codex_process_environment_for_app_from(app_dir, &env, crate::proxy::detect_system_proxy)
@@ -798,8 +791,46 @@ index 0bba0fa..2717108 100644
                  last_error = Some(error);
                  tokio::time::sleep(std::time::Duration::from_millis(500)).await;
              }
+@@ -3083,9 +3436,15 @@ mod tests {
+         let address = listener.local_addr().unwrap();
+         let helper = tokio::spawn(async move {
+             let (stream, remote_addr) = listener.accept().await.unwrap();
+-            handle_helper_connection(stream, Some(remote_addr))
+-                .await
+-                .unwrap();
++            handle_helper_connection(
++                stream,
++                Some(remote_addr),
++                crate::routes::BridgeContext::core(Arc::new(
++                    crate::routes::CoreRuntimeService::new(0, StatusStore::default()),
++                )),
++            )
++            .await
++            .unwrap();
+         });
+         let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+         client.write_all(request).await.unwrap();
+@@ -3169,9 +3528,15 @@ mod tests {
+         let helper_addr = helper_listener.local_addr().unwrap();
+         let helper = tokio::spawn(async move {
+             let (stream, remote_addr) = helper_listener.accept().await.unwrap();
+-            handle_helper_connection(stream, Some(remote_addr))
+-                .await
+-                .unwrap();
++            handle_helper_connection(
++                stream,
++                Some(remote_addr),
++                crate::routes::BridgeContext::core(Arc::new(
++                    crate::routes::CoreRuntimeService::new(0, StatusStore::default()),
++                )),
++            )
++            .await
++            .unwrap();
+         });
+         let mut client = tokio::net::TcpStream::connect(helper_addr).await.unwrap();
+         let headers = format!(
 diff --git a/crates/codex-plus-core/src/watcher.rs b/crates/codex-plus-core/src/watcher.rs
-index 07c9444..4218dcd 100644
+index f11acc1..5e13518 100644
 --- a/crates/codex-plus-core/src/watcher.rs
 +++ b/crates/codex-plus-core/src/watcher.rs
 @@ -1,6 +1,8 @@
@@ -811,22 +842,10 @@ index 07c9444..4218dcd 100644
  #[cfg(windows)]
  use std::process::{Command, Stdio};
  use std::time::Duration;
-@@ -104,7 +106,10 @@ fn is_windowsapps_codex_app_process(executable: &str) -> bool {
-     let Some((package_name, after_package)) = after_windows_apps.split_once('\\') else {
-         return false;
-     };
--    crate::app_paths::is_supported_windows_app_package_name(package_name)
-+    (crate::app_paths::is_supported_windows_app_package_name(package_name)
-+        || package_name
-+            .to_ascii_lowercase()
-+            .starts_with("openai.chatgpt-desktop_"))
-         && after_package.starts_with("app\\")
-         && !after_package.starts_with("app\\resources\\")
-         && after_package
-@@ -136,6 +141,36 @@ pub fn filter_killable_launcher_processes<'a>(
+@@ -138,6 +140,36 @@ pub fn filter_killable_launcher_processes<'a>(
          .collect()
  }
-
+ 
 +pub fn filter_killable_unix_launcher_processes<S: AsRef<str>>(
 +    processes: impl IntoIterator<Item = (u32, u32, S)>,
 +    current_process_id: u32,
@@ -860,9 +879,9 @@ index 07c9444..4218dcd 100644
  pub fn should_recover_stale_launcher(has_codex_process: bool, cdp_listening: bool) -> bool {
      !has_codex_process && !cdp_listening
  }
-@@ -253,7 +288,11 @@ pub fn stop_launcher_processes() {
+@@ -314,7 +346,11 @@ pub fn stop_launcher_processes() {
  }
-
+ 
  #[cfg(not(windows))]
 -pub fn stop_launcher_processes() {}
 +pub fn stop_launcher_processes() {
@@ -870,12 +889,12 @@ index 07c9444..4218dcd 100644
 +        filter_killable_unix_launcher_processes(enumerate_unix_processes(), std::process::id());
 +    terminate_unix_processes(&killable, false);
 +}
-
+ 
  #[cfg(windows)]
  pub fn stop_launcher_processes_and_wait() {
-@@ -276,7 +315,15 @@ pub fn stop_launcher_processes_and_wait() {
+@@ -337,7 +373,15 @@ pub fn stop_launcher_processes_and_wait() {
  }
-
+ 
  #[cfg(not(windows))]
 -pub fn stop_launcher_processes_and_wait() {}
 +pub fn stop_launcher_processes_and_wait() {
@@ -887,13 +906,13 @@ index 07c9444..4218dcd 100644
 +        RESTART_STOP_WAIT_INTERVAL_MS,
 +    );
 +}
-
+ 
  #[cfg(windows)]
  pub fn stop_codex_processes() {
-@@ -300,6 +347,82 @@ pub fn stop_codex_processes_and_wait() {
+@@ -361,6 +405,82 @@ pub fn stop_codex_processes_and_wait() {
  #[cfg(not(windows))]
  pub fn stop_codex_processes_and_wait() {}
-
+ 
 +#[cfg(not(windows))]
 +fn enumerate_unix_processes() -> Vec<(u32, u32, String)> {
 +    let Ok(entries) = std::fs::read_dir("/proc") else {

@@ -1,0 +1,21 @@
+{
+  "id": "browser-rehost",
+  "title": "Browser-Native Headless Rehost",
+  "description": "Opt-in hidden Electron relay for the Codex++ browser-native headless gateway.",
+  "defaultEnabled": false,
+  "entrypoints": {
+    "patchDescriptors": "./patch.js"
+  },
+  "resources": [
+    {
+      "source": "browser-relay.html",
+      "target": ".codex-linux/features/browser-rehost/browser-relay.html",
+      "mode": "0644"
+    },
+    {
+      "source": "browser-relay.js",
+      "target": ".codex-linux/features/browser-rehost/browser-relay.js",
+      "mode": "0644"
+    }
+  ]
+}

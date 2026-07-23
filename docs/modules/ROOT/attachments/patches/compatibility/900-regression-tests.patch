@@ -1,3 +1,16 @@
+diff --git a/apps/codex-plus-manager/package.json b/apps/codex-plus-manager/package.json
+index 0ce3d9c..934ff3d 100644
+--- a/apps/codex-plus-manager/package.json
++++ b/apps/codex-plus-manager/package.json
+@@ -8,7 +8,7 @@
+     "dev": "tauri dev",
+     "build": "cargo build -p codex-plus-launcher --release && tauri build",
+     "check": "tsc --noEmit -p tsconfig.json",
+-    "test": "node --test \"src/*.test.ts\"",
++    "test": "node --test src/*.test.ts src/*.test.mjs",
+     "vite:dev": "vite --host 127.0.0.1 --port 1420",
+     "vite:build": "vite build"
+   },
 diff --git a/apps/codex-plus-manager/src/relay-config-contract.test.mjs b/apps/codex-plus-manager/src/relay-config-contract.test.mjs
 new file mode 100644
 index 0000000..3160e1a
@@ -25,19 +38,19 @@ index 0000000..3160e1a
 +  );
 +});
 diff --git a/crates/codex-plus-core/tests/bridge_routes.rs b/crates/codex-plus-core/tests/bridge_routes.rs
-index 98d6e5c..3251c2e 100644
+index 619002c..f543291 100644
 --- a/crates/codex-plus-core/tests/bridge_routes.rs
 +++ b/crates/codex-plus-core/tests/bridge_routes.rs
 @@ -1,3 +1,5 @@
 +use std::io::Write;
 +use std::process::Command;
  use std::sync::{Arc, Mutex};
-
+ 
  use async_trait::async_trait;
-@@ -720,6 +722,78 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
+@@ -721,6 +723,78 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
      assert!(evaluated[0].contains("window.demo = true;"));
  }
-
+ 
 +#[test]
 +fn user_script_bundle_aliases_only_linux_sandbox_location() {
 +    let temp = tempfile::tempdir().unwrap();
@@ -113,10 +126,10 @@ index 98d6e5c..3251c2e 100644
  #[tokio::test]
  async fn core_runtime_open_devtools_uses_inspector_url_opener() {
      let opened = Arc::new(Mutex::new(Vec::<String>::new()));
-@@ -1384,7 +1458,11 @@ impl LaunchHooks for ContextHooks {
+@@ -1386,7 +1460,11 @@ impl LaunchHooks for ContextHooks {
          Ok(())
      }
-
+ 
 -    async fn start_helper(&self, _helper_port: u16) -> anyhow::Result<()> {
 +    async fn start_helper(
 +        &self,
@@ -125,23 +138,33 @@ index 98d6e5c..3251c2e 100644
 +    ) -> anyhow::Result<()> {
          Ok(())
      }
-
+ 
 diff --git a/crates/codex-plus-core/tests/cdp_bridge.rs b/crates/codex-plus-core/tests/cdp_bridge.rs
-index 418f04c..e08c8e0 100644
+index 11746bb..9e476f0 100644
 --- a/crates/codex-plus-core/tests/cdp_bridge.rs
 +++ b/crates/codex-plus-core/tests/cdp_bridge.rs
-@@ -601,6 +601,7 @@ fn injection_script_exposes_fast_service_tier_control() {
+@@ -2,7 +2,8 @@ use base64::Engine;
+ use codex_plus_core::assets;
+ use codex_plus_core::bridge::{self, BRIDGE_BINDING_NAME};
+ use codex_plus_core::cdp::{
+-    CdpTarget, is_avatar_overlay_page_target, is_primary_codex_page_target, list_targets,
++    CdpTarget, injectable_page_targets, is_avatar_overlay_page_target,
++    is_primary_codex_page_target, is_primary_codex_window, list_targets,
+     pick_injectable_codex_page_target, pick_page_target, validate_cdp_websocket_url,
+ };
+ 
+@@ -1030,6 +1031,7 @@ fn injection_script_exposes_fast_service_tier_control() {
      assert!(script.contains("codexServiceTierSupportedFastModels"));
      assert!(script.contains("\"gpt-5.4\""));
      assert!(script.contains("\"gpt-5.5\""));
 +    assert!(script.contains("\"gpt-5.6\""));
-     assert!(script.contains("codexServiceTierFastSupportedForModel"));
-     assert!(script.contains("codexServiceTierModelForRequest"));
-     assert!(script.contains("codexServiceTierMaybeLoadModelCatalog"));
-@@ -659,6 +660,26 @@ fn injection_script_exposes_fast_service_tier_control() {
-     assert!(script.contains("fast"));
+     assert!(script.contains("\"gpt-5.6-sol\""));
+     assert!(script.contains("\"gpt-5.6-terra\""));
+     assert!(script.contains("\"gpt-5.6-luna\""));
+@@ -1095,6 +1097,26 @@ fn injection_script_exposes_fast_service_tier_control() {
+     assert!(!script.contains("codexAppMaxReasoningOverride"));
  }
-
+ 
 +#[test]
 +fn injection_script_keeps_official_fast_controls_outside_codex_plus_cleanup() {
 +    let script = assets::injection_script(57321);
@@ -165,8 +188,8 @@ index 418f04c..e08c8e0 100644
  #[test]
  fn injection_script_prompts_for_markdown_export_path_when_supported() {
      let script = assets::injection_script(57321);
-@@ -677,7 +698,8 @@ fn injection_script_discovers_vscode_api_asset_without_hardcoded_hash() {
-
+@@ -1113,7 +1135,8 @@ fn injection_script_discovers_vscode_api_asset_without_hardcoded_hash() {
+ 
      assert!(script.contains("loadCodexAppModule(\"vscode-api-\""));
      assert!(script.contains("codexAppAssetUrlFromScriptText"));
 -    assert!(script.contains("fetch(src"));
@@ -175,24 +198,22 @@ index 418f04c..e08c8e0 100644
      assert!(!script.contains("vscode-api-Dc9pX2Bc.js"));
      assert!(!script.contains("import(\"./assets/vscode-api-"));
  }
-@@ -726,6 +748,16 @@ fn injection_script_applies_fast_service_tier_contract() {
+@@ -1162,6 +1185,14 @@ fn injection_script_applies_fast_service_tier_contract() {
      );
-
+ 
      assert_eq!(cases["startConversation"]["serviceTier"], "priority");
-+
 +    assert_eq!(cases["gpt56Fast"]["serviceTier"], "priority");
 +    assert_eq!(cases["gpt56Fast"]["service_tier"], "priority");
 +    assert_eq!(cases["gpt56SuffixedFast"]["serviceTier"], "priority");
 +    assert_eq!(cases["gpt56LabelFast"]["serviceTier"], "priority");
 +    assert_eq!(cases["gpt56FooterFast"]["serviceTier"], "priority");
 +    assert_eq!(cases["gpt56FooterDiagnosticModel"], "gpt-5.6");
-+
 +    assert_eq!(cases["backendCheckingBlocksLocalOverride"], false);
 +    assert_eq!(cases["backendCheckingBadgeDisabled"], false);
- }
-
- fn run_service_tier_contract_harness() -> serde_json::Value {
-@@ -741,8 +773,37 @@ fn run_service_tier_contract_harness() -> serde_json::Value {
+     assert_eq!(cases["solFastAvailability"]["supported"], true);
+     assert_eq!(cases["solDescriptor"]["defaultReasoningEffort"], "low");
+     assert_eq!(
+@@ -1189,8 +1220,37 @@ fn run_service_tier_contract_harness() -> serde_json::Value {
  const scriptPath = {script_path};
  const store = new Map();
  store.set("codexPlusSettings", JSON.stringify({{ serviceTierControls: true }}));
@@ -231,7 +252,7 @@ index 418f04c..e08c8e0 100644
      appendChild() {{}},
      prepend() {{}},
      remove() {{}},
-@@ -759,7 +820,7 @@ function node() {{
+@@ -1207,7 +1267,7 @@ function node() {{
      isConnected: true,
      textContent: "",
      innerHTML: "",
@@ -240,7 +261,7 @@ index 418f04c..e08c8e0 100644
  }}
  globalThis.window = globalThis;
  window.__CODEX_PLUS_TEST_SERVICE_TIER__ = true;
-@@ -770,7 +831,7 @@ globalThis.document = {{
+@@ -1218,7 +1278,7 @@ globalThis.document = {{
    createElement: () => node(),
    getElementById: () => null,
    querySelector: () => null,
@@ -249,10 +270,10 @@ index 418f04c..e08c8e0 100644
    addEventListener() {{}},
    removeEventListener() {{}},
  }};
-@@ -823,6 +884,35 @@ const startConversation = api.requestOverride({{
+@@ -1271,6 +1331,35 @@ const startConversation = api.requestOverride({{
    model: "gpt-5.5",
  }});
-
+ 
 +api.setModelCatalog({{ status: "ok", model: "gpt-5.6", default_model: "gpt-5.6", models: ["gpt-5.6"] }});
 +const gpt56Fast = api.applyServiceTierOverride("turn/start", {{
 +  threadId: "thread-12345678",
@@ -282,10 +303,10 @@ index 418f04c..e08c8e0 100644
 +const backendCheckingBlocksLocalOverride = api.backendBlocksLocalOverride();
 +const backendCheckingBadgeDisabled = !!api.badgeState().disabled;
 +
- process.stdout.write(JSON.stringify({{
-   supportedFast,
-   unsupportedModel,
-@@ -830,6 +920,13 @@ process.stdout.write(JSON.stringify({{
+ api.setModelCatalog({{
+   status: "ok",
+   model: "gpt-5.6-sol",
+@@ -1319,6 +1408,13 @@ process.stdout.write(JSON.stringify({{
    turnWithoutModelDiagnosticModel,
    customInheritUnsupported,
    startConversation,
@@ -296,13 +317,29 @@ index 418f04c..e08c8e0 100644
 +  gpt56FooterDiagnosticModel,
 +  backendCheckingBlocksLocalOverride,
 +  backendCheckingBadgeDisabled,
- }}));
- "#,
-         script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
-@@ -1180,6 +1277,31 @@ fn pick_injectable_codex_page_target_accepts_chatgpt_desktop_error_page() {
+   solFastAvailability,
+   solDescriptor,
+   dispatcherFromSingleton,
+@@ -1908,6 +2004,79 @@ fn pick_injectable_codex_page_target_accepts_chatgpt_desktop_error_page() {
      assert_eq!(picked.id, "chatgpt-error");
  }
-
+ 
++#[test]
++fn pick_injectable_codex_page_target_accepts_linux_local_webview() {
++    let targets = vec![target(
++        "linux-local",
++        "page",
++        "",
++        "http://127.0.0.1:5177/?initialRoute=%2Fconversation",
++        Some("ws://linux-local"),
++    )];
++
++    let picked = pick_injectable_codex_page_target(&targets)
++        .expect("Linux local webview should be selected for injection");
++
++    assert_eq!(picked.id, "linux-local");
++}
++
 +#[test]
 +fn pick_injectable_codex_page_target_accepts_linux_local_app_route() {
 +    let targets = vec![
@@ -328,28 +365,61 @@ index 418f04c..e08c8e0 100644
 +    assert_eq!(picked.id, "linux-app-page");
 +}
 +
++#[test]
++fn injectable_linux_targets_include_hotkey_and_identify_primary_window() {
++    let targets = vec![
++        target(
++            "hotkey",
++            "page",
++            "Codex",
++            "app://-/index.html?initialRoute=%2Fhotkey-window",
++            Some("ws://hotkey"),
++        ),
++        target(
++            "main",
++            "page",
++            "",
++            "http://127.0.0.1:5177/?initialRoute=%2Fconversation",
++            Some("ws://main"),
++        ),
++    ];
++
++    let injectable = injectable_page_targets(&targets);
++
++    assert_eq!(
++        injectable
++            .iter()
++            .map(|item| item.id.as_str())
++            .collect::<Vec<_>>(),
++        ["hotkey", "main"]
++    );
++    assert!(!is_primary_codex_window(&injectable[0]));
++    assert!(is_primary_codex_window(&injectable[1]));
++}
++
  #[test]
- fn pick_injectable_codex_page_target_requires_websocket() {
-     let targets = vec![target("codex", "page", "Codex", "https://codex.test", None)];
+ fn avatar_overlay_target_detection_is_narrow() {
+     let overlay = target(
 diff --git a/crates/codex-plus-core/tests/codex_sqlite.rs b/crates/codex-plus-core/tests/codex_sqlite.rs
-index d7640ab..3b019cf 100644
+index d7640ab..1c20683 100644
 --- a/crates/codex-plus-core/tests/codex_sqlite.rs
 +++ b/crates/codex-plus-core/tests/codex_sqlite.rs
-@@ -1,4 +1,6 @@
+@@ -1,4 +1,7 @@
 -use codex_plus_core::codex_sqlite::sanitize_historical_model_suffixes;
 +use codex_plus_core::codex_sqlite::{
-+    codex_session_db_paths_from_home, sanitize_historical_model_suffixes,
++    codex_session_db_paths_from_home, codex_thread_reference_db_paths_from_home,
++    sanitize_historical_model_suffixes,
 +};
  use rusqlite::Connection;
-
+ 
  fn create_threads_table(conn: &Connection) {
-@@ -161,3 +163,27 @@ fn sanitize_cleans_suffix_from_logs() {
+@@ -161,3 +164,28 @@ fn sanitize_cleans_suffix_from_logs() {
      );
      assert!(body.contains("deepseek-v4-flash"));
  }
 +
 +#[test]
-+fn session_db_discovery_includes_local_catalog_only_database() {
++fn session_db_discovery_separates_local_catalog_only_database() {
 +    let temp = tempfile::tempdir().unwrap();
 +    let home = temp.path().join(".codex");
 +    let sqlite_dir = home.join("sqlite");
@@ -369,16 +439,17 @@ index d7640ab..3b019cf 100644
 +
 +    let paths = codex_session_db_paths_from_home(&home);
 +
-+    assert!(paths.contains(&catalog_path));
++    assert!(!paths.contains(&catalog_path));
++    assert!(codex_thread_reference_db_paths_from_home(&home).contains(&catalog_path));
 +}
 diff --git a/crates/codex-plus-core/tests/installers.rs b/crates/codex-plus-core/tests/installers.rs
-index 7cd4e79..5bc586d 100644
+index 7edf81f..754b64e 100644
 --- a/crates/codex-plus-core/tests/installers.rs
 +++ b/crates/codex-plus-core/tests/installers.rs
 @@ -4,6 +4,39 @@ use codex_plus_core::install::{
-     shortcut_names,
+     default_install_root_strategy, macos_companion_bundle_identifier_from_exe, shortcut_names,
  };
-
+ 
 +#[cfg(target_os = "linux")]
 +fn linux_install_env_lock() -> &'static std::sync::Mutex<()> {
 +    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
@@ -415,7 +486,7 @@ index 7cd4e79..5bc586d 100644
  #[test]
  fn windows_entrypoint_plan_contains_silent_and_manager_entrypoints() {
      let options = InstallOptions {
-@@ -191,3 +224,94 @@ fn windows_default_install_root_uses_known_folder_before_userprofile_desktop() {
+@@ -223,3 +256,94 @@ fn windows_default_install_root_uses_known_folder_before_userprofile_desktop() {
          assert_eq!(strategy, "user-dirs-desktop");
      }
  }
@@ -511,13 +582,13 @@ index 7cd4e79..5bc586d 100644
 +    );
 +}
 diff --git a/crates/codex-plus-core/tests/launcher.rs b/crates/codex-plus-core/tests/launcher.rs
-index 7f9d625..27db770 100644
+index b7d06dc..511ad6f 100644
 --- a/crates/codex-plus-core/tests/launcher.rs
 +++ b/crates/codex-plus-core/tests/launcher.rs
-@@ -24,6 +24,39 @@ use codex_plus_core::ports::{
+@@ -23,6 +23,39 @@ use codex_plus_core::ports::{
  use codex_plus_core::settings::{BackendSettings, RelayProfile, RelayProtocol};
  use codex_plus_core::status::StatusStore;
-
+ 
 +#[cfg(target_os = "linux")]
 +fn linux_app_paths_env_lock() -> &'static Mutex<()> {
 +    static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
@@ -552,12 +623,12 @@ index 7f9d625..27db770 100644
 +}
 +
  #[test]
- fn app_paths_find_latest_windows_package_prefers_highest_version_app_dir() {
-     let temp = tempfile::tempdir().unwrap();
-@@ -325,6 +358,103 @@ fn app_paths_saved_path_is_used_when_no_explicit_path_is_provided() {
+ fn browser_identity_change_requires_two_distinct_observations() {
+     assert!(!browser_identity_changed(None, "browser-a"));
+@@ -385,6 +418,103 @@ fn app_paths_saved_path_is_used_when_no_explicit_path_is_provided() {
      );
  }
-
+ 
 +#[cfg(target_os = "linux")]
 +#[test]
 +fn app_paths_linux_prefers_start_script_and_version_file() {
@@ -656,12 +727,24 @@ index 7f9d625..27db770 100644
 +}
 +
  #[test]
- fn launcher_builds_debug_arguments_and_commands() {
-     let app_dir = PathBuf::from(r"C:\Codex\app");
-@@ -451,6 +581,36 @@ fn launcher_native_menu_inspector_arguments_are_added_before_extra_args() {
+ fn app_paths_rejects_codex_plus_plus_install_dir_as_codex_app() {
+     let temp = tempfile::tempdir().unwrap();
+@@ -415,6 +545,11 @@ fn app_paths_rejects_plain_directory_without_codex_executable() {
+ 
+ #[test]
+ fn app_paths_empty_saved_path_matches_no_saved_path() {
++    #[cfg(target_os = "linux")]
++    let _guard = linux_app_paths_env_lock()
++        .lock()
++        .unwrap_or_else(std::sync::PoisonError::into_inner);
++
+     assert_eq!(
+         resolve_codex_app_dir_with_saved(None, Some("")),
+         resolve_codex_app_dir_with_saved(None, None)
+@@ -584,6 +719,36 @@ fn launcher_native_menu_inspector_arguments_are_added_before_extra_args() {
      assert_eq!(command[4], "--force_high_performance_gpu");
  }
-
+ 
 +#[cfg(target_os = "linux")]
 +#[test]
 +fn launcher_linux_start_script_preserves_wrapper_argument_separator() {
@@ -695,19 +778,19 @@ index 7f9d625..27db770 100644
  #[test]
  fn launcher_constructs_windows_packaged_activation_without_real_app() {
      let app_dir = PathBuf::from(
-@@ -659,7 +819,7 @@ async fn default_helper_serves_backend_status_over_http() {
+@@ -791,7 +956,7 @@ async fn default_helper_serves_backend_status_over_http() {
      let port = listener.local_addr().unwrap().port();
      drop(listener);
-
+ 
 -    hooks.start_helper(port).await.unwrap();
 +    hooks.start_helper(port, None).await.unwrap();
      let client = reqwest::Client::builder().no_proxy().build().unwrap();
      let response = client
          .post(format!("http://127.0.0.1:{port}/backend/status"))
-@@ -683,6 +843,78 @@ async fn default_helper_serves_backend_status_over_http() {
+@@ -815,6 +980,78 @@ async fn default_helper_serves_backend_status_over_http() {
      hooks.shutdown_helper(port).await;
  }
-
+ 
 +#[tokio::test]
 +async fn default_helper_serves_settings_bridge_routes_over_http() {
 +    let temp = tempfile::tempdir().unwrap();
@@ -783,19 +866,19 @@ index 7f9d625..27db770 100644
  #[tokio::test]
  async fn default_helper_accepts_diagnostic_log_events_over_http() {
      let temp = tempfile::tempdir().unwrap();
-@@ -693,7 +925,7 @@ async fn default_helper_accepts_diagnostic_log_events_over_http() {
+@@ -825,7 +1062,7 @@ async fn default_helper_accepts_diagnostic_log_events_over_http() {
      let port = listener.local_addr().unwrap().port();
      drop(listener);
-
+ 
 -    hooks.start_helper(port).await.unwrap();
 +    hooks.start_helper(port, None).await.unwrap();
      let response = reqwest::Client::builder()
          .no_proxy()
          .build()
-@@ -1550,7 +1782,11 @@ impl LaunchHooks for FakeHooks {
+@@ -1694,7 +1931,11 @@ impl LaunchHooks for FakeHooks {
          Ok(())
      }
-
+ 
 -    async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
 +    async fn start_helper(
 +        &self,
@@ -805,10 +888,10 @@ index 7f9d625..27db770 100644
          self.event(format!("start-helper:{helper_port}"));
          Ok(())
      }
-@@ -1587,7 +1823,13 @@ impl LaunchHooks for FakeHooks {
+@@ -1731,7 +1972,13 @@ impl LaunchHooks for FakeHooks {
          Ok(())
      }
-
+ 
 -    async fn ensure_injection(&self, debug_port: u16, helper_port: u16, _app_dir: &Path) -> bool {
 +    async fn ensure_injection(
 +        &self,
@@ -821,10 +904,10 @@ index 7f9d625..27db770 100644
          self.inject_error.is_none()
      }
 diff --git a/crates/codex-plus-core/tests/relay_config.rs b/crates/codex-plus-core/tests/relay_config.rs
-index 045e990..f80c2af 100644
+index 845d6f5..60813f2 100644
 --- a/crates/codex-plus-core/tests/relay_config.rs
 +++ b/crates/codex-plus-core/tests/relay_config.rs
-@@ -514,11 +514,46 @@ fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
+@@ -564,11 +564,46 @@ fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
      assert!(config.contains("[model_providers.custom]"));
      assert!(config.contains(r#"name = "custom""#));
      assert!(config.contains(r#"wire_api = "responses""#));
@@ -833,7 +916,7 @@ index 045e990..f80c2af 100644
      assert!(config.contains(r#"base_url = "http://192.168.188.245:3001/v1""#));
      assert!(config.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
  }
-
+ 
 +#[test]
 +fn pure_api_config_reports_configured_without_openai_auth_requirement() {
 +    let temp = tempfile::tempdir().unwrap();
@@ -872,14 +955,110 @@ index 045e990..f80c2af 100644
  #[test]
  fn apply_relay_files_switches_complete_config_and_auth_json() {
      let temp = tempfile::tempdir().unwrap();
+diff --git a/crates/codex-plus-core/tests/upstream_theme_assets.rs b/crates/codex-plus-core/tests/upstream_theme_assets.rs
+index fc40630..f609b9a 100644
+--- a/crates/codex-plus-core/tests/upstream_theme_assets.rs
++++ b/crates/codex-plus-core/tests/upstream_theme_assets.rs
+@@ -19,35 +19,35 @@ fn bundled_target_renderers_and_styles_remain_byte_exact() {
+     for (path, hash) in [
+         (
+             "assets/inject/upstream/dream-skin/windows/renderer-inject.js",
+-            "97C1F062F6695C19469E851390974121F29C66B690C4790E761C0E1F82586EF1",
++            "0BFB5F66A0323BF1392B42033E66904DE3EC4BFC8A5BA297F2BB92A4A6740A34",
+         ),
+         (
+             "assets/inject/upstream/dream-skin/windows/dream-skin.css",
+-            "3CEF5BD3D536EDA5F1802B325B9727668B6701BE51C9BA613AB7734D203BFCD9",
++            "926ADA0A750A0EC3BE68B4B8F1E5DCEF5D58A85F3619B2B033856D4DF216EF7B",
+         ),
+         (
+             "assets/inject/upstream/dream-skin/macos/renderer-inject.js",
+-            "806D23E953CE356DA621E164467141E7CA8B28235562F4252386FDABF952A5B5",
++            "2704C39506C66554C3529BF0D15B876B4AEC2DD9A36B1796AB43E19C33A046FC",
+         ),
+         (
+             "assets/inject/upstream/dream-skin/macos/dream-skin.css",
+-            "BBC44EBE8EEAA6A8F25BB00559C30294816FB185A86CD2BD425E061BFF57E05F",
++            "EC3C3BC5F6E10E20A3F2307796BD1E1350E80E5D23D37318EE5468833C95A6DF",
+         ),
+         (
+             "assets/inject/upstream/cidala-tiger/windows/renderer-inject.js",
+-            "97C1F062F6695C19469E851390974121F29C66B690C4790E761C0E1F82586EF1",
++            "0BFB5F66A0323BF1392B42033E66904DE3EC4BFC8A5BA297F2BB92A4A6740A34",
+         ),
+         (
+             "assets/inject/upstream/cidala-tiger/windows/dream-skin.css",
+-            "82ECECF50F3595B80BD148D55246FA2871E3F3D0A2C9031F5BAD8B5E6413E666",
++            "482A60AF98DD6B460BF624C56918C5B57F9CCD5B55E52FA46D486F7D65259D9A",
+         ),
+         (
+             "assets/inject/upstream/cidala-tiger/macos/renderer-inject.js",
+-            "09F5BF89BFD8DA90E0E3FD74CA840AD417B63BDF6E5DFDBCB720FD1A6B1FF54E",
++            "21FAF1DC0A3EBE78D8D972182CACE62BD93D5D0E5841725398A4A524EF2BC20B",
+         ),
+         (
+             "assets/inject/upstream/cidala-tiger/macos/dream-skin.css",
+-            "662B04F2E74570770394E3D6F012F6B5952C50E55A1AD47B1577161F860D775D",
++            "5E149E9A13985961C5F3125296178ACB2ABF0B528974F1E616AA625970430562",
+         ),
+         (
+             "assets/inject/upstream/snow-skin/renderer-inject.js",
+@@ -59,11 +59,11 @@ fn bundled_target_renderers_and_styles_remain_byte_exact() {
+         ),
+         (
+             "assets/inject/upstream/glass-vision/renderer-inject.js",
+-            "57A529C0F5743CC7068B5F9064AAB098137520A051E5B0C5A45AD2DFAB91E98C",
++            "D14943E95DB62DB81BF29D9CF14FCAF1DD1EA9A9625245C020865127EEA295A2",
+         ),
+         (
+             "assets/inject/upstream/glass-vision/glass-vision.css",
+-            "84D4AF19D9D5B7D5934139892F83CDB58B5EB370598D775A54587C285A2C8BC1",
++            "4C37C53544EE4F1CD93BA5D0DC3E174B05D4CB84EC9A436295D11D19F0BB04F1",
+         ),
+     ] {
+         assert_sha256(path, hash);
+@@ -75,27 +75,27 @@ fn bundled_skin_pack_theme_files_remain_byte_exact() {
+     for (path, hash) in [
+         (
+             "caishen-lite",
+-            "68F6AA3C9C68D18014D51E7076A71D9B3F5CA156F339CE3F001F394F0217F941",
++            "379CB601522E7A5C2FC906E3D8BD5C7C64385FBD2A428798F8D169DEB7026F2E",
+         ),
+         (
+             "caishen-max",
+-            "02D886D75F779E30E05EB6D6CABC68A9A07EB94B9BCCB4561B82A511DE14F31D",
++            "0CFF815EC9582B88ECF4AD9E7562D7DFF32904FA8F09338811397960D62FD7D4",
+         ),
+         (
+             "caishen-readable",
+-            "5E9947AF7AA00A5CC871330AD55CD9694E49AF54F265C622293C386519F570CB",
++            "EB1FFD4F2F49137B4AEDDBED435513D42685C8ED9E97DF644C693FD7859CC62D",
+         ),
+         (
+             "export-night",
+-            "CB07ADE8952BC809497F78F2E73CC886F43F57E4866FC265B7D4E788D63AEE74",
++            "C312329AABEE84B9A8443B08D4DB64863EC49DEEA3C7F7C942B57E4391B87B59",
+         ),
+         (
+             "global-founder-bright",
+-            "6ED25E22A5D9229AD7C7DED3B71EC818D70B0DAE45A650401B8F902F8FA367B9",
++            "EAFB018494225ABABD83AE0E7B940E3F565232CF8F30C53AAFA63E7652178810",
+         ),
+         (
+             "mythic-guardian-noir",
+-            "F4D30003D0F2346C49CECD6398072DB1FEA78ADB8335844DA6ADABE0DDEBA417",
++            "2A57716D0161F7405D713912BCD0CD329038657518537F3EFDB5F7EE53DBAE3D",
+         ),
+     ] {
+         assert_sha256(
 diff --git a/crates/codex-plus-core/tests/watcher.rs b/crates/codex-plus-core/tests/watcher.rs
-index c2ad8f5..39c44e3 100644
+index 03feecd..f9f339e 100644
 --- a/crates/codex-plus-core/tests/watcher.rs
 +++ b/crates/codex-plus-core/tests/watcher.rs
-@@ -123,6 +123,16 @@ fn launcher_process_filter_protects_current_process_ancestry() {
+@@ -126,6 +126,16 @@ fn launcher_process_filter_protects_current_process_ancestry() {
      assert_eq!(filter_killable_launcher_processes(processes, 30), vec![40]);
  }
-
+ 
 +#[cfg(not(windows))]
 +#[test]
 +fn unix_launcher_cleanup_contract_filters_only_adapter_launchers() {
@@ -894,13 +1073,13 @@ index c2ad8f5..39c44e3 100644
  fn stale_launcher_recovery_only_runs_when_codex_and_cdp_are_absent() {
      assert!(should_recover_stale_launcher(false, false));
 diff --git a/crates/codex-plus-data/tests/provider_sync.rs b/crates/codex-plus-data/tests/provider_sync.rs
-index 2584939..6373660 100644
+index cbcea2f..6946805 100644
 --- a/crates/codex-plus-data/tests/provider_sync.rs
 +++ b/crates/codex-plus-data/tests/provider_sync.rs
-@@ -74,6 +74,75 @@ fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
+@@ -84,6 +84,75 @@ fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
      }
  }
-
+ 
 +fn create_state_db_for_local_catalog(path: &Path) {
 +    let db = Connection::open(path).unwrap();
 +    db.execute_batch(
@@ -973,10 +1152,10 @@ index 2584939..6373660 100644
  #[test]
  fn provider_sync_targets_merge_config_rollout_sqlite_and_sort_current_first() {
      let tmp = tempdir().unwrap();
-@@ -350,6 +419,100 @@ fn provider_sync_updates_new_codex_sqlite_directory_db() {
+@@ -360,6 +429,100 @@ fn provider_sync_updates_new_codex_sqlite_directory_db() {
      assert!(backup_dir.join("db/sqlite/codex-dev.db").exists());
  }
-
+ 
 +#[test]
 +fn provider_sync_backfills_local_catalog_with_nonempty_source_title() {
 +    let tmp = tempdir().unwrap();
@@ -1074,7 +1253,7 @@ index 2584939..6373660 100644
  #[test]
  fn provider_sync_backup_metadata_contains_reference_fields_and_managed_marker() {
      let tmp = tempdir().unwrap();
-@@ -501,7 +664,8 @@ fn provider_sync_repairs_sqlite_when_rollout_provider_matches_and_normalizes_pat
+@@ -511,7 +674,8 @@ fn provider_sync_repairs_sqlite_when_rollout_provider_matches_and_normalizes_pat
  fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
      let tmp = tempdir().unwrap();
      let home = tmp.path().join(".codex");
@@ -1084,7 +1263,7 @@ index 2584939..6373660 100644
      fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
      write_rollout(
          &home.join("sessions/rollout-projectless.jsonl"),
-@@ -510,6 +674,8 @@ fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
+@@ -520,6 +684,8 @@ fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
          "C:/old/project",
      );
      create_state_db(&home.join("state_5.sqlite"));
@@ -1093,7 +1272,7 @@ index 2584939..6373660 100644
      fs::write(
          home.join(".codex-global-state.json"),
          json!({
-@@ -530,6 +696,15 @@ fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
+@@ -540,6 +706,15 @@ fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
          })
          .unwrap();
      assert_eq!(row, "C:/old");
@@ -1107,5 +1286,5 @@ index 2584939..6373660 100644
 +        .unwrap();
 +    assert_eq!(catalog_rows, 0);
  }
-
+ 
  #[test]

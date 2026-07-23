@@ -239,12 +239,37 @@ find_cargo_for_linux_computer_use() {
     return 1
 }
 
+find_system_computer_use_binary() {
+    local name="$1"
+    local candidate
+
+    for candidate in \
+        "$HOME/.cargo/bin/$name" \
+        "$HOME/.local/bin/$name"; do
+        if [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    candidate="$(command -v "$name" 2>/dev/null || true)"
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+
+    return 1
+}
+
 build_linux_computer_use_backend() {
     local crate_dir="$SCRIPT_DIR/computer-use-linux"
     local backend_binary="$SCRIPT_DIR/target/release/codex-computer-use-linux"
     local cosmic_helper_binary="$SCRIPT_DIR/target/release/codex-computer-use-cosmic"
     local cargo_cmd=""
+    local system_backend=""
+    local system_cosmic=""
 
+    # Step 1: Environment override
     if [ -n "${CODEX_LINUX_COMPUTER_USE_BACKEND_SOURCE:-}" ] || [ -n "${CODEX_LINUX_COMPUTER_USE_COSMIC_SOURCE:-}" ]; then
         [ -n "${CODEX_LINUX_COMPUTER_USE_BACKEND_SOURCE:-}" ] || warn "CODEX_LINUX_COMPUTER_USE_BACKEND_SOURCE is not set"
         [ -n "${CODEX_LINUX_COMPUTER_USE_COSMIC_SOURCE:-}" ] || warn "CODEX_LINUX_COMPUTER_USE_COSMIC_SOURCE is not set"
@@ -255,6 +280,39 @@ build_linux_computer_use_backend() {
         return 0
     fi
 
+    # Steps 2-3 are opt-in: the vendored build stays the default so the
+    # repository only ships code it is responsible for. Set
+    # CODEX_LINUX_COMPUTER_USE_SYSTEM_INSTALL=1 to reuse a system-installed
+    # computer-use-linux (or install it from crates.io) instead of building
+    # the vendored crate.
+    if [ "${CODEX_LINUX_COMPUTER_USE_SYSTEM_INSTALL:-}" = "1" ]; then
+        # Step 2: System-installed binaries
+        if system_backend="$(find_system_computer_use_binary computer-use-linux)" &&
+            system_cosmic="$(find_system_computer_use_binary computer-use-linux-cosmic)"; then
+            info "Using system computer-use-linux MCP binaries: $system_backend"
+            printf '%s\n%s\n' "$system_backend" "$system_cosmic"
+            return 0
+        fi
+
+        # Step 3: Install from crates.io
+        if cargo_cmd="$(find_cargo_for_linux_computer_use)"; then
+            info "Installing computer-use-linux MCP from crates.io..."
+            if "$cargo_cmd" install --locked computer-use-linux >&2; then
+                if system_backend="$(find_system_computer_use_binary computer-use-linux)" &&
+                    system_cosmic="$(find_system_computer_use_binary computer-use-linux-cosmic)"; then
+                    printf '%s\n%s\n' "$system_backend" "$system_cosmic"
+                    return 0
+                fi
+                warn "computer-use-linux binaries missing after crates.io install"
+            else
+                warn "Failed to install computer-use-linux from crates.io; falling back to vendored build"
+            fi
+        else
+            warn "cargo not found for crates.io install; falling back to vendored build"
+        fi
+    fi
+
+    # Step 4: Vendored build fallback
     if [ ! -d "$crate_dir" ]; then
         warn "Linux Computer Use backend source not found at $crate_dir"
         return 1
@@ -265,7 +323,7 @@ build_linux_computer_use_backend() {
         return 1
     fi
 
-    info "Building Linux Computer Use backend..."
+    info "Building Linux Computer Use backend from vendored source..."
     if ! (cd "$SCRIPT_DIR" && "$cargo_cmd" build --release -p codex-computer-use-linux >&2); then
         warn "Failed to build Linux Computer Use backend"
         return 1
@@ -311,6 +369,11 @@ stage_linux_computer_use_plugin() {
     cp "$cosmic_helper_binary" "$target_plugin/bin/codex-computer-use-cosmic"
     chmod 0755 "$target_plugin/bin/codex-computer-use-linux"
     chmod 0755 "$target_plugin/bin/codex-computer-use-cosmic"
+    if [ "${backend_binary##*/}" = "computer-use-linux" ]; then
+        # The published backend resolves its COSMIC helper by this sibling name.
+        cp "$cosmic_helper_binary" "$target_plugin/bin/computer-use-linux-cosmic"
+        chmod 0755 "$target_plugin/bin/computer-use-linux-cosmic"
+    fi
 
     local plugin_icon_source="${LINUX_ICON_SOURCE:-$ICON_SOURCE}"
     if [ -f "$plugin_icon_source" ]; then
@@ -384,52 +447,176 @@ install_linux_executable_resource() {
     install -m 0755 "$source" "$destination"
 }
 
-patch_browser_use_node_repl_glibc_228() {
+patch_browser_use_node_repl_glibc_pidfd_symbols() {
     local file="$1"
-    local patcher="$SCRIPT_DIR/scripts/lib/patch-node-repl-glibc.py"
+    python3 - "$file" <<'PY'
+import pathlib
+import struct
+import sys
 
-    [ -f "$patcher" ] || {
-        echo "node_repl glibc patcher is missing: $patcher" >&2
-        return 1
-    }
-    python3 "$patcher" "$file"
+# node_repl only needs these pidfd symbols opportunistically. Keeping their
+# GLIBC_2.39 version binding makes the whole binary fail to load on glibc
+# 2.34-2.38.
+
+path = pathlib.Path(sys.argv[1])
+data = bytearray(path.read_bytes())
+
+
+def fail(message):
+    print(message, file=sys.stderr)
+    sys.exit(1)
+
+
+def read_cstr(blob, offset):
+    if offset < 0 or offset >= len(blob):
+        return ""
+    end = blob.find(b"\0", offset)
+    if end == -1:
+        end = len(blob)
+    return blob[offset:end].decode("utf-8", "replace")
+
+
+def elf_hash(name):
+    value = 0
+    for byte in name.encode("utf-8"):
+        value = (value << 4) + byte
+        high = value & 0xF0000000
+        if high:
+            value ^= high >> 24
+            value &= ~high
+    return value & 0xFFFFFFFF
+
+
+if len(data) < 64 or data[:4] != b"\x7fELF":
+    sys.exit(0)
+if data[4] != 2 or data[5] != 1:
+    sys.exit(0)
+
+e_machine = struct.unpack_from("<H", data, 18)[0]
+if e_machine != 62:
+    sys.exit(0)
+
+e_shoff = struct.unpack_from("<Q", data, 40)[0]
+e_shentsize = struct.unpack_from("<H", data, 58)[0]
+e_shnum = struct.unpack_from("<H", data, 60)[0]
+e_shstrndx = struct.unpack_from("<H", data, 62)[0]
+
+if e_shoff == 0 or e_shentsize < 64 or e_shnum == 0 or e_shstrndx >= e_shnum:
+    sys.exit(0)
+if e_shoff + (e_shnum * e_shentsize) > len(data):
+    fail("ELF section table is outside file bounds")
+
+sections = []
+for index in range(e_shnum):
+    offset = e_shoff + (index * e_shentsize)
+    fields = struct.unpack_from("<IIQQQQIIQQ", data, offset)
+    sections.append(
+        {
+            "name_offset": fields[0],
+            "type": fields[1],
+            "offset": fields[4],
+            "size": fields[5],
+            "link": fields[6],
+            "entsize": fields[9],
+        }
+    )
+
+shstr = sections[e_shstrndx]
+shstr_data = data[shstr["offset"] : shstr["offset"] + shstr["size"]]
+by_name = {
+    read_cstr(shstr_data, section["name_offset"]): section for section in sections
 }
 
-install_browser_use_node_repl_glibc_compat() {
-    local destination="$1"
-    local runtime_dir
-    local runtime_library
-    local compatibility_source="$SCRIPT_DIR/scripts/lib/node-repl-glibc-compat.c"
-    local cc_command="${CC:-cc}"
+dynsym = by_name.get(".dynsym")
+dynstr = by_name.get(".dynstr")
+versym = by_name.get(".gnu.version")
+verneed = by_name.get(".gnu.version_r")
+if not dynsym or not dynstr or not versym or not verneed:
+    sys.exit(0)
+if dynsym["entsize"] < 24:
+    fail("ELF dynamic symbol table has an unsupported entry size")
 
-    command -v patchelf >/dev/null 2>&1 || {
-        echo "patchelf is required for the glibc 2.28 node_repl compatibility patch" >&2
-        return 1
-    }
-    command -v "$cc_command" >/dev/null 2>&1 || {
-        echo "$cc_command is required for the glibc 2.28 node_repl compatibility patch" >&2
-        return 1
-    }
-    [ -f "$compatibility_source" ] || {
-        echo "node_repl glibc compatibility source is missing: $compatibility_source" >&2
-        return 1
-    }
+dynstr_data = data[dynstr["offset"] : dynstr["offset"] + dynstr["size"]]
+glibc_234_offset = dynstr_data.find(b"GLIBC_2.34\0")
+if glibc_234_offset < 0:
+    sys.exit(0)
+glibc_234_name_offset = glibc_234_offset
+glibc_234_hash = elf_hash("GLIBC_2.34")
 
-    runtime_dir="$(dirname "$destination")/node-repl-runtime"
-    runtime_library="$runtime_dir/libcodex-node-repl-glibc-compat.so"
-    rm -rf "$runtime_dir"
-    mkdir -p "$runtime_dir"
-    if ! "$cc_command" -shared -fPIC -O2 -Wall -Wextra -Werror \
-        -Wl,-soname,libcodex-node-repl-glibc-compat.so \
-        "$compatibility_source" -o "$runtime_library"; then
-        rm -rf "$runtime_dir"
-        return 1
-    fi
+version_names = {}
+version_aux_offsets = {}
+cursor = verneed["offset"]
+end = verneed["offset"] + verneed["size"]
+while cursor and cursor + 16 <= end:
+    vn_version, vn_cnt, _vn_file, vn_aux, vn_next = struct.unpack_from(
+        "<HHIII", data, cursor
+    )
+    if vn_version == 0 or vn_cnt == 0:
+        break
+    aux_cursor = cursor + vn_aux
+    for _ in range(vn_cnt):
+        if aux_cursor + 16 > end:
+            fail("ELF version need auxiliary record is outside section bounds")
+        _hash, _flags, other, name_offset, aux_next = struct.unpack_from(
+            "<IHHII", data, aux_cursor
+        )
+        version_names[other] = read_cstr(dynstr_data, name_offset)
+        version_aux_offsets[other] = aux_cursor
+        if aux_next == 0:
+            break
+        aux_cursor += aux_next
+    if vn_next == 0:
+        break
+    cursor += vn_next
 
-    patchelf --add-needed libdl.so.2 "$destination"
-    patchelf --add-needed libpthread.so.0 "$destination"
-    patchelf --add-needed libcodex-node-repl-glibc-compat.so "$destination"
-    patchelf --set-rpath '$ORIGIN/node-repl-runtime' "$destination"
+target_names = {"pidfd_spawnp", "pidfd_getpid"}
+target_version_ids = set()
+non_target_glibc_239_refs = []
+patched_symbols = 0
+symbol_count = dynsym["size"] // dynsym["entsize"]
+for index in range(symbol_count):
+    symbol_offset = dynsym["offset"] + (index * dynsym["entsize"])
+    if symbol_offset + 24 > len(data):
+        fail("ELF dynamic symbol entry is outside file bounds")
+    name_offset, info, _other, shndx = struct.unpack_from("<IBBH", data, symbol_offset)
+    name = read_cstr(dynstr_data, name_offset)
+    if not name:
+        continue
+    versym_offset = versym["offset"] + (index * 2)
+    if versym_offset + 2 > versym["offset"] + versym["size"]:
+        fail("ELF version symbol entry is outside section bounds")
+    raw_version = struct.unpack_from("<H", data, versym_offset)[0]
+    version_id = raw_version & 0x7FFF
+    if version_names.get(version_id) != "GLIBC_2.39":
+        continue
+    bind = info >> 4
+    is_weak_undefined = bind == 2 and shndx == 0
+    if name in target_names and is_weak_undefined:
+        struct.pack_into("<H", data, versym_offset, 1)
+        target_version_ids.add(version_id)
+        patched_symbols += 1
+    else:
+        non_target_glibc_239_refs.append(name)
+
+if non_target_glibc_239_refs:
+    fail(
+        "non-pidfd GLIBC_2.39 references remain: "
+        + ", ".join(sorted(set(non_target_glibc_239_refs)))
+    )
+
+if patched_symbols == 0:
+    sys.exit(0)
+
+for version_id in target_version_ids:
+    aux_offset = version_aux_offsets.get(version_id)
+    if aux_offset is None:
+        fail("GLIBC_2.39 version need record was not found")
+    struct.pack_into("<I", data, aux_offset, glibc_234_hash)
+    struct.pack_into("<I", data, aux_offset + 8, glibc_234_name_offset)
+
+path.write_bytes(data)
+print("patched")
+PY
 }
 
 is_browser_use_node_repl_ldd_output_compatible() {
@@ -449,21 +636,15 @@ install_browser_use_node_repl_executable_resource() {
         return 1
     fi
 
-    if ! patch_status="$(patch_browser_use_node_repl_glibc_228 "$destination" 2>&1)"; then
-        warn "Browser Use $label has unsupported glibc runtime references; skipping"
+    if ! patch_status="$(patch_browser_use_node_repl_glibc_pidfd_symbols "$destination" 2>&1)"; then
+        warn "Browser Use $label has unsupported GLIBC_2.39 runtime references; skipping"
         [ -z "$patch_status" ] || warn "$patch_status"
         rm -f "$destination"
         return 1
     fi
 
     if [ "$patch_status" = "patched" ]; then
-        if ! install_browser_use_node_repl_glibc_compat "$destination"; then
-            warn "Browser Use $label glibc 2.28 compatibility runtime could not be installed; skipping"
-            rm -f "$destination"
-            rm -rf "$(dirname "$destination")/node-repl-runtime"
-            return 1
-        fi
-        info "Patched Browser Use $label for glibc 2.28+ compatibility"
+        info "Patched Browser Use $label for glibc 2.34+ compatibility"
     fi
 
     if command -v ldd >/dev/null 2>&1; then
@@ -587,6 +768,170 @@ remove_macos_sidecar_files() {
     find "$root" -type f -name '*:com.apple.*' -delete
 }
 
+validate_upstream_bundled_skills() {
+    local skills_dir="$1"
+
+    python3 - "$skills_dir" <<'PY'
+import os
+from pathlib import Path
+import stat
+import sys
+
+root = Path(sys.argv[1])
+
+try:
+    root_metadata = root.lstat()
+except OSError as exc:
+    print(f"cannot inspect bundled skills root: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+if stat.S_ISLNK(root_metadata.st_mode):
+    print("bundled skills root cannot be a symlink", file=sys.stderr)
+    sys.exit(1)
+if not stat.S_ISDIR(root_metadata.st_mode):
+    print("bundled skills root must be a directory", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    resolved_root = root.resolve(strict=True)
+except (OSError, RuntimeError) as exc:
+    print(f"cannot resolve bundled skills root: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+
+def fail_walk(error):
+    print(f"cannot inspect bundled skills tree: {error}", file=sys.stderr)
+    sys.exit(1)
+
+
+for current_root, directories, files in os.walk(root, followlinks=False, onerror=fail_walk):
+    current = Path(current_root)
+    for name in directories + files:
+        path = current / name
+        relative_path = path.relative_to(root)
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            print(f"cannot inspect {relative_path}: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        if stat.S_ISLNK(metadata.st_mode):
+            try:
+                target = os.readlink(path)
+            except OSError as exc:
+                print(f"cannot read symlink {relative_path}: {exc}", file=sys.stderr)
+                sys.exit(1)
+            if os.path.isabs(target):
+                print(f"absolute symlink is not allowed: {relative_path}", file=sys.stderr)
+                sys.exit(1)
+            try:
+                resolved_target = path.resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                print(f"cannot resolve symlink {relative_path}: {exc}", file=sys.stderr)
+                sys.exit(1)
+            try:
+                resolved_target.relative_to(resolved_root)
+            except ValueError:
+                print(f"symlink escapes bundled skills root: {relative_path}", file=sys.stderr)
+                sys.exit(1)
+            try:
+                target_metadata = resolved_target.stat()
+            except OSError as exc:
+                print(f"cannot inspect symlink target {relative_path}: {exc}", file=sys.stderr)
+                sys.exit(1)
+            if not (stat.S_ISDIR(target_metadata.st_mode) or stat.S_ISREG(target_metadata.st_mode)):
+                print(f"unsupported symlink target type: {relative_path}", file=sys.stderr)
+                sys.exit(1)
+            continue
+
+        if not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)):
+            print(f"unsupported file type: {relative_path}", file=sys.stderr)
+            sys.exit(1)
+        if metadata.st_mode & 0o6000:
+            print(f"privileged mode is not allowed: {relative_path}", file=sys.stderr)
+            sys.exit(1)
+PY
+}
+
+stage_upstream_bundled_skills() {
+    local source_skills="$1"
+    local target_skills="$2"
+    local target_parent
+    local staging_skills=""
+    local backup_skills=""
+
+    if [ ! -d "$source_skills" ]; then
+        info "Bundled skills not present in upstream resources; skipping"
+        return 0
+    fi
+    if ! validate_upstream_bundled_skills "$source_skills"; then
+        warn "Bundled skills source contains unsupported content"
+        return 1
+    fi
+
+    target_parent="$(dirname "$target_skills")"
+    mkdir -p "$target_parent"
+    if ! staging_skills="$(mktemp -d "$target_parent/.skills.tmp.XXXXXX")"; then
+        warn "Failed to create staging directory for bundled skills"
+        return 1
+    fi
+    if ! cp -R "$source_skills/." "$staging_skills/"; then
+        rm -rf -- "$staging_skills"
+        warn "Failed to stage bundled skills from upstream resources"
+        return 1
+    fi
+    if ! remove_macos_sidecar_files "$staging_skills"; then
+        rm -rf -- "$staging_skills"
+        warn "Failed to clean macOS sidecar files from bundled skills"
+        return 1
+    fi
+    if ! validate_upstream_bundled_skills "$staging_skills"; then
+        rm -rf -- "$staging_skills" || warn "Failed to clean bundled skills staging directory"
+        warn "Bundled skills failed post-copy validation"
+        return 1
+    fi
+    if ! chmod -R u+rwX,go-w "$staging_skills"; then
+        rm -rf -- "$staging_skills"
+        warn "Failed to normalize bundled skills permissions"
+        return 1
+    fi
+
+    backup_skills="$target_parent/.skills.backup.$$"
+    if ! rm -rf -- "$backup_skills"; then
+        rm -rf -- "$staging_skills"
+        warn "Failed to prepare bundled skills backup"
+        return 1
+    fi
+    if [ -e "$target_skills" ] || [ -L "$target_skills" ]; then
+        if ! mv -- "$target_skills" "$backup_skills"; then
+            rm -rf -- "$staging_skills"
+            warn "Failed to preserve existing bundled skills"
+            return 1
+        fi
+    else
+        backup_skills=""
+    fi
+    if ! mv -- "$staging_skills" "$target_skills"; then
+        rm -rf -- "$staging_skills"
+        if [ -n "$backup_skills" ]; then
+            if mv -- "$backup_skills" "$target_skills"; then
+                warn "Failed to install bundled skills; previous target was restored"
+            else
+                warn "Failed to install bundled skills and previous target could not be restored"
+            fi
+        else
+            warn "Failed to install bundled skills"
+        fi
+        return 1
+    fi
+    if [ -n "$backup_skills" ] && ! rm -rf -- "$backup_skills"; then
+        warn "Failed to clean previous bundled skills backup: $backup_skills"
+        return 1
+    fi
+
+    info "Bundled skills staged from upstream DMG"
+}
+
 chrome_extension_host_arch() {
     case "$ARCH" in
         x86_64) echo "x64" ;;
@@ -662,6 +1007,34 @@ patch_chrome_plugin_for_linux() {
     fi
 }
 
+patch_browser_client_iab_socket_scope() {
+    local client="$1"
+    local patcher="$SCRIPT_DIR/scripts/lib/patch-browser-client-iab-socket-scope.js"
+
+    if [ ! -f "$patcher" ]; then
+        warn "IAB Browser socket scope patch helper not found at $patcher; leaving browser-client.mjs unchanged"
+        return 0
+    fi
+
+    if ! node "$patcher" "$client" >&2; then
+        warn "IAB Browser socket scope patch helper failed; leaving browser-client.mjs unchanged"
+    fi
+}
+
+patch_browser_client_linux_socket_dir() {
+    local client="$1"
+    local patcher="$SCRIPT_DIR/scripts/lib/patch-browser-client-iab-socket-scope.js"
+
+    if [ ! -f "$patcher" ]; then
+        warn "Browser socket-directory patch helper not found at $patcher; leaving browser-client.mjs unchanged"
+        return 0
+    fi
+
+    if ! node "$patcher" "$client" --socket-dir-only >&2; then
+        warn "Browser socket-directory patch helper failed; leaving browser-client.mjs unchanged"
+    fi
+}
+
 normalize_plugin_script_executable_modes() {
     local target_plugin="$1"
     local scripts_dir="$target_plugin/scripts"
@@ -707,6 +1080,7 @@ stage_chrome_plugin_from_upstream() {
     patch_browser_use_node_repl_config_shim "$target_plugin/scripts/browser-client.mjs"
     patch_browser_use_native_pipe_import_meta_bridge "$target_plugin/scripts/browser-client.mjs"
     patch_browser_use_site_status_allowlist_fallback "$target_plugin/scripts/browser-client.mjs"
+    patch_browser_client_linux_socket_dir "$target_plugin/scripts/browser-client.mjs"
     normalize_plugin_script_executable_modes "$target_plugin"
     if ! install_chrome_extension_host_resource "$target_plugin"; then
         rm -rf "$target_plugin"
@@ -731,33 +1105,17 @@ import sys
 
 path = Path(sys.argv[1])
 source = path.read_text(encoding="utf-8")
-patterns = [
-    re.compile(
-        r'async fetchBlocked\((?P<url>[A-Za-z_$][\w$]*)\)\{'
-        r'let (?P<response>[A-Za-z_$][\w$]*)=await (?P<fetch>[A-Za-z_$][\w$]*)'
-        r'\((?P=url)\.endpoint,\{method:"GET"\}\);'
-        r'if\(!(?P=response)\.ok\)throw new Error\((?P<format>[A-Za-z_$][\w$]*)'
-        r'\(`Browser Use cannot determine if \$\{(?P=url)\.displayUrl\} is allowed\. '
-        r'Please try again later or use another source\.`\)\);'
-        r'let (?P<json>[A-Za-z_$][\w$]*)=await (?P=response)\.json\(\);'
-        r'return (?P<status>[A-Za-z_$][\w$]*)\((?P=json)\)\}'
-    ),
-    re.compile(
-        r'async fetchBlocked\((?P<url>[A-Za-z_$][\w$]*),(?P<label>[A-Za-z_$][\w$]*)\)\{'
-        r'let (?P<response>[A-Za-z_$][\w$]*)=await (?P<fetch>[A-Za-z_$][\w$]*)'
-        r'\((?P=url)\.endpoint,\{method:"GET"\}\);'
-        r'if\(!(?P=response)\.ok\)throw new Error\((?P<format>[A-Za-z_$][\w$]*)'
-        r'\(`\$\{(?P=label)\} cannot determine if \$\{(?P=url)\.displayUrl\} is allowed\. '
-        r'Please try again later or use another source\.`\)\);'
-        r'let (?P<json>[A-Za-z_$][\w$]*)=await (?P=response)\.json\(\);'
-        r'return (?P<status>[A-Za-z_$][\w$]*)\((?P=json)\)\}'
-    ),
-]
-match = None
-for pattern in patterns:
-    match = pattern.search(source)
-    if match is not None:
-        break
+pattern = re.compile(
+    r'async fetchBlocked\((?P<url>[A-Za-z_$][\w$]*),(?P<label>[A-Za-z_$][\w$]*)\)\{'
+    r'let (?P<response>[A-Za-z_$][\w$]*)=await (?P<fetch>[A-Za-z_$][\w$]*)'
+    r'\((?P=url)\.endpoint,\{method:"GET"\}\);'
+    r'if\(!(?P=response)\.ok\)throw new Error\((?P<format>[A-Za-z_$][\w$]*)'
+    r'\(`\$\{(?P=label)\} cannot determine if \$\{(?P=url)\.displayUrl\} is allowed\. '
+    r'Please try again later or use another source\.`\)\);'
+    r'let (?P<json>[A-Za-z_$][\w$]*)=await (?P=response)\.json\(\);'
+    r'return (?P<status>[A-Za-z_$][\w$]*)\((?P=json)\)\}'
+)
+match = pattern.search(source)
 if match is None:
     if "/aura/site_status" not in source and "fetchBlocked(" not in source:
         raise SystemExit(0)
@@ -773,19 +1131,14 @@ fetch = match.group("fetch")
 formatter = match.group("format")
 json_value = match.group("json")
 status = match.group("status")
-label = match.groupdict().get("label")
+label = match.group("label")
 error = "__codexLinuxErr"
-error_message = (
-    f'Browser Use cannot determine if ${{{url}.displayUrl}} is allowed. Please try again later or use another source.'
-    if label is None
-    else f'${{{label}}} cannot determine if ${{{url}.displayUrl}} is allowed. Please try again later or use another source.'
-)
-args = url if label is None else f"{url},{label}"
+error_message = f'${{{label}}} cannot determine if ${{{url}.displayUrl}} is allowed. Please try again later or use another source.'
 replacement = (
-    f'async fetchBlocked({args}){{let {response};try{{{response}=await {fetch}({url}.endpoint,{{method:"GET"}})}}'
+    f'async fetchBlocked({url},{label}){{let {response};try{{{response}=await {fetch}({url}.endpoint,{{method:"GET"}})}}'
     f'catch({error}){{if(String({url}?.endpoint??"").includes("/aura/site_status")&&'
-    f'String({error}?.message??{error}).toLowerCase().includes("allowlist"))return console.warn'
-    f'("codexLinuxSiteStatusAllowlistFallback",{url}.endpoint),!1;throw {error}}}'
+    f'String({error}?.message??{error}).toLowerCase().includes("allowlist"))'
+    f'return!1/*codexLinuxSiteStatusAllowlistFallback*/;throw {error}}}'
     f'if(!{response}.ok)throw new Error({formatter}(`{error_message}`));'
     f'let {json_value}=await {response}.json();return {status}({json_value})}}'
 )
@@ -1188,6 +1541,7 @@ stage_browser_plugin_from_upstream() {
     patch_browser_use_native_pipe_import_meta_bridge "$target_client"
     patch_browser_use_site_status_allowlist_fallback "$target_client"
     patch_browser_use_file_url_policy "$target_client"
+    patch_browser_client_iab_socket_scope "$target_client"
 
     info "Browser plugin staged from upstream DMG"
     return 0
@@ -1393,6 +1747,10 @@ install_bundled_plugin_resources() {
     local portable_plugin_names=""
     local portable_plugins=()
 
+    if ! stage_upstream_bundled_skills "$upstream_resources/skills" "$resources_dir/skills"; then
+        return 1
+    fi
+
     if [ ! -f "$source_marketplace" ]; then
         warn "Bundled plugin marketplace not found in upstream app; skipping bundled plugins"
         return 0
@@ -1446,6 +1804,11 @@ install_bundled_plugin_resources() {
 
     install_linux_executable_resource "$upstream_resources/node" "$resources_dir/node" "node runtime" "info" || true
     install_browser_use_node_repl_resource "$upstream_resources" "$resources_dir/node_repl" || true
+
+    # These files become the trust root for user-cache refreshes at runtime.
+    # Normalize them while staging from the accepted DMG instead of blessing a
+    # potentially modified installed tree during launcher startup.
+    chmod -R u+rwX,go-w "$bundled_plugins_dir"
 
     info "Linux-safe bundled plugins installed"
 }
