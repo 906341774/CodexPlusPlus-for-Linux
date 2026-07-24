@@ -1,0 +1,328 @@
+= v1.2.41-fix-0003 payload matrix and package-entry correction
+:toc:
+:toclevels: 3
+
+== Scope
+
+This maintenance round completes the corrected `v1.2.41-fix-0003` artifact
+matrix and records a package-entry defect found during final clean-install
+validation.
+
+The final build and release matrix is:
+
+[cols="1,2,2",options="header"]
+|===
+|Build environment |Published form |Purpose
+
+|Debian 10
+|DEB
+|Old-distribution compatibility package
+
+|AlmaLinux 9.8
+|RPM and RHEL 9 compatible portable archive
+|EL9 compatibility line
+
+|Fedora 43
+|Modern portable archive and host payload
+|Current workstation and modern-distribution line
+|===
+
+The Debian 10 build is not used as the modern portable or host payload. The
+Fedora 43 build does not inherit the AlmaLinux Pixi/Conda compatibility layer.
+All Podman storage, source copies, payloads, and validation state remained on
+the maintainer's XFS loop under `$HOME/.local/share/containers`.
+
+== Frozen inputs
+
+The three build lines use the same accepted upstream application baseline:
+
+* Codex++ version: `1.2.41`.
+* Upstream Codex application version: `26.715.72028`.
+* Electron version: `42.3.0`.
+* Accepted DMG SHA256:
+  `617ea5af4577dba86f0ee4380fc06ce76b1666da5c32996ed0a75bc99c7d85c2`.
+* Enabled Linux features: `29` in both packaged build-info documents.
+
+== Root causes and fixes
+
+=== Debian compatibility payload was used as a modern host payload
+
+The earlier artifact set treated the Debian 10 build as a generally portable
+host build. Runtime feedback showed severe animation, GPU, locale, Manager,
+window-decoration, and conversation-list regressions that were not present in
+the older AlmaLinux build.
+
+The correction separates build products by target instead of treating the
+lowest glibc build as the best runtime for every system:
+
+* Debian 10 produces only the DEB line.
+* AlmaLinux 9.8 produces the RHEL 9 RPM and compatible portable line.
+* Fedora 43 produces the modern portable and host line.
+
+=== Upstream DMG drifted during the maintenance round
+
+The first Fedora rebuild consumed a newer DMG with SHA256
+`e8d55e25c898224401f669400cfd50dd7e5f21b6cc501dd87f1396ecae3338e8`.
+That input failed required patch gates, including tray quit, Fast model guard,
+subagent metadata, and local conversation route hydration.
+
+`scripts/developer/Build-CodexDesktopLinux.ps1` now accepts an explicit
+`-UpstreamDmgPath` and `-DmgRefreshMode`. The corrected build pins the accepted
+`617ea5af...` DMG instead of silently consuming a changed download.
+
+=== Direct builds lost the Linux feature environment
+
+The former direct `make build-app` path could write no feature config and let
+`linux-features.js` report `None`, even when `CODEX_LINUX_FEATURES` was set.
+
+The PowerShell build procedure now:
+
+* discovers the selected Linux feature ids;
+* writes `linux-features/features.json`;
+* exports both `CODEX_LINUX_FEATURES` and `CODEX_LINUX_FEATURES_CONFIG`;
+* verifies `.codex-linux/build-info.json` and
+  `resources/codex-linux-build-info.json` after installation.
+
+The accepted Debian, AlmaLinux, and Fedora payloads each report exactly 29
+enabled features.
+
+=== Already-adapted source trees replayed patches
+
+The local Codex++ source tree was already adapted, but the installer attempted
+to replay all snippets as though it were a clean upstream checkout. Later
+in-tree edits can make both forward and reverse patch checks ambiguous.
+
+`scripts/developer/Installer-and-Manager.ps1` now provides
+`-SkipSnippetApply`. That switch skips replay but still runs
+`Assert-SourceLinuxAdaptationApplied`, so an already-adapted tree remains
+guarded before build.
+
+=== Empty thread previews hid valid conversations
+
+Some legacy Codex Desktop rows had valid rollout metadata and a non-empty
+`first_user_message`, but an empty `preview`. Those rows could still satisfy
+provider synchronization while remaining absent from the project conversation
+index and appearing to the user as an empty project.
+
+Compatibility patch `086-linux-thread-preview-backfill` fills only an empty
+preview from a non-empty first-user message for visible user conversations. It
+does not replace existing previews and includes the repair in transactional
+update counts. The focused regression
+`provider_sync_backfills_empty_thread_preview_from_first_user_message` passed.
+
+=== DEB and RPM default entry bypassed Codex++
+
+Final package validation found a separate integration defect:
+
+* both packages contained `codex-plus-plus`, `codex-plus-plus-manager`, and
+  `launch-codex-plus-plus`;
+* `/usr/bin/codex-desktop` nevertheless executed `/opt/codex-desktop/start.sh`
+  directly;
+* ChatGPT launched successfully, but all three CDP pages reported a null
+  `__CODEX_PLUS_VERSION__`;
+* launching the same installed payload through the app-local Codex++ wrapper
+  immediately produced `__CODEX_PLUS_VERSION__ = "1.2.41"` on all three pages.
+
+Codex++ injection is a runtime CDP operation. Merely carrying the binaries in
+the application directory is not enough.
+
+The shared package launcher now behaves as follows:
+
+[source,bash]
+----
+codex_plus_plus_launcher="/opt/codex-desktop/.codex-plusplus/install/launch-codex-plus-plus"
+if [ -x "$codex_plus_plus_launcher" ]; then
+    exec "$codex_plus_plus_launcher" "$@"
+fi
+exec /opt/codex-desktop/start.sh "$@"
+----
+
+The fallback preserves normal behavior for an upstream-only package without
+Codex++. The RPM builder now calls the same `write_launcher_stub` helper as the
+DEB builder instead of maintaining a second launcher implementation.
+
+This correction belongs to the vendored `codex-desktop-linux` packaging
+source, so it is committed directly with `scripts_smoke.sh` coverage. It is not
+encoded as a Codex++ snippet patch that would target the wrong upstream tree.
+
+== Build-line details
+
+=== Fedora 43 modern payload
+
+The Fedora payload was built in `codexpp-v141-fix0003-fedora-build` with the
+native Fedora stack:
+
+* WebKitGTK 4.1 and JavaScriptCoreGTK 4.1;
+* libsoup 3;
+* native Node.js, Rust, Cargo, 7-Zip, Xvfb, and xdotool;
+* no Pixi or Conda runtime;
+* no `LD_LIBRARY_PATH` WebKit 4.0 bridge;
+* no `manager-runtime` directory;
+* no `WEBKIT_DISABLE_COMPOSITING_MODE` validation override.
+
+Xvfb, xdotool, and CDP validation produced a visible `ChatGPT` window and
+three injected AppHost pages reporting Codex++ `1.2.41`.
+
+=== AlmaLinux 9.8 compatibility payload
+
+The AlmaLinux payload was rebuilt from the pinned accepted DMG in
+`codexpp-v141-fix0003-alma-build`.
+
+The Manager intentionally uses the EL9 compatibility path:
+
+* WebKitGTK 4.0 and JavaScriptCoreGTK 4.0;
+* libsoup 2.4;
+* `$ORIGIN/manager-runtime` RUNPATH;
+* 56 ELF files with a maximum `GLIBC_2.34` requirement;
+* no missing dependencies with Conda variables and `LD_LIBRARY_PATH` cleared.
+
+The old global Conda linker registration was disabled. Runtime checks resolve
+the Manager WebKit libraries from the EL9 system and keep the small
+`manager-runtime` compatibility directory available for appindicator fallback.
+
+=== Debian 10 compatibility payload
+
+The DEB uses the separately validated Debian 10 payload and its WebKitGTK 4.0
+Manager. It is not reused for either portable archive. The final install used
+`apt-get --no-install-recommends` so optional desktop helpers did not pull an
+unrelated KDE and multimedia stack into the minimal validation container.
+
+== Package-entry acceptance
+
+The package launcher change was developed test-first. New DEB and RPM staging
+assertions failed against the direct `start.sh` launcher, then passed after the
+shared conditional launcher was implemented.
+
+=== RPM
+
+The final RPM was removed and reinstalled as a single local package in an
+AlmaLinux 9 dependency-ready container. The earlier minimal-container run had
+already resolved the complete EL9 dependency transaction.
+
+Validation results:
+
+* NEVRA: `codex-desktop-1.2.41-2.fix0003.el9.x86_64`;
+* `rpm -V codex-desktop`: no differences;
+* RPM digest verification: passed;
+* default entry: `/usr/bin/codex-desktop`;
+* process route: system entry -> `codex-plus-plus --app-path` -> Electron;
+* visible X11 window: `ChatGPT`, 1280x820, WM class `codex-desktop`;
+* CDP targets: 3 of 3 report `__CODEX_PLUS_VERSION__ = "1.2.41"`;
+* Manager window: `Codex++ 管理工具`, 1180x820, complete Chinese rendering;
+* clean Manager `ldd`: WebKitGTK 4.0, JavaScriptCoreGTK 4.0, libsoup 2.4,
+  and no missing library.
+
+=== DEB
+
+The previous application package was completely removed before installing the
+final DEB through `apt-get` in the Debian 10 validation container.
+
+Validation results:
+
+* status: `install ok installed`;
+* version and architecture: `1.2.41+fix0003`, `amd64`;
+* `dpkg -V codex-desktop`: no differences;
+* default entry: `/usr/bin/codex-desktop`;
+* process route: system entry -> `codex-plus-plus --app-path` -> Electron;
+* visible X11 window: `ChatGPT`, 1280x820, WM class `codex-desktop`;
+* CDP targets: 3 of 3 report `__CODEX_PLUS_VERSION__ = "1.2.41"`;
+* clean Manager `ldd`: WebKitGTK 4.0, JavaScriptCoreGTK 4.0, libsoup 2.4,
+  and no missing library.
+
+== Critical payload hashes
+
+[cols="1,2,2,2",options="header"]
+|===
+|Build line |`resources/app.asar` |`codex-plus-plus` |`codex-plus-plus-manager`
+
+|Debian 10
+|`838ecef50ebe75f52a0667e34ae0241808c9a5dae4ef9c8bd749ccd2422cbe93`
+|`17283e936a2b67df80e1d8216c33f3572c6382a46f2eb0946b658f4b9cce7385`
+|`9c735a8038ddac01ead58d7a7abaffefc2a0809be8996e8277e78b58e729edcb`
+
+|AlmaLinux 9.8
+|`dac88de143c2771faddc82dcca1cf4ad932474351bce5d1da2eb08587ec7d9e7`
+|`d8e103a15709679cc4b151c38a96087e4d00149db04e1bc17cba5ab56c162b28`
+|`47ff88aa95272d71896651bc44585e110926c1d0b6226f3fa539a370735aae09`
+
+|Fedora 43
+|`0d41573a06373f6c851dd907875514a08439cee66c2ca6a499bcee87acc995dc`
+|`d474ff6b83ba6326386775651a0494176547bfdf9d483522096693da11984022`
+|`f975b62dfcfb41b06452035c306ce826164180c9bda3c480ae25b72f3616373f`
+|===
+
+All three lines use the same relocatable `launch-codex-plus-plus` wrapper hash:
+`d6a7a257c882d587ec6e6659e653e39a29c1c1031a161a4365603fab774da776`.
+
+== Final release assets
+
+[cols="3,1,3",options="header"]
+|===
+|Artifact |Size |SHA256
+
+|`codex-desktop_1.2.41+fix0003_amd64.deb`
+|279,361,456
+|`52d026b9a06cae589c3597ec12508eab211b940ffbef180d6efb8cd425ce57fd`
+
+|`codex-desktop-1.2.41-2.fix0003.x86_64.rpm`
+|341,848,957
+|`1eb72903c3f805970485c7faf36a2607816b7e0af0d4e6f0775e8d8adfd60e0c`
+
+|`codex-desktop-portable-v1.2.41-fix-0003-almalinux9-rhel9-compatible-linux-x86_64.7z`
+|286,676,760
+|`ff9e3b8bc563097976126fb16644f4e3fc2f646d304d948c7cea273c4e85ec6d`
+
+|`codex-desktop-portable-v1.2.41-fix-0003-fedora43-modern-linux-x86_64.7z`
+|285,990,560
+|`902a816e813f974ee4232f3e338bf5b6d6ae365cc73cf4b72324ed7d421d9f96`
+
+|`CodexDesktop-Portable-Manager-v1.2.41-fix-0003.ps1`
+|16,821
+|`62666a975cd99b4954aebbbacc5d6d9950ac9cea2490b67f0176d2da60d28cc3`
+|===
+
+Both portable archives use maximum LZMA2 compression with solid mode disabled
+(`Solid = -`). The obsolete Debian-derived generic portable archive and the
+superseded direct-entry DEB/RPM are retained only under XFS `rejected/`
+directories and are not release assets.
+
+== Host state
+
+The host was backed up to:
+
+[source,text]
+----
+/home/deck/opt/CodexDesktop.backup-pre-fedora43-fix0003-20260724-175556
+----
+
+The active host `/home/deck/opt/CodexDesktop` is the validated Fedora 43 modern
+payload. It must not be replaced by either compatibility payload. Final host
+checks require:
+
+* `resources/app.asar` SHA256
+  `0d41573a06373f6c851dd907875514a08439cee66c2ca6a499bcee87acc995dc`;
+* Manager links to WebKitGTK 4.1, JavaScriptCoreGTK 4.1, and libsoup 3;
+* no `manager-runtime` directory;
+* executable Codex++ launcher and Manager binaries;
+* 29 enabled Linux features.
+
+The package-entry fix changes DEB/RPM system launchers only. It does not alter
+the already-installed Fedora payload, whose user-level Codex++ entry already
+targets the app-local wrapper.
+
+== Final regression commands
+
+[source,sh]
+----
+pwsh -NoLogo -NoProfile -File ./scripts/developer/Test-AdapterWorkflow.ps1
+cargo test -p codex-plus-data --test provider_sync \
+  provider_sync_backfills_empty_thread_preview_from_first_user_message -- --nocapture
+cd codex-desktop-linux/src
+bash tests/scripts_smoke.sh
+git diff --check
+----
+
+The Xvfb and xdotool package acceptance above is in addition to these source
+regressions. Account-dependent conversation rendering and Fast/Standard
+interaction use the preserved host profile rather than an unsigned clean
+container profile.

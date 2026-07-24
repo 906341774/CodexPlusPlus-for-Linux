@@ -9,6 +9,9 @@ param(
     [string]$SourceRoot,
     [string]$InstallPath = '$HOME/opt/CodexDesktop',
     [string]$BuildSourceCacheRoot,
+    [string]$UpstreamDmgPath,
+    [ValidateSet('', 'auto', 'pinned')]
+    [string]$DmgRefreshMode = '',
     [string[]]$EnabledFeatureIds,
     [string]$X11ComputerUseRepository = 'https://github.com/AlekseiSeleznev/codex-computer-use-x11.git',
     [string]$X11ComputerUseRef = 'v0.1.3',
@@ -218,7 +221,9 @@ function Assert-CodexDesktopPayload {
 function Invoke-CodexDesktopBuild {
     param(
         [Parameter(Mandatory = $true)][string]$DesktopSourceRoot,
-        [Parameter(Mandatory = $true)][string[]]$FeatureIds
+        [Parameter(Mandatory = $true)][string[]]$FeatureIds,
+        [string]$ResolvedUpstreamDmgPath,
+        [string]$ResolvedDmgRefreshMode
     )
 
     if (-not (Get-Command make -ErrorAction SilentlyContinue)) { throw 'make is required to build Codex Desktop.' }
@@ -236,6 +241,7 @@ function Invoke-CodexDesktopBuild {
         PACKAGE_WITH_UPDATER = $env:PACKAGE_WITH_UPDATER
         CODEX_BOOTSTRAP_NONINTERACTIVE = $env:CODEX_BOOTSTRAP_NONINTERACTIVE
         CODEX_LINUX_ENABLE_COMPUTER_USE_UI = $env:CODEX_LINUX_ENABLE_COMPUTER_USE_UI
+        CODEX_DMG_REFRESH_MODE = $env:CODEX_DMG_REFRESH_MODE
     }
     try {
         $env:CODEX_LINUX_FEATURES = $FeatureIds -join ','
@@ -247,9 +253,19 @@ function Invoke-CodexDesktopBuild {
         if (-not [string]::IsNullOrWhiteSpace($x11ComputerUseSource)) {
             $env:CODEX_X11_COMPUTER_USE_SOURCE = $x11ComputerUseSource
         }
+        if (-not [string]::IsNullOrWhiteSpace($ResolvedDmgRefreshMode)) {
+            $env:CODEX_DMG_REFRESH_MODE = $ResolvedDmgRefreshMode
+        }
         Push-Location $DesktopSourceRoot
         try {
-            & make build-app | Out-Host
+            $makeArgs = @('build-app')
+            if (-not [string]::IsNullOrWhiteSpace($ResolvedUpstreamDmgPath)) {
+                if (-not (Test-Path -LiteralPath $ResolvedUpstreamDmgPath -PathType Leaf)) {
+                    throw "Upstream DMG path does not exist: $ResolvedUpstreamDmgPath"
+                }
+                $makeArgs += "DMG=$ResolvedUpstreamDmgPath"
+            }
+            & make @makeArgs | Out-Host
             if ($LASTEXITCODE -ne 0) { throw "Codex Desktop build failed with exit code $LASTEXITCODE." }
         } finally {
             Pop-Location
@@ -294,6 +310,14 @@ function Install-CodexDesktopPayload {
 
 $sourceRootFull = Expand-BuildPath $SourceRoot
 $installPathFull = Expand-BuildPath $InstallPath
+$upstreamDmgFull = ''
+if (-not [string]::IsNullOrWhiteSpace($UpstreamDmgPath)) {
+    $upstreamDmgFull = Expand-BuildPath $UpstreamDmgPath
+}
+$resolvedDmgRefreshMode = $DmgRefreshMode
+if ([string]::IsNullOrWhiteSpace($resolvedDmgRefreshMode) -and -not [string]::IsNullOrWhiteSpace($env:CODEX_DMG_REFRESH_MODE)) {
+    $resolvedDmgRefreshMode = $env:CODEX_DMG_REFRESH_MODE
+}
 $features = @(Resolve-CodexLinuxFeatureIds -DesktopSourceRoot $sourceRootFull -ExplicitFeatureIds $EnabledFeatureIds)
 
 switch ($Action) {
@@ -302,11 +326,11 @@ switch ($Action) {
         [ordered]@{ enabled = $features } | ConvertTo-Json -Depth 4
     }
     'build' {
-        $payload = Invoke-CodexDesktopBuild -DesktopSourceRoot $sourceRootFull -FeatureIds $features
+        $payload = Invoke-CodexDesktopBuild -DesktopSourceRoot $sourceRootFull -FeatureIds $features -ResolvedUpstreamDmgPath $upstreamDmgFull -ResolvedDmgRefreshMode $resolvedDmgRefreshMode
         Write-Host "Validated Codex Desktop payload: $payload"
     }
     'build-install' {
-        $payload = Invoke-CodexDesktopBuild -DesktopSourceRoot $sourceRootFull -FeatureIds $features
+        $payload = Invoke-CodexDesktopBuild -DesktopSourceRoot $sourceRootFull -FeatureIds $features -ResolvedUpstreamDmgPath $upstreamDmgFull -ResolvedDmgRefreshMode $resolvedDmgRefreshMode
         Install-CodexDesktopPayload -PayloadRoot $payload -Destination $installPathFull
         Assert-CodexDesktopPayload -PayloadRoot $installPathFull -ExpectedFeatureIds $features
         Write-Host "Installed Codex Desktop with $($features.Count) Linux features at $installPathFull"

@@ -1299,10 +1299,42 @@ index 03feecd..f9f339e 100644
  fn stale_launcher_recovery_only_runs_when_codex_and_cdp_are_absent() {
      assert!(should_recover_stale_launcher(false, false));
 diff --git a/crates/codex-plus-data/tests/provider_sync.rs b/crates/codex-plus-data/tests/provider_sync.rs
-index cbcea2f..4a88677 100644
+index cbcea2f..ce3ed16 100644
 --- a/crates/codex-plus-data/tests/provider_sync.rs
 +++ b/crates/codex-plus-data/tests/provider_sync.rs
-@@ -84,6 +84,75 @@ fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
+@@ -68,6 +68,31 @@ fn create_state_db(path: &Path) {
+     .unwrap();
+ }
+
++fn create_state_db_with_empty_preview(path: &Path) {
++    let db = Connection::open(path).unwrap();
++    db.execute_batch(
++        "CREATE TABLE threads (
++            id TEXT PRIMARY KEY,
++            model_provider TEXT,
++            archived INTEGER,
++            has_user_event INTEGER,
++            cwd TEXT,
++            first_user_message TEXT NOT NULL,
++            preview TEXT NOT NULL
++        );
++        INSERT INTO threads VALUES (
++            'thread-1',
++            'old-provider',
++            0,
++            0,
++            'C:/workspace',
++            'Restore this conversation preview',
++            ''
++        );",
++    )
++    .unwrap();
++}
++
+ fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
+     let db = Connection::open(path).unwrap();
+     db.execute(
+@@ -84,6 +109,75 @@ fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
      }
  }
 
@@ -1378,7 +1410,54 @@ index cbcea2f..4a88677 100644
  #[test]
  fn provider_sync_targets_merge_config_rollout_sqlite_and_sort_current_first() {
      let tmp = tempdir().unwrap();
-@@ -360,6 +429,100 @@ fn provider_sync_updates_new_codex_sqlite_directory_db() {
+@@ -322,6 +416,46 @@ fn provider_sync_updates_rollout_sqlite_visibility_and_creates_backup() {
+     assert!(backup_dir.join("db/state_5.sqlite").exists());
+ }
+
++#[test]
++fn provider_sync_backfills_empty_thread_preview_from_first_user_message() {
++    let tmp = tempdir().unwrap();
++    let home = tmp.path().join(".codex");
++    fs::create_dir(&home).unwrap();
++    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
++    write_rollout(
++        &home.join("sessions/2026/rollout-preview.jsonl"),
++        "openai",
++        "thread-1",
++        "C:/workspace",
++    );
++    create_state_db_with_empty_preview(&home.join("state_5.sqlite"));
++
++    let result = run_provider_sync(Some(&home));
++
++    assert_eq!(result.status, ProviderSyncStatus::Synced);
++    assert_eq!(result.sqlite_rows_updated, 3);
++    assert_eq!(result.sqlite_provider_rows_updated, 1);
++    assert_eq!(result.sqlite_user_event_rows_updated, 1);
++    assert_eq!(result.sqlite_cwd_rows_updated, 0);
++    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
++    let preview: String = db
++        .query_row(
++            "SELECT preview FROM threads WHERE id = 'thread-1'",
++            [],
++            |row| row.get(0),
++        )
++        .unwrap();
++    assert_eq!(preview, "Restore this conversation preview");
++    drop(db);
++
++    let second = run_provider_sync(Some(&home));
++
++    assert_eq!(second.status, ProviderSyncStatus::Synced);
++    assert_eq!(second.message, "Provider sync already up to date");
++    assert_eq!(second.sqlite_rows_updated, 0);
++    assert!(second.backup_dir.is_none());
++}
++
+ #[test]
+ fn provider_sync_updates_new_codex_sqlite_directory_db() {
+     let tmp = tempdir().unwrap();
+@@ -360,6 +494,100 @@ fn provider_sync_updates_new_codex_sqlite_directory_db() {
      assert!(backup_dir.join("db/sqlite/codex-dev.db").exists());
  }
 
@@ -1479,7 +1558,7 @@ index cbcea2f..4a88677 100644
  #[test]
  fn provider_sync_backup_metadata_contains_reference_fields_and_managed_marker() {
      let tmp = tempdir().unwrap();
-@@ -507,12 +670,78 @@ fn provider_sync_repairs_sqlite_when_rollout_provider_matches_and_normalizes_pat
+@@ -507,12 +735,78 @@ fn provider_sync_repairs_sqlite_when_rollout_provider_matches_and_normalizes_pat
      );
  }
 
@@ -1559,7 +1638,7 @@ index cbcea2f..4a88677 100644
      write_rollout(
          &home.join("sessions/rollout-projectless.jsonl"),
          "apigather",
-@@ -520,6 +749,8 @@ fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
+@@ -520,6 +814,8 @@ fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
          "C:/old/project",
      );
      create_state_db(&home.join("state_5.sqlite"));
@@ -1568,7 +1647,7 @@ index cbcea2f..4a88677 100644
      fs::write(
          home.join(".codex-global-state.json"),
          json!({
-@@ -540,6 +771,15 @@ fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
+@@ -540,6 +836,15 @@ fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
          })
          .unwrap();
      assert_eq!(row, "C:/old");

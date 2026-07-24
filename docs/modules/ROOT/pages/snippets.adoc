@@ -73,6 +73,20 @@ Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility
 |Needed when Codex++ can list local sessions but Linux Codex Desktop project sidebars show no conversations, when source-less remote catalog rows remain visible as empty history entries, or when shown conversations never load after click, after a Codex storage schema update.
 |xref:attachment$patches/compatibility/080-linux-local-thread-catalog-sync.patch[patch]
 
+|`085-linux-workspace-state-paths`
+|Required
+|`crates/codex-plus-core/src/codex_app_state.rs`
+|Preserve POSIX separators in Codex Desktop state and narrowly repair legacy Codex++ local-project records whose id was hashed from a backslash path and whose `rootPaths` stayed empty.
+|Needed when a Linux workspace appears under a malformed project id and its project sidebar cannot resolve the real POSIX root.
+|xref:attachment$patches/compatibility/085-linux-workspace-state-paths.patch[patch]
+
+|`086-linux-thread-preview-backfill`
+|Required
+|`crates/codex-plus-data/src/provider_sync.rs`
+|Backfill an empty Codex Desktop thread `preview` from its non-empty `first_user_message` for visible user conversations, without replacing an existing preview, and include the repair in transactional update counts.
+|Needed when legacy rows already have valid rollout metadata and first-user text but remain absent from the project conversation index because `preview` is empty.
+|xref:attachment$patches/compatibility/086-linux-thread-preview-backfill.patch[patch]
+
 |`100-browser-native-rehosting`
 |Enabled enhancement
 |Codex++ launcher, Manager, gateway core, browser shim, and focused tests
@@ -83,7 +97,7 @@ Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility
 |`900-regression-tests`
 |Optional
 |The focused compatibility test files and aggregate test configuration under `apps/codex-plus-manager`, `crates/codex-plus-core/tests`, and `crates/codex-plus-data/tests`
-|Add regression coverage for the compatibility patches, including GPT-5.6 Fast/Standard variants, coexistence with the official Fast control, Linux user-script URL aliasing, real-title catalog backfill, idempotent catalog sync, and projectless exclusion.
+|Add regression coverage for the compatibility patches, including GPT-5.6 Fast/Standard variants, coexistence with the official Fast control, Linux user-script URL aliasing, real-title catalog backfill, empty thread-preview repair, idempotent catalog sync, and projectless exclusion.
 |Recommended for source builds and CI; can be disabled for a faster production-only patch.
 |xref:attachment$patches/compatibility/900-regression-tests.patch[patch]
 |===
@@ -207,6 +221,17 @@ The manager script extracts the JSON block between the markers below.
     "purpose": "Preserve POSIX separators in Codex Desktop state and narrowly repair legacy Codex++ local-project records whose hashed backslash path and empty rootPaths caused project sidebars to show no conversations."
   },
   {
+    "id": "086-linux-thread-preview-backfill",
+    "required": true,
+    "defaultEnabled": true,
+    "kind": "production",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/086-linux-thread-preview-backfill.patch",
+    "targets": [
+      "crates/codex-plus-data/src/provider_sync.rs"
+    ],
+    "purpose": "Backfill empty visible thread previews from first_user_message so legacy conversations satisfy the Codex Desktop project index without overwriting existing previews."
+  },
+  {
     "id": "100-browser-native-rehosting",
     "required": false,
     "defaultEnabled": true,
@@ -250,7 +275,7 @@ The manager script extracts the JSON block between the markers below.
       "crates/codex-plus-core/tests/watcher.rs",
       "crates/codex-plus-data/tests/provider_sync.rs"
     ],
-    "purpose": "Add regression tests for all production patches, including bounded Fast setting-storage fallback, GPT-5.6 variants, official Fast control coexistence, Linux workspace-state path repair, real-title catalog backfill, idempotent catalog sync, and projectless exclusion."
+    "purpose": "Add regression tests for all production patches, including bounded Fast setting-storage fallback, GPT-5.6 variants, official Fast control coexistence, Linux workspace-state path repair, real-title catalog backfill, empty thread-preview repair, idempotent catalog sync, and projectless exclusion."
   }
 ]
 ----
@@ -330,6 +355,14 @@ include::attachment$patches/compatibility/080-linux-local-thread-catalog-sync.pa
 [source,diff]
 ----
 include::attachment$patches/compatibility/085-linux-workspace-state-paths.patch[]
+----
+
+[#snippet-086-linux-thread-preview-backfill]
+=== 086 Linux thread preview backfill
+
+[source,diff]
+----
+include::attachment$patches/compatibility/086-linux-thread-preview-backfill.patch[]
 ----
 
 [#snippet-100-browser-native-rehosting]

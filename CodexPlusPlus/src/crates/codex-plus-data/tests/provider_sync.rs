@@ -68,6 +68,31 @@ fn create_state_db(path: &Path) {
     .unwrap();
 }
 
+fn create_state_db_with_empty_preview(path: &Path) {
+    let db = Connection::open(path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            model_provider TEXT,
+            archived INTEGER,
+            has_user_event INTEGER,
+            cwd TEXT,
+            first_user_message TEXT NOT NULL,
+            preview TEXT NOT NULL
+        );
+        INSERT INTO threads VALUES (
+            'thread-1',
+            'old-provider',
+            0,
+            0,
+            'C:/workspace',
+            'Restore this conversation preview',
+            ''
+        );",
+    )
+    .unwrap();
+}
+
 fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
     let db = Connection::open(path).unwrap();
     db.execute(
@@ -389,6 +414,46 @@ fn provider_sync_updates_rollout_sqlite_visibility_and_creates_backup() {
     let backup_dir = result.backup_dir.unwrap();
     assert!(backup_dir.join("session-meta-backup.json").exists());
     assert!(backup_dir.join("db/state_5.sqlite").exists());
+}
+
+#[test]
+fn provider_sync_backfills_empty_thread_preview_from_first_user_message() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_rollout(
+        &home.join("sessions/2026/rollout-preview.jsonl"),
+        "openai",
+        "thread-1",
+        "C:/workspace",
+    );
+    create_state_db_with_empty_preview(&home.join("state_5.sqlite"));
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.sqlite_rows_updated, 3);
+    assert_eq!(result.sqlite_provider_rows_updated, 1);
+    assert_eq!(result.sqlite_user_event_rows_updated, 1);
+    assert_eq!(result.sqlite_cwd_rows_updated, 0);
+    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+    let preview: String = db
+        .query_row(
+            "SELECT preview FROM threads WHERE id = 'thread-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(preview, "Restore this conversation preview");
+    drop(db);
+
+    let second = run_provider_sync(Some(&home));
+
+    assert_eq!(second.status, ProviderSyncStatus::Synced);
+    assert_eq!(second.message, "Provider sync already up to date");
+    assert_eq!(second.sqlite_rows_updated, 0);
+    assert!(second.backup_dir.is_none());
 }
 
 #[test]

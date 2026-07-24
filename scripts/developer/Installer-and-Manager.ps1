@@ -13,6 +13,7 @@ param(
 
     [switch]$NonInteractive,
     [switch]$NoTui,
+    [switch]$SkipSnippetApply,
     [switch]$SkipBuild,
     [switch]$SkipTests,
     [switch]$KeepWorkDir
@@ -131,6 +132,7 @@ if ($env:CODEXPP_LINUX_UPSTREAM_VERSION) {
     $CodexPlusPlusVersionZipUrl = "https://github.com/BigPizzaV3/CodexPlusPlus/archive/refs/tags/$CodexPlusPlusReleaseTag.zip"
 }
 if ($env:CODEXPP_LINUX_INCLUDE_TEST_SNIPPETS) { $IncludeRegressionTestSnippets = [System.Convert]::ToBoolean($env:CODEXPP_LINUX_INCLUDE_TEST_SNIPPETS) }
+if ($env:CODEXPP_LINUX_SKIP_SNIPPET_APPLY) { $SkipSnippetApply = [System.Convert]::ToBoolean($env:CODEXPP_LINUX_SKIP_SNIPPET_APPLY) }
 if ($env:CODEXPP_LINUX_CREATE_DESKTOP_ENTRIES) { $CreateDesktopEntries = [System.Convert]::ToBoolean($env:CODEXPP_LINUX_CREATE_DESKTOP_ENTRIES) }
 if ($env:CODEXPP_LINUX_PRESERVE_USER_SCRIPTS) { $PreserveUserScriptsOnUninstall = [System.Convert]::ToBoolean($env:CODEXPP_LINUX_PRESERVE_USER_SCRIPTS) }
 
@@ -1734,12 +1736,16 @@ function Invoke-InstallOrUpdate {
         Ensure-Dependencies $installRoot
     }
     Invoke-AdapterStep 42 'Apply snippets / 注入片段' {
-        $i = 0
-        foreach ($snippet in $snippets) {
-            $i += 1
-            $percent = [Math]::Floor($i * 100 / [Math]::Max(1, $snippets.Count))
-            Set-AdapterProgress -Total 42 -Step $percent -StepName (T 'SnippetApply') -Detail $snippet.id
-            Apply-SnippetPatch -SourceRoot $script:SourceRoot -Snippet $snippet
+        if ($SkipSnippetApply) {
+            Add-AdapterLog "Skipping snippet replay by request; verifying source is already Linux-adapted."
+        } else {
+            $i = 0
+            foreach ($snippet in $snippets) {
+                $i += 1
+                $percent = [Math]::Floor($i * 100 / [Math]::Max(1, $snippets.Count))
+                Set-AdapterProgress -Total 42 -Step $percent -StepName (T 'SnippetApply') -Detail $snippet.id
+                Apply-SnippetPatch -SourceRoot $script:SourceRoot -Snippet $snippet
+            }
         }
         Assert-SourceLinuxAdaptationApplied -SourceRoot $script:SourceRoot
     }

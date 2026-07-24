@@ -142,18 +142,24 @@ struct SqliteUpdateCounts {
     provider_rows: usize,
     user_event_rows: usize,
     cwd_rows: usize,
+    preview_rows: usize,
     local_catalog_rows: usize,
 }
 
 impl SqliteUpdateCounts {
     fn total(&self) -> usize {
-        self.provider_rows + self.user_event_rows + self.cwd_rows + self.local_catalog_rows
+        self.provider_rows
+            + self.user_event_rows
+            + self.cwd_rows
+            + self.preview_rows
+            + self.local_catalog_rows
     }
 
     fn add(&mut self, other: Self) {
         self.provider_rows += other.provider_rows;
         self.user_event_rows += other.user_event_rows;
         self.cwd_rows += other.cwd_rows;
+        self.preview_rows += other.preview_rows;
         self.local_catalog_rows += other.local_catalog_rows;
     }
 }
@@ -1563,6 +1569,30 @@ fn count_sqlite_updates(
                     )? as usize;
                 }
             }
+            if ["preview", "first_user_message", "has_user_event"]
+                .iter()
+                .all(|column| columns.contains(*column))
+            {
+                total += db.query_row(
+                    "SELECT COUNT(*) FROM threads
+                     WHERE COALESCE(has_user_event, 0) = 1
+                       AND COALESCE(preview, '') = ''
+                       AND COALESCE(first_user_message, '') <> ''",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )? as usize;
+                for thread_id in user_event_thread_ids {
+                    total += db.query_row(
+                        "SELECT COUNT(*) FROM threads
+                         WHERE id = ?1
+                           AND COALESCE(has_user_event, 0) <> 1
+                           AND COALESCE(preview, '') = ''
+                           AND COALESCE(first_user_message, '') <> ''",
+                        [thread_id],
+                        |row| row.get::<_, i64>(0),
+                    )? as usize;
+                }
+            }
         }
     }
     if is_local_thread_catalog_db(&db)? {
@@ -1626,6 +1656,19 @@ fn apply_sqlite_update(
                         (cwd, thread_id),
                     )?;
                 }
+            }
+            if ["preview", "first_user_message", "has_user_event"]
+                .iter()
+                .all(|column| columns.contains(*column))
+            {
+                counts.preview_rows = tx.execute(
+                    "UPDATE threads
+                     SET preview = first_user_message
+                     WHERE COALESCE(has_user_event, 0) = 1
+                       AND COALESCE(preview, '') = ''
+                       AND COALESCE(first_user_message, '') <> ''",
+                    [],
+                )?;
             }
         }
     }

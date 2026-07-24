@@ -174,23 +174,26 @@
     {
       "id": "local-thread-catalog",
       "name": "Project sidebar visibility for existing local conversations",
-      "patchIds": ["080-linux-local-thread-catalog-sync", "085-linux-workspace-state-paths", "900-regression-tests"],
+      "patchIds": ["080-linux-local-thread-catalog-sync", "085-linux-workspace-state-paths", "086-linux-thread-preview-backfill", "900-regression-tests"],
       "whiteBoxChecks": [
         "Regression test: provider_sync_backfills_local_catalog_with_nonempty_source_title",
         "Regression test: provider_sync_local_catalog_is_idempotent_when_source_is_unchanged",
         "Regression test: provider_sync_does_not_restore_cwd_for_projectless_threads",
         "Regression test: provider_sync_repairs_legacy_backslash_posix_workspace_paths",
+        "Regression test: provider_sync_backfills_empty_thread_preview_from_first_user_message",
         "Regression test: app_state_sync_repairs_codexpp_malformed_linux_local_projects",
         "Regression test: preserves provider-sync backfilled rollout catalog rows during full scans",
         "Source marker: local_thread_catalog",
         "Source marker: collect_local_catalog_threads",
         "Source marker: repair_malformed_posix_local_projects",
+        "Source marker: SET preview = first_user_message",
         "Patch descriptor: linux-local-thread-catalog-preserve-backfill",
         "Patch descriptor: linux-local-thread-catalog-initial-snapshot"
       ],
       "blackBoxChecks": [
         "Codex++ Manager local sessions and Codex Desktop project sidebars agree on visible unarchived conversations",
         "After provider sync, projects with legacy local threads no longer show the empty-state message for conversations",
+        "A visible legacy thread with an empty preview and non-empty first_user_message reappears in the project conversation list without overwriting existing previews",
         "A backed-up Linux state whose Codex++ project id hashes a backslash POSIX path is repaired to the slash-path id without altering unrelated or nonempty-root projects"
       ]
     },
@@ -232,11 +235,13 @@
       "patchIds": ["010-linux-app-paths", "030-linux-launcher-environment", "040-linux-entrypoints-health"],
       "whiteBoxChecks": [
         "Installer selftest succeeds with isolated HOME",
-        "Installer source and installed binary marker checks pass"
+        "Installer source and installed binary marker checks pass",
+        "DEB and RPM smoke roots route /usr/bin/codex-desktop through the app-local Codex++ launcher with a start.sh fallback"
       ],
       "blackBoxChecks": [
         "AlmaLinux minimal container validates non-interactive install, update, and uninstall",
-        "Interactive shell run asks each configured path before install/update/uninstall and accepts Enter as default"
+        "Interactive shell run asks each configured path before install/update/uninstall and accepts Enter as default",
+        "Debian 10 and AlmaLinux 9 package installs launched through /usr/bin/codex-desktop expose three CDP pages with the pinned Codex++ version"
       ]
     }
   ]

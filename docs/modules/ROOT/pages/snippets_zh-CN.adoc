@@ -73,6 +73,20 @@ xref:snippets.adoc[English] | 简体中文
 |当 Codex++ 能列出本机会话，但 Codex Desktop Linux 项目侧边栏在 Codex 存储结构升级后显示“暂无对话”；当远端空来源 catalog 行仍作为空历史记录可见；或显示了对话但点击后始终无法加载时需要。
 |xref:attachment$patches/compatibility/080-linux-local-thread-catalog-sync.patch[patch]
 
+|`085-linux-workspace-state-paths`
+|必需
+|`crates/codex-plus-core/src/codex_app_state.rs`
+|保留 Codex Desktop 状态中的 POSIX 分隔符，并只修复那些 id 由反斜杠路径散列、且 `rootPaths` 为空的旧 Codex++ local-project 记录。
+|当 Linux 工作区落入畸形 project id，导致项目侧边栏无法解析真实 POSIX 根目录时需要。
+|xref:attachment$patches/compatibility/085-linux-workspace-state-paths.patch[patch]
+
+|`086-linux-thread-preview-backfill`
+|必需
+|`crates/codex-plus-data/src/provider_sync.rs`
+|针对可见用户会话，把空的 Codex Desktop thread `preview` 从非空 `first_user_message` 回填；不覆盖已有 preview，并将修复纳入事务更新计数。
+|当旧会话已经具有有效 rollout 元数据和首条用户文本，却因 `preview` 为空而不进入项目会话索引时需要。
+|xref:attachment$patches/compatibility/086-linux-thread-preview-backfill.patch[patch]
+
 |`100-browser-native-rehosting`
 |默认启用的增强功能
 |Codex++ launcher、Manager、gateway core、browser shim 和定点测试
@@ -83,7 +97,7 @@ xref:snippets.adoc[English] | 简体中文
 |`900-regression-tests`
 |可选
 |`apps/codex-plus-manager`、`crates/codex-plus-core/tests` 与 `crates/codex-plus-data/tests` 下的兼容性定点测试和聚合测试配置
-|覆盖兼容性补丁，包括 GPT-5.6 Fast/Standard 变体、与官方 Fast 控件共存、Linux 用户脚本 URL alias、真实标题 catalog 回填、catalog 幂等同步和 projectless 排除。
+|覆盖兼容性补丁，包括 GPT-5.6 Fast/Standard 变体、与官方 Fast 控件共存、Linux 用户脚本 URL alias、真实标题 catalog 回填、空 thread preview 修复、catalog 幂等同步和 projectless 排除。
 |推荐在源码构建和 CI 中启用；如果只需要更快的 production-only patch，可以禁用。
 |xref:attachment$patches/compatibility/900-regression-tests.patch[patch]
 |===
@@ -207,6 +221,17 @@ xref:snippets.adoc[English] | 简体中文
     "purpose": "Preserve POSIX separators in Codex Desktop state and narrowly repair legacy Codex++ local-project records whose hashed backslash path and empty rootPaths caused project sidebars to show no conversations."
   },
   {
+    "id": "086-linux-thread-preview-backfill",
+    "required": true,
+    "defaultEnabled": true,
+    "kind": "production",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/086-linux-thread-preview-backfill.patch",
+    "targets": [
+      "crates/codex-plus-data/src/provider_sync.rs"
+    ],
+    "purpose": "Backfill empty visible thread previews from first_user_message so legacy conversations satisfy the Codex Desktop project index without overwriting existing previews."
+  },
+  {
     "id": "100-browser-native-rehosting",
     "required": false,
     "defaultEnabled": true,
@@ -250,7 +275,7 @@ xref:snippets.adoc[English] | 简体中文
       "crates/codex-plus-core/tests/watcher.rs",
       "crates/codex-plus-data/tests/provider_sync.rs"
     ],
-    "purpose": "Add regression tests for all production patches, including bounded Fast setting-storage fallback, GPT-5.6 variants, official Fast control coexistence, Linux workspace-state path repair, real-title catalog backfill, idempotent catalog sync, and projectless exclusion."
+    "purpose": "Add regression tests for all production patches, including bounded Fast setting-storage fallback, GPT-5.6 variants, official Fast control coexistence, Linux workspace-state path repair, real-title catalog backfill, empty thread-preview repair, idempotent catalog sync, and projectless exclusion."
   }
 ]
 ----
@@ -330,6 +355,14 @@ include::attachment$patches/compatibility/080-linux-local-thread-catalog-sync.pa
 [source,diff]
 ----
 include::attachment$patches/compatibility/085-linux-workspace-state-paths.patch[]
+----
+
+[#snippet-086-linux-thread-preview-backfill]
+=== 086 Linux thread preview 回填
+
+[source,diff]
+----
+include::attachment$patches/compatibility/086-linux-thread-preview-backfill.patch[]
 ----
 
 [#snippet-100-browser-native-rehosting]

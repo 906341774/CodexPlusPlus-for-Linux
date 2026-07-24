@@ -533,6 +533,8 @@ SCRIPT
     assert_file_exists "$dist_dir/codex-desktop_2026.03.24.120000+deadbeef_amd64.deb"
     [ "$(cat "$capture_dir/dpkg-deb-threads")" = "6" ] \
         || fail "Expected MAX_BUILD_THREADS to reach dpkg-deb"
+    assert_contains "$pkg_root/usr/bin/codex-desktop" "/opt/codex-desktop/.codex-plusplus/install/launch-codex-plus-plus"
+    assert_contains "$pkg_root/usr/bin/codex-desktop" "/opt/codex-desktop/start.sh"
     assert_file_exists "$pkg_root/DEBIAN/postinst"
     assert_file_exists "$pkg_root/DEBIAN/prerm"
     assert_contains "$pkg_root/DEBIAN/postinst" "codex_ensure_user_service_running"
@@ -1173,13 +1175,16 @@ SCRIPT
     APP_DIR_OVERRIDE="$app_dir" \
     DIST_DIR_OVERRIDE="$dist_dir" \
     UPDATER_BINARY_SOURCE="$updater_bin" \
-    PACKAGE_VERSION="2026.03.24.120000+deadbeef" \
+    PACKAGE_VERSION="2026.03.24.120000+fix0003" \
     bash "$REPO_DIR/scripts/build-rpm.sh"
 
-    assert_file_exists "$dist_dir/codex-desktop-2026.03.24.120000-deadbeef.x86_64.rpm"
+    assert_file_exists "$dist_dir/codex-desktop-2026.03.24.120000-2.fix0003.x86_64.rpm"
+    assert_contains "$capture_dir/codex-desktop.spec" "Release:        2.fix0003"
     [ "$(cat "$capture_dir/rpm-binary-payload")" = "" ] \
         || fail "Expected default RPM binary payload to use tool default"
     assert_contains "$capture_dir/rpmbuild-args" "__os_install_post %{nil}"
+    assert_contains "$capture_dir/staging/usr/bin/codex-desktop" "/opt/codex-desktop/.codex-plusplus/install/launch-codex-plus-plus"
+    assert_contains "$capture_dir/staging/usr/bin/codex-desktop" "/opt/codex-desktop/start.sh"
 
     rm -rf "$dist_dir" "$capture_dir"
     mkdir -p "$dist_dir" "$capture_dir"

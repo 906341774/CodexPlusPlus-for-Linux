@@ -943,6 +943,10 @@ write_launcher_stub() {
 
     cat > "$root/usr/bin/$PACKAGE_NAME" <<SCRIPT
 #!/usr/bin/env bash
+codex_plus_plus_launcher="/opt/$PACKAGE_NAME/.codex-plusplus/install/launch-codex-plus-plus"
+if [ -x "\$codex_plus_plus_launcher" ]; then
+    exec "\$codex_plus_plus_launcher" "\$@"
+fi
 exec /opt/$PACKAGE_NAME/start.sh "\$@"
 SCRIPT
     chmod 0755 "$root/usr/bin/$PACKAGE_NAME"
