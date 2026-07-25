@@ -265,11 +265,14 @@ launch created live owner `900` and authority `1046`, reproduced all three CDP
 injection markers, and passed the real payload compatibility gate for 37
 x86-64 ELF files against the host GLIBC 2.43 ceiling.
 
-GUI automation for this incident remained a container acceptance concern. The
-maintainer host was not used as a window-control target: its post-installation
-acceptance is limited to static payload hashes, metadata, dependencies, desktop
-entry layout, and confirmation that no host CodexDesktop process was started.
-This isolation rule is now a permanent maintenance-workflow requirement.
+Final GUI acceptance for this incident ran exclusively in the Fedora Podman
+container. During delivery, a host Manager window was briefly opened before the
+isolation rule was clarified, then closed immediately; no restart event,
+CodexDesktop process, or authority was started, and that attempt supplied no
+acceptance result. Host post-installation acceptance is limited to static
+payload hashes, metadata, dependencies, desktop entry layout, and process
+absence. This isolation rule is now a permanent maintenance-workflow
+requirement.
 
 The validation evidence is retained under
 `logs-fix0004/validation3` on the project XFS loop and copied into the local
