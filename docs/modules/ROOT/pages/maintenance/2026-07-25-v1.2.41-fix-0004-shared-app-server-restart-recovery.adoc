@@ -1,0 +1,341 @@
+= v1.2.41-fix-0004 shared app-server restart recovery
+:toc:
+:toclevels: 3
+
+== Incident
+
+On 2026-07-25, using **Restart Codex++** in the Linux Manager produced an
+Electron failure dialog:
+
+[source,text]
+----
+ChatGPT failed to start.
+shared app-server socket is already owned:
+/run/user/3002/codex-desktop/app-server-bridge/app-server.sock
+----
+
+This was a recurring post-adaptation failure. Earlier rounds restored launch by
+manually deleting runtime files, but that did not remove the underlying defect.
+
+== Evidence and classification
+
+The installed host payload still matched the accepted Fedora 43 modern build:
+
+* `resources/app.asar` SHA256 was
+  `0d41573a06373f6c851dd907875514a08439cee66c2ca6a499bcee87acc995dc`;
+* the Codex++ launcher and Manager hashes matched the published Fedora payload;
+* build metadata reported `fedora:43/rpm` and 29 enabled Linux features;
+* the Manager resolved WebKitGTK 4.1, JavaScriptCoreGTK 4.1, and libsoup 3;
+* no compatibility `manager-runtime` directory was present.
+
+The failing runtime state was different:
+
+* `app-server.sock` did not exist;
+* `app-server.sock.lock` existed as an empty mode-0600 file created on
+  2026-07-23;
+* `fuser` and `lsof` found no process holding that lock;
+* no authority listened on the configured socket;
+* removing only the proven stale lock let the unchanged Fedora payload acquire
+  the endpoint and start a new `codex app-server` authority.
+
+Therefore the copy/replace operation and Fedora runtime were not the root
+cause. The defect was in the adapted source and restart lifecycle.
+
+The first `fix-0004` candidate then exposed a second-order liveness defect in a
+fresh Fedora 43 Xvfb container. After Manager restart, its recorded owner PID
+545 and authority group leader PID 672 both remained in Linux `/proc` state
+`Z`, because the container's PID 1 did not reap adopted children. The lock still
+contained valid versioned JSON, while the native authority member had exited.
+`launcher-port-5310.log` recorded the decisive failure:
+
+[source,text]
+----
+shared app-server socket is already owned:
+/tmp/fix0004-runtime/codex-desktop/app-server-bridge/app-server.sock
+Desktop bootstrap failed to start the main app phase=bootstrap-import-main
+----
+
+Both zombie PIDs still made `kill(pid, 0)` succeed. This reproduced the launch
+dialog without changing any payload file and confirmed that signal-zero alone
+was an invalid liveness check.
+
+The stricter SIGKILL acceptance run exposed one more restart boundary. Killing
+only the Electron owner left its Crashpad, GPU, and network-service processes
+reparented to PID 1. Those processes were no longer launcher descendants, but
+they still inherited the old CDP listener. A TCP connection to `9229`
+succeeded while `GET /json` timed out, and an uncorrected replacement logged:
+
+[source,text]
+----
+bind() failed: Address already in use (98)
+----
+
+Consequently, descendant-tree cleanup by itself was insufficient after the
+kernel had already reparented a child.
+
+== Root causes
+
+=== Permanent marker was treated as live ownership
+
+`shared-app-server-socket/patch.js` created the lock with Node `openSync(...,
+"wx")`. Any `EEXIST` immediately became `shared app-server socket is already
+owned`. The file contained no owner identity and there was no crash recovery.
+Normal cleanup removed the marker, but SIGKILL, an interrupted build install,
+or a restart that killed the main process before disposal left it permanently.
+
+=== Linux Manager restart stopped only the wrapper
+
+The Manager called `stop_launcher_processes_and_wait()`, followed by
+`stop_codex_processes_and_wait()`. The latter is a no-op on Linux. The former
+selected only `codex-plus-plus`/`launch-codex-plus-plus` processes, not their
+`start.sh`, Electron, or app-server descendants. Killing the wrapper could
+therefore orphan the authority and bypass the main-process cleanup callback.
+
+=== Signal-zero checks treated zombies as live processes
+
+The initial ownership recovery used `process.kill(pid, 0)` and
+`process.kill(-pgid, 0)` as its liveness tests. Linux deliberately reports
+success for zombies until their parent reaps them. A dead Desktop owner or a
+process group containing only zombie members was therefore retained forever,
+which recreated the same startup failure during the first restart acceptance
+run.
+
+=== Reparented Desktop children escaped descendant cleanup
+
+After an Electron main-process SIGKILL, surviving Electron and Crashpad
+processes can be adopted by PID 1 before the Manager takes its process
+snapshot. They no longer have the Codex++ launcher as an ancestor. The first
+children-first implementation therefore missed them, allowing an inherited
+CDP listener to block the replacement Electron process even after ownership
+recovery succeeded.
+
+== Corrections
+
+=== Versioned ownership protocol
+
+The shared socket lock now records:
+
+* schema version;
+* Desktop owner PID;
+* authority PID;
+* socket device and inode after socket readiness.
+
+Recovery remains fail closed. A new instance reclaims paths only when all
+available evidence agrees:
+
+* the recorded Desktop owner is dead;
+* a live member of the recorded, same-user authority process group has a
+  `/proc/PID/cmdline` matching `app-server --listen` and the exact configured
+  Unix socket, including when the Node group leader exited first;
+* the socket owner and recorded device/inode match;
+* the lock inode has not been replaced during recovery.
+
+A matching orphan process group receives SIGTERM and a bounded wait, then
+SIGKILL only if the complete group does not exit. The ownership paths are not
+released merely because the Node wrapper exited while its native child remains.
+Unknown processes and mismatched paths are never killed or unlinked. An empty
+lock from an older adapter can be reclaimed only after a startup grace period
+and only when no socket exists.
+
+Owner and process-group liveness now also parses `/proc/PID/stat`. States `Z`
+and `X` are treated as exited. A process group is live only when the Linux
+signal-zero probe succeeds and `/proc` shows at least one non-zombie member; a
+group whose identifiable members are all zombies is complete. Unreadable or
+ambiguous `/proc` state remains fail closed.
+
+=== Children-first Linux restart
+
+Compatibility patch `087-linux-restart-process-tree` expands each killable
+Linux launcher into its complete descendant tree and terminates deepest
+children first. It also derives the Desktop root from both a discovered
+launcher and the current Manager executable. Processes whose executable is
+under that Desktop root are reclaimed even after reparenting to PID 1, while
+the `.codex-plusplus` management directory and the current Manager ancestry
+remain protected. This still works when the old launcher has exited
+completely.
+
+== Permanent acceptance gate
+
+This check is mandatory for every accepted build with
+`shared-app-server-socket` enabled:
+
+. Launch through Codex++ and verify the lock JSON contains owner PID, authority
+  PID, socket device, and socket inode.
+. Use Manager **Restart Codex++** twice. Each replacement must expose a real
+  Electron CDP endpoint and injected Codex++ version.
+. In an isolated Xvfb test HOME, terminate the owned Desktop process tree
+  abnormally.
+. Relaunch without deleting `app-server.sock` or `app-server.sock.lock`.
+. Verify the recorded orphan/path recovery, a new ownership record, a new
+  usable socket, and successful CDP injection.
+. Verify that a zombie recorded owner and an authority group containing only
+  zombies are recovered even though `kill -0` succeeds for both.
+. SIGKILL only the Electron owner and first prove that Desktop-root children
+  have been reparented to PID 1, the recorded authority is still live, and the
+  old CDP port remains occupied. Use the Manager to restart and verify those
+  exact old processes are no longer live before the replacement exposes CDP.
+. Repeat after also SIGKILLing the launcher, so recovery must derive the
+  Desktop root from the current Manager path.
+. Verify live owners, fresh legacy locks, unknown authorities, and replacement
+  inodes still fail closed.
+
+Manual deletion of `app-server.sock*` may be used only for one-time recovery of
+an already released legacy payload after evidence is captured. If a candidate
+build needs that deletion, the candidate fails acceptance.
+
+The normative English and Chinese workflow gates live in
+`maintenance-workflow.adoc` and `maintenance-workflow_zh-CN.adoc`.
+
+== Hotfix decision
+
+The published `v1.2.41-fix-0003` payload contains the defective ownership and
+Linux restart behavior. The tag must not be moved. A separately validated
+`v1.2.41-fix-0004` hotfix is required.
+
+== Validation record
+
+The source-level RED/GREEN cycle covers:
+
+* stale recorded owner lock recovery;
+* old empty lock recovery with no socket;
+* recorded orphan authority termination and inode-safe cleanup;
+* zombie Desktop owner recovery;
+* all-zombie authority process-group completion;
+* live/pre-existing owner fail-closed behavior;
+* replacement lock inode preservation;
+* children-first Linux restart process-tree selection;
+* reparented Desktop-root orphan selection;
+* current-Manager root recovery after the launcher has disappeared.
+
+The final source tests passed as follows:
+
+* shared app-server feature: 33/33 with the Fedora `/usr/local/sbin/codex`
+  wrapper under Node 22 with serial test execution;
+* Codex++ `cdp_bridge`: 96/96;
+* Codex++ installers: 14/14;
+* Codex++ watcher: 15/15;
+* Codex++ provider sync: 26/26.
+
+A fresh final rerun caught a defect in the real-wrapper integration test
+harness: teardown sent SIGTERM only to the wrapper PID and then waited without
+a bound, so an app-server child that took longer to exit hid a successful
+WebSocket 101 handshake behind the suite's 15-second timeout. The test now
+launches its authority and proxy in detached process groups, waits two seconds
+after SIGTERM, and escalates the complete group to SIGKILL with a final bounded
+check. This is test-only hardening and did not require rebuilding the accepted
+payload. The corrected Fedora 43 run passed all 33 tests in 5.8 seconds.
+
+The accepted Fedora 43 payload is based on Codex Desktop
+`26.715.72028`, Electron `42.3.0`, and 29 enabled Linux features. Its pinned
+DMG SHA256 is
+`617ea5af4577dba86f0ee4380fc06ce76b1666da5c32996ed0a75bc99c7d85c2`.
+Final payload hashes are:
+
+[cols="1,2"]
+|===
+|File |SHA256
+
+|`resources/app.asar`
+|`e432bd7761f4a3cd5c1824c083a034096125c07c2b73e5da7f44bd333771b461`
+
+|`codex-plus-plus`
+|`ba356bfc36cac20bc7019fa40b9f9669772a69f2dfeddbab61386754eaba4b80`
+
+|`codex-plus-plus-manager`
+|`47b13b4c7320178be500ad0879c43d42b661e1c40c5069f49acbaab8e664afce`
+
+|`launch-codex-plus-plus`
+|`d6a7a257c882d587ec6e6659e653e39a29c1c1031a161a4365603fab774da776`
+|===
+
+The clean `codexpp-v141-fix0004-fedora-validate3` container used Xvfb `:107`
+and xdotool against the real Manager button. The observed ownership sequence
+was `890/1011`, `3700/3800`, `6085/6225`, `8753/8852`, and finally
+`11744/11879` (owner/authority). The run covered first launch, two consecutive
+normal restarts, owner-only SIGKILL with live PID-1 Electron orphans and a
+nonresponsive occupied CDP port, and owner/launcher/authority-group SIGKILL
+with an all-zombie authority group. Every replacement returned a usable CDP
+target with `menu=true`, `modelPatch=1`, the visible `Codex++ 1.2.41`
+indicator, and `renderer.script_loaded` reporting `hasBridge=true`. No runtime
+socket file was manually deleted.
+
+After rustfmt, both release binaries were rebuilt from the formatted patch
+targets and the payload was replaced again. A final Xvfb `:108` Manager-button
+launch created live owner `900` and authority `1046`, reproduced all three CDP
+injection markers, and passed the real payload compatibility gate for 37
+x86-64 ELF files against the host GLIBC 2.43 ceiling.
+
+GUI automation for this incident remained a container acceptance concern. The
+maintainer host was not used as a window-control target: its post-installation
+acceptance is limited to static payload hashes, metadata, dependencies, desktop
+entry layout, and confirmation that no host CodexDesktop process was started.
+This isolation rule is now a permanent maintenance-workflow requirement.
+
+The validation evidence is retained under
+`logs-fix0004/validation3` on the project XFS loop and copied into the local
+build-artifacts archive described below.
+
+== Delivery record
+
+The Fedora 43 portable release was generated with maximum LZMA2 compression
+and solid mode disabled. `7z t` reported `Everything is Ok`, `Solid = -`, and
+10,684 independent file blocks. Extracting the four payload files listed above
+reproduced every accepted SHA256. The archive is:
+
+[cols="2,1,2"]
+|===
+|File |Bytes |SHA256
+
+|`codex-desktop-portable-v1.2.41-fix-0004-fedora43-modern-linux-x86_64.7z`
+|286,023,912
+|`d997cefe18de75b51a5e8be2b109282f95214aacce8c5bd4c54804ceab1246d3`
+
+|`CodexDesktop-Portable-Manager-v1.2.41-fix-0004.ps1`
+|16,821
+|`62666a975cd99b4954aebbbacc5d6d9950ac9cea2490b67f0176d2da60d28cc3`
+|===
+
+The complete local evidence archive contains the release assets, build and
+dependency logs, Fedora metadata, process snapshots, CDP/injection results, and
+Xvfb screenshots. It also uses maximum non-solid LZMA2 compression:
+
+[source,text]
+----
+dist/v1.2.41-fix-0004/CodexPlusPlus-for-Linux-v1.2.41-fix-0004-build-artifacts.7z
+SHA256 4c1adb4f9c046c52ac955cc658c4c9fe476acd1ec2cac263a77932f44d90aeb9
+Bytes  245789995
+Solid  -
+Blocks 46
+----
+
+Before host replacement, the previous Fedora payload was archived separately:
+
+[source,text]
+----
+dist/v1.2.41-fix-0004/host-backups/CodexDesktop-pre-v1.2.41-fix-0004.7z
+SHA256 9dee4d66fea27c959fa6b653312deab95fe0bab3ff7dc7c3ace05e3395d9cfdd
+Bytes  285986206
+Solid  -
+Blocks 10682
+----
+
+`CodexDesktop-Portable-Manager.ps1 -Action update` then atomically replaced
+`/home/deck/opt/CodexDesktop` from the accepted Fedora archive while preserving
+user data. Static host acceptance confirmed:
+
+* all four installed payload hashes match the accepted values in this record;
+* build metadata reports `fedora:43/rpm`, Electron `42.3.0`, and 29 enabled
+  Linux features;
+* the Manager has no missing dynamic dependency and resolves WebKitGTK 4.1,
+  JavaScriptCoreGTK 4.1, and libsoup 3 from the host;
+* no compatibility `manager-runtime` directory exists;
+* the launcher and Manager files are executable;
+* only the managed `Codex++` and `Codex++ Manager` desktop entries exist; the
+  obsolete iconless CodexDesktop entries are absent;
+* no process from the installed host Desktop root remained after acceptance.
+
+The full build-artifacts archive and pre-update host backup remain local. The
+GitHub release for tag `v1.2.41-fix-0004` publishes only the Fedora portable
+archive, its checksum, the versioned Portable Manager, and `SHA256SUMS`:
+
+https://github.com/906341774/CodexPlusPlus-for-Linux/releases/tag/v1.2.41-fix-0004

@@ -40,17 +40,25 @@
     {
       "id": "launcher-environment",
       "name": "Linux launcher environment and helper access",
-      "patchIds": ["030-linux-launcher-environment"],
+      "patchIds": ["030-linux-launcher-environment", "087-linux-restart-process-tree", "900-regression-tests"],
       "whiteBoxChecks": [
         "Regression tests cover resolver and proxy environment preservation",
+        "Regression test: unix_restart_cleanup_includes_launcher_descendants_children_first",
+        "Regression test: unix_restart_cleanup_includes_orphans_from_the_launchers_desktop_root",
+        "Regression test: unix_restart_cleanup_uses_the_current_manager_root_when_launcher_is_gone",
+        "Linux feature tests reclaim dead-owner and old legacy shared app-server locks without weakening live-owner or inode guards",
         "Source marker: CODEX_WEBVIEW_PORT",
         "Source marker: Access-Control-Allow-Private-Network",
-        "Source marker: handle_helper_bridge_route"
+        "Source marker: handle_helper_bridge_route",
+        "Source marker: filter_killable_unix_restart_processes",
+        "Source marker: authorityGroupMatches"
       ],
       "blackBoxChecks": [
         "Codex starts from the Codex++ Manager without Cannot access before initialization errors",
         "The Codex webview can call the Codex++ helper over localhost without private-network preflight failure",
-        "The Codex webview can read Codex++ settings from the helper even when the CDP binding is missing or reconnecting"
+        "The Codex webview can read Codex++ settings from the helper even when the CDP binding is missing or reconnecting",
+        "Two consecutive Manager restarts replace the complete launcher/Start.sh/Electron/app-server tree without shared app-server socket ownership errors",
+        "After isolated abnormal termination, relaunch reclaims Desktop-root processes reparented to PID 1, recovers recorded stale ownership without manually deleting app-server.sock or app-server.sock.lock, and restores the configured CDP listener"
       ]
     },
     {

@@ -163,6 +163,114 @@ pub fn filter_killable_unix_launcher_processes<S: AsRef<str>>(
         .collect()
 }
 
+pub fn filter_killable_unix_restart_processes<S: AsRef<str>>(
+    processes: impl IntoIterator<Item = (u32, u32, S)>,
+    current_process_id: u32,
+) -> Vec<u32> {
+    let processes = processes
+        .into_iter()
+        .map(|(process_id, parent_process_id, executable)| {
+            (
+                process_id,
+                parent_process_id,
+                executable.as_ref().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let launcher_ids = filter_killable_unix_launcher_processes(
+        processes
+            .iter()
+            .map(|(process_id, parent_process_id, executable)| {
+                (*process_id, *parent_process_id, executable.as_str())
+            }),
+        current_process_id,
+    );
+    let parents = processes
+        .iter()
+        .map(|(process_id, parent_process_id, _)| (*process_id, *parent_process_id))
+        .collect::<HashMap<_, _>>();
+    let mut protected = HashSet::new();
+    let mut cursor = current_process_id;
+    while cursor != 0 && protected.insert(cursor) {
+        cursor = parents.get(&cursor).copied().unwrap_or(0);
+    }
+    let launcher_ids = launcher_ids.into_iter().collect::<HashSet<_>>();
+    let app_roots = processes
+        .iter()
+        .filter(|(process_id, _, _)| {
+            *process_id == current_process_id || launcher_ids.contains(process_id)
+        })
+        .filter_map(|(_, _, executable)| unix_launcher_app_root(executable))
+        .collect::<HashSet<_>>();
+    let mut selected = launcher_ids.clone();
+    for (process_id, _, executable) in &processes {
+        if protected.contains(process_id) || selected.contains(process_id) {
+            continue;
+        }
+        if app_roots
+            .iter()
+            .any(|root| unix_process_belongs_to_desktop_root(executable, root))
+        {
+            selected.insert(*process_id);
+        }
+    }
+    loop {
+        let before = selected.len();
+        for (process_id, parent_process_id, _) in &processes {
+            if !protected.contains(process_id) && selected.contains(parent_process_id) {
+                selected.insert(*process_id);
+            }
+        }
+        if selected.len() == before {
+            break;
+        }
+    }
+    let depth = |process_id: u32| {
+        let mut depth = 0usize;
+        let mut cursor = process_id;
+        let mut visited = HashSet::new();
+        while visited.insert(cursor) {
+            let Some(parent) = parents.get(&cursor).copied() else {
+                break;
+            };
+            if !selected.contains(&parent) {
+                break;
+            }
+            depth += 1;
+            cursor = parent;
+        }
+        depth
+    };
+    let mut process_ids = selected.iter().copied().collect::<Vec<_>>();
+    process_ids.sort_by(|left, right| {
+        depth(*right)
+            .cmp(&depth(*left))
+            .then(
+                launcher_ids
+                    .contains(left)
+                    .cmp(&launcher_ids.contains(right)),
+            )
+            .then(left.cmp(right))
+    });
+    process_ids
+}
+
+fn unix_launcher_app_root(executable: &str) -> Option<PathBuf> {
+    Path::new(executable)
+        .ancestors()
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name == ".codex-plusplus")
+        })
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+}
+
+fn unix_process_belongs_to_desktop_root(executable: &str, app_root: &Path) -> bool {
+    let executable = Path::new(executable);
+    executable.starts_with(app_root) && !executable.starts_with(app_root.join(".codex-plusplus"))
+}
+
 fn is_unix_launcher_executable(executable: &str) -> bool {
     Path::new(executable)
         .file_name()
@@ -348,7 +456,7 @@ pub fn stop_launcher_processes() {
 #[cfg(not(windows))]
 pub fn stop_launcher_processes() {
     let killable =
-        filter_killable_unix_launcher_processes(enumerate_unix_processes(), std::process::id());
+        filter_killable_unix_restart_processes(enumerate_unix_processes(), std::process::id());
     terminate_unix_processes(&killable, false);
 }
 
@@ -375,7 +483,7 @@ pub fn stop_launcher_processes_and_wait() {
 #[cfg(not(windows))]
 pub fn stop_launcher_processes_and_wait() {
     let killable =
-        filter_killable_unix_launcher_processes(enumerate_unix_processes(), std::process::id());
+        filter_killable_unix_restart_processes(enumerate_unix_processes(), std::process::id());
     terminate_unix_processes_and_wait(
         killable,
         RESTART_STOP_WAIT_TIMEOUT_MS,

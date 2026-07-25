@@ -10,6 +10,9 @@ use codex_plus_core::watcher::{
     find_session_index_cleanup_blocking_processes_from_snapshot,
 };
 
+#[cfg(not(windows))]
+use codex_plus_core::watcher::filter_killable_unix_restart_processes;
+
 #[test]
 fn cdp_listening_returns_true_for_bound_loopback_port() {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -134,6 +137,78 @@ fn unix_launcher_cleanup_contract_filters_only_adapter_launchers() {
     assert!(source.contains("filter_killable_unix_launcher_processes"));
     assert!(source.contains("launch-codex-plus-plus"));
     assert!(source.contains("terminate_unix_processes_and_wait"));
+}
+
+#[cfg(not(windows))]
+#[test]
+fn unix_restart_cleanup_includes_launcher_descendants_children_first() {
+    let processes = [
+        (1, 0, "/usr/lib/systemd/systemd"),
+        (20, 1, "/opt/codex-plus-plus-manager"),
+        (30, 20, "/opt/current-manager-worker"),
+        (
+            40,
+            1,
+            "/opt/CodexDesktop/.codex-plusplus/install/codex-plus-plus",
+        ),
+        (41, 40, "/opt/CodexDesktop/start.sh"),
+        (42, 41, "/opt/CodexDesktop/electron"),
+        (43, 42, "/opt/CodexDesktop/resources/codex app-server"),
+        (50, 1, "/home/user/.local/bin/codex"),
+    ];
+
+    assert_eq!(
+        filter_killable_unix_restart_processes(processes, 30),
+        vec![43, 42, 41, 40]
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn unix_restart_cleanup_includes_orphans_from_the_launchers_desktop_root() {
+    let processes = [
+        (1, 0, "/usr/lib/systemd/systemd"),
+        (
+            20,
+            1,
+            "/opt/CodexDesktop/.codex-plusplus/install/codex-plus-plus-manager",
+        ),
+        (
+            40,
+            1,
+            "/opt/CodexDesktop/.codex-plusplus/install/codex-plus-plus",
+        ),
+        (42, 1, "/opt/CodexDesktop/electron"),
+        (43, 1, "/opt/CodexDesktop/chrome_crashpad_handler"),
+        (44, 1, "/opt/CodexDesktop/resources/native/app-helper"),
+        (50, 1, "/opt/OtherDesktop/electron"),
+    ];
+
+    assert_eq!(
+        filter_killable_unix_restart_processes(processes, 20),
+        vec![42, 43, 44, 40]
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn unix_restart_cleanup_uses_the_current_manager_root_when_launcher_is_gone() {
+    let processes = [
+        (1, 0, "/usr/lib/systemd/systemd"),
+        (
+            20,
+            1,
+            "/opt/CodexDesktop/.codex-plusplus/install/codex-plus-plus-manager",
+        ),
+        (42, 1, "/opt/CodexDesktop/electron"),
+        (43, 1, "/opt/CodexDesktop/chrome_crashpad_handler"),
+        (50, 1, "/opt/OtherDesktop/electron"),
+    ];
+
+    assert_eq!(
+        filter_killable_unix_restart_processes(processes, 20),
+        vec![42, 43]
+    );
 }
 
 #[test]

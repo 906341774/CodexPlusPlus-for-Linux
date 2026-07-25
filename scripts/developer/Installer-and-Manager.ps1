@@ -1057,7 +1057,7 @@ function Assert-SourceLinuxAdaptationApplied {
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/launcher.rs') '"--new-instance"' 'Linux start.sh new-instance argument'
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/launcher.rs') 'CODEX_WEBVIEW_PORT' 'Linux Codex++ webview port environment'
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/launcher.rs') 'Access-Control-Allow-Private-Network' 'Linux helper private-network CORS marker'
-    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/watcher.rs') 'filter_killable_unix_launcher_processes' 'Linux stale launcher cleanup marker'
+    Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/watcher.rs') 'filter_killable_unix_restart_processes' 'Linux restart process-tree cleanup marker'
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/watcher.rs') 'launch-codex-plus-plus' 'Linux launcher wrapper cleanup marker'
     Assert-TextFileContains (Join-Path $SourceRoot 'apps/codex-plus-manager/src-tauri/src/commands.rs') 'inspect_entrypoints_for_app(codex_app_path.as_deref())' 'Linux manager overview entrypoint resolver'
     Assert-TextFileContains (Join-Path $SourceRoot 'crates/codex-plus-core/src/install/mod.rs') 'linuxAdapterInstallRoot' 'Linux adapter state install root'
@@ -1097,7 +1097,7 @@ function Assert-InstalledLinuxAdaptationApplied {
     Assert-BinaryContainsAsciiLiteral $launcher 'Access-Control-Allow-Private-Network' 'Linux helper private-network CORS marker'
     # EN: Optimized release builds may keep behavior markers while folding away wrapper filename literals.
     # ZH: 优化后的 release 构建可能保留行为标记，但会折叠掉 wrapper 文件名字面量。
-    Assert-BinaryContainsAsciiLiteral $launcher 'filter_killable_unix_launcher_processes' 'Linux stale launcher cleanup marker'
+    Assert-BinaryContainsAsciiLiteral $launcher 'filter_killable_unix_restart_processes' 'Linux restart process-tree cleanup marker'
     Assert-BinaryContainsAsciiLiteral $launcher 'launcher.provider_sync_launch_timeout' 'Linux provider sync launch marker'
     Assert-BinaryContainsAsciiLiteral $launcher 'codexServiceTierLinuxComposerFooters' 'Linux Fast badge composer marker'
     Assert-BinaryContainsAsciiLiteral $launcher 'codexServiceTierBackendBlocksLocalOverride' 'Linux Fast badge transient backend checking marker'

@@ -87,6 +87,13 @@ xref:snippets.adoc[English] | 简体中文
 |当旧会话已经具有有效 rollout 元数据和首条用户文本，却因 `preview` 为空而不进入项目会话索引时需要。
 |xref:attachment$patches/compatibility/086-linux-thread-preview-backfill.patch[patch]
 
+|`087-linux-restart-process-tree`
+|必需
+|`crates/codex-plus-core/src/watcher.rs`
+|让 Linux Manager 重启按最深子进程优先的顺序终止完整 Codex++ launcher 后代进程树，并回收重挂到 PID 1、但仍位于同一 Desktop 根目录下的 Electron 或 Crashpad 进程；当前 Manager 及其 `.codex-plusplus` 管理目录保持受保护。
+|当 **重启 Codex++** 留下 orphan authority、shared app-server stale lock，或占用既定 CDP 端口的重挂 Electron 进程时需要；旧 launcher 已完全退出的情况也必须恢复。
+|xref:attachment$patches/compatibility/087-linux-restart-process-tree.patch[patch]
+
 |`100-browser-native-rehosting`
 |默认启用的增强功能
 |Codex++ launcher、Manager、gateway core、browser shim 和定点测试
@@ -97,7 +104,7 @@ xref:snippets.adoc[English] | 简体中文
 |`900-regression-tests`
 |可选
 |`apps/codex-plus-manager`、`crates/codex-plus-core/tests` 与 `crates/codex-plus-data/tests` 下的兼容性定点测试和聚合测试配置
-|覆盖兼容性补丁，包括 GPT-5.6 Fast/Standard 变体、与官方 Fast 控件共存、Linux 用户脚本 URL alias、真实标题 catalog 回填、空 thread preview 修复、catalog 幂等同步和 projectless 排除。
+|覆盖兼容性补丁，包括 GPT-5.6 Fast/Standard 变体、与官方 Fast 控件共存、Linux 用户脚本 URL alias、重启进程树清理、真实标题 catalog 回填、空 thread preview 修复、catalog 幂等同步和 projectless 排除。
 |推荐在源码构建和 CI 中启用；如果只需要更快的 production-only patch，可以禁用。
 |xref:attachment$patches/compatibility/900-regression-tests.patch[patch]
 |===
@@ -232,6 +239,17 @@ xref:snippets.adoc[English] | 简体中文
     "purpose": "Backfill empty visible thread previews from first_user_message so legacy conversations satisfy the Codex Desktop project index without overwriting existing previews."
   },
   {
+    "id": "087-linux-restart-process-tree",
+    "required": true,
+    "defaultEnabled": true,
+    "kind": "production",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/087-linux-restart-process-tree.patch",
+    "targets": [
+      "crates/codex-plus-core/src/watcher.rs"
+    ],
+    "purpose": "Terminate the complete Linux Codex++ launcher descendant tree children-first and reclaim same-Desktop-root Electron or Crashpad processes after PID 1 reparenting, including when the old launcher has exited, without terminating the current Manager management tree."
+  },
+  {
     "id": "100-browser-native-rehosting",
     "required": false,
     "defaultEnabled": true,
@@ -363,6 +381,14 @@ include::attachment$patches/compatibility/085-linux-workspace-state-paths.patch[
 [source,diff]
 ----
 include::attachment$patches/compatibility/086-linux-thread-preview-backfill.patch[]
+----
+
+[#snippet-087-linux-restart-process-tree]
+=== 087 Linux 重启进程树
+
+[source,diff]
+----
+include::attachment$patches/compatibility/087-linux-restart-process-tree.patch[]
 ----
 
 [#snippet-100-browser-native-rehosting]

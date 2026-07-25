@@ -82,6 +82,26 @@ $HOME/opt/CodexDesktop/resources/codex-linux-build-info.json
 . 提交前总结已解决问题、已验证功能和未解决问题。
 . 推送到维护者 fork，并创建对应 tag 或 hotfix tag。
 
+==== Shared app-server 重启门禁
+
+凡是启用了 `shared-app-server-socket` 的候选产物，都必须在目标发行版环境中完成重启生命周期验收。首次启动成功不等于通过。
+
+本门禁的所有 GUI 自动化都必须在对应的 XFS-backed Podman 容器中完成，使用独立测试 `HOME`、Xvfb display 与 xdotool。禁止对维护者宿主机正在使用的活动桌面执行坐标或窗口自动化；无关前台应用会使结果失去确定性，也可能干扰正常使用。安装完成后，宿主验收仅检查哈希、metadata、依赖、文件布局和进程不存在性；除非维护者明确要求，否则不得在宿主进行自动化图形交互。
+
+验收必须包括：
+
+* 确认 `app-server.sock.lock` 包含版本化 ownership 元数据，其中记录 Desktop owner PID、authority PID 和 socket device/inode；
+* 在 Manager 中连续执行两次 **重启 Codex++**，并确认每次都是旧 launcher 进程树完整退出后才启动替代实例；
+* 在隔离的 Xvfb 测试 HOME 中异常终止所属 Desktop 进程树，然后在不手工删除任何 runtime path 的前提下重新启动；
+* 确认 dead owner、记录匹配的 orphan authority、匹配 socket inode 和未被替换的 lock inode 能自动恢复；
+* 确认 Linux `/proc` 状态为 `Z` 或 `X` 的记录 owner，以及只剩这些状态成员的 authority 进程组会被视为已退出；不得只以 `kill -0` 作为存活证据；
+* 只对 Electron owner 执行 SIGKILL，确认重挂到 PID 1 后仍在运行的 Electron/Crashpad 子进程，以及能够建立 TCP 连接却不再响应 `/json` 的 CDP 端口，会在替代实例启动前被回收；
+* 在旧 launcher 已消失的条件下重复验收，确认仍可从当前 Manager 路径识别 Desktop 根目录，同时不会终止 Manager 或其 `.codex-plusplus` 管理目录中的任何进程；
+* 确认 live owner、新鲜旧格式 lock、替换 inode、未知 authority 或不匹配 socket 仍然 fail closed；
+* 验证替代实例的 Electron CDP target 与 Codex++ 注入，而不是只确认存在 `codex app-server` 进程。
+
+若出现 `shared app-server socket is already owned`，清理前必须保存 socket、lock、进程和 `/proc` 证据。需要手工执行 `rm app-server.sock*` 才能启动，应判定为发行阻断问题，不能作为可接受变通。
+
 === bounded-auto
 
 `bounded-auto` 是允许继续探索的自动化模式，但一次只能完成一个阶段。

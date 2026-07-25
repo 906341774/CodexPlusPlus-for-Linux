@@ -27,10 +27,28 @@ control endpoint and must not be exposed directly over TCP or forwarded as a
 network service.
 
 Authority startup is serialized by an owner-only lock next to the socket. The
-feature fails closed if either path already exists; it never guesses that an
-existing socket or lock is stale. After an abnormal Desktop termination, verify
-that no authority still owns the configured endpoint before removing stale
-paths and restarting Desktop.
+lock records the Desktop owner PID, the authority PID, and the socket identity.
+An active or unverifiable owner still fails closed. If Desktop terminated
+abnormally, the next instance may stop only the recorded process group when a
+same-user Linux `/proc` member still has an `app-server --listen` command line
+matching this exact socket. This also covers a native Codex child that outlives
+its Node launcher/group leader. Recovery removes only the matching socket inode
+and reclaims only the unchanged lock inode. An old empty lock from an earlier
+adapter build is reclaimed only when no socket exists and the lock is older than
+the startup grace period. Unknown, fresh, replaced, or mismatched paths are
+preserved.
+
+Linux signal-zero checks are not sufficient liveness evidence because zombie
+processes still answer `kill(pid, 0)`. Owner and process-group checks also read
+`/proc/PID/stat`: `Z` and `X` owners are dead, and a group containing only those
+states has exited. If `/proc` cannot be inspected reliably, recovery remains
+fail closed.
+
+Release acceptance must cover both a normal Manager restart and an abnormal
+termination followed by relaunch. Neither path may require a maintainer to
+delete `app-server.sock` or `app-server.sock.lock` manually. The regression run
+must include a zombie recorded owner and an authority group containing only
+zombies, as can occur in a validation container with a non-reaping PID 1.
 
 ## SSH setup
 

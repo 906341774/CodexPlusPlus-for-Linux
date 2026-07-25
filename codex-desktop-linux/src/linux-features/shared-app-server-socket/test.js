@@ -81,14 +81,72 @@ async function readWebSocketUpgrade(child) {
 }
 
 async function stopChild(child) {
-  if (child == null || child.exitCode != null || child.signalCode != null) return;
-  const closed = new Promise((resolve) => child.once("close", resolve));
-  child.kill();
-  await closed;
+  if (child == null || !Number.isInteger(child.pid)) return;
+  const signalGroup = (signal) => {
+    try {
+      process.kill(-child.pid, signal);
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+  };
+  const waitForGroupExit = async (timeoutMs) => {
+    const deadline = Date.now() + timeoutMs;
+    while (processGroupAlive(child.pid)) {
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return true;
+  };
+
+  signalGroup("SIGTERM");
+  if (await waitForGroupExit(2000)) return;
+  signalGroup("SIGKILL");
+  assert.equal(await waitForGroupExit(1000), true, "detached child group did not exit");
 }
+
+async function waitForCondition(condition, message, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+function processGroupAlive(processGroupId) {
+  try {
+    process.kill(-processGroupId, 0);
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    throw error;
+  }
+
+  let foundMember = false;
+  for (const entry of fs.readdirSync("/proc")) {
+    const pid = Number(entry);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    let stat;
+    try {
+      stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
+    const commandEnd = stat.lastIndexOf(")");
+    if (commandEnd < 0) continue;
+    const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+    if (Number(fields[2]) !== processGroupId) continue;
+    foundMember = true;
+    if (fields[0] !== "Z" && fields[0] !== "X") return true;
+  }
+  return !foundMember;
+}
+
+let nextFakeChildPid = 900_000;
 
 function fakeChild() {
   const child = new EventEmitter();
+  child.pid = nextFakeChildPid;
+  nextFakeChildPid += 1;
   child.exitCode = null;
   child.signalCode = null;
   child.stdin = new PassThrough();
@@ -104,7 +162,13 @@ function fakeChild() {
   return child;
 }
 
-function loadInjectedTransport({ spawnImpl, WebSocketImpl = null, fsImpl = fs, timeoutCapMs = null } = {}) {
+function loadInjectedTransport({
+  spawnImpl,
+  WebSocketImpl = null,
+  fsImpl = fs,
+  processImpl = process,
+  timeoutCapMs = null,
+} = {}) {
   class DefaultWebSocket extends EventEmitter {
     constructor(_url, options) {
       super();
@@ -137,7 +201,7 @@ function loadInjectedTransport({ spawnImpl, WebSocketImpl = null, fsImpl = fs, t
   const context = {
     n: namespace,
     url: "ws://localhost/rpc",
-    process,
+    process: processImpl,
     console,
     require(id) {
       if (id === "node:child_process") return { spawn: spawnImpl };
@@ -223,7 +287,8 @@ test("patch selects the bridge only for the local host and is idempotent", () =>
   assert.match(patched, /app-server`,\s*`proxy`,\s*`--sock`/);
   assert.match(patched, /app-server`,\s*`--listen`,\s*`unix:\/\//);
   assert.match(patched, /await this\.ensureAuthority\(\)/);
-  assert.match(patched, /e\.once\(`close`,t\);try\{e\.kill\(\)/);
+  assert.match(patched, /detached:!0/);
+  assert.match(patched, /this\.signalChildGroup\(e\)/);
   assert.match(patched, /openSync\(this\.lockPath,`wx`,384\)/);
   assert.match(patched, /this\.sameIdentity\(this\.socketIdentity,e\)/);
   assert.match(patched, /requires CODEX_CLI_PATH/);
@@ -319,6 +384,7 @@ test("injected transport serializes startup and removes only its owned socket", 
   const socketPath = path.join(tempDir, "app-server.sock");
   const servers = new Map();
   const children = [];
+  const spawnOptions = [];
   let replacement;
   let replacementError;
   let installReplacementBeforeChildClose = false;
@@ -337,7 +403,8 @@ test("injected transport serializes startup and removes only its owned socket", 
   };
   const { Transport } = loadInjectedTransport({
     fsImpl: identityFs,
-    spawnImpl(_command, args) {
+    spawnImpl(_command, args, options) {
+      spawnOptions.push(options);
       const child = fakeChild();
       children.push(child);
       const target = args.at(-1).replace("unix://", "");
@@ -374,6 +441,12 @@ test("injected transport serializes startup and removes only its owned socket", 
   try {
     await first.ensureAuthority();
     assert.equal(fs.existsSync(`${socketPath}.lock`), true);
+    const owner = JSON.parse(fs.readFileSync(`${socketPath}.lock`, "utf8"));
+    assert.equal(owner.ownerPid, process.pid);
+    assert.equal(owner.authorityPid, children[0].pid);
+    assert.equal(owner.socketDev, fs.lstatSync(socketPath).dev);
+    assert.equal(owner.socketIno, fs.lstatSync(socketPath).ino);
+    assert.equal(spawnOptions[0].detached, true);
     await assert.rejects(second.ensureAuthority(), /already owned/);
 
     installReplacementBeforeChildClose = true;
@@ -436,6 +509,418 @@ test("injected transport shares one readiness promise across concurrent connecti
   }
 });
 
+test("injected transport reclaims a stale recorded owner lock", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-dead-owner-"));
+  const socketPath = path.join(tempDir, "app-server.sock");
+  const lockPath = `${socketPath}.lock`;
+  fs.writeFileSync(lockPath, `${JSON.stringify({ version: 1, ownerPid: 2_147_483_647 })}\n`, {
+    mode: 0o600,
+  });
+  const { Transport } = loadInjectedTransport({ spawnImpl: () => fakeChild() });
+  const transport = new Transport(socketPath);
+  try {
+    await transport.acquireOwnership();
+    const owner = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+    assert.equal(owner.version, 1);
+    assert.equal(owner.ownerPid, process.pid);
+    transport.releaseOwnedPaths();
+    assert.equal(fs.existsSync(lockPath), false);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("injected transport reclaims a lock whose recorded owner is a zombie", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-zombie-owner-"));
+  const socketPath = path.join(tempDir, "app-server.sock");
+  const lockPath = `${socketPath}.lock`;
+  const ownerPid = 912_244;
+  fs.writeFileSync(lockPath, `${JSON.stringify({ version: 1, ownerPid })}\n`, { mode: 0o600 });
+  const processImpl = {
+    env: process.env,
+    getuid: process.getuid.bind(process),
+    pid: process.pid,
+    kill(pid, signal) {
+      if (pid === ownerPid && signal === 0) return true;
+      return process.kill(pid, signal);
+    },
+  };
+  const fsImpl = {
+    ...fs,
+    readFileSync(candidate, ...args) {
+      if (candidate === `/proc/${ownerPid}/stat`) {
+        return `${ownerPid} (electron) Z 1 ${ownerPid} ${ownerPid} 0 0 0`;
+      }
+      return fs.readFileSync(candidate, ...args);
+    },
+  };
+  const { Transport } = loadInjectedTransport({
+    fsImpl,
+    processImpl,
+    spawnImpl: () => fakeChild(),
+  });
+  const transport = new Transport(socketPath);
+  try {
+    await transport.acquireOwnership();
+    assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).ownerPid, process.pid);
+    transport.releaseOwnedPaths();
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("injected transport reclaims an old legacy lock when no socket exists", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-legacy-owner-"));
+  const socketPath = path.join(tempDir, "app-server.sock");
+  const lockPath = `${socketPath}.lock`;
+  fs.writeFileSync(lockPath, "", { mode: 0o600 });
+  const old = new Date(Date.now() - 60_000);
+  fs.utimesSync(lockPath, old, old);
+  const { Transport } = loadInjectedTransport({ spawnImpl: () => fakeChild() });
+  const transport = new Transport(socketPath);
+  try {
+    await transport.acquireOwnership();
+    const owner = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+    assert.equal(owner.version, 1);
+    assert.equal(owner.ownerPid, process.pid);
+    transport.releaseOwnedPaths();
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("injected transport stops a recorded orphan authority before reclaiming its socket", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-orphan-owner-"));
+  const socketPath = path.join(tempDir, "app-server.sock");
+  const lockPath = `${socketPath}.lock`;
+  const ownerPid = 2_147_483_647;
+  const authorityPid = 912_345;
+  const server = await listenUnix(socketPath);
+  const socketIdentity = fs.lstatSync(socketPath);
+  fs.writeFileSync(
+    lockPath,
+    `${JSON.stringify({
+      version: 1,
+      ownerPid,
+      authorityPid,
+      socketDev: socketIdentity.dev,
+      socketIno: socketIdentity.ino,
+    })}\n`,
+    { mode: 0o600 },
+  );
+  let authorityAlive = true;
+  const signals = [];
+  const processImpl = {
+    env: process.env,
+    getuid: process.getuid.bind(process),
+    pid: process.pid,
+    kill(pid, signal) {
+      if (pid === ownerPid) {
+        const error = new Error("owner exited");
+        error.code = "ESRCH";
+        throw error;
+      }
+      if (pid === authorityPid && signal === 0) {
+        return true;
+      }
+      if (pid === -authorityPid) {
+        if (signal === 0) {
+          if (authorityAlive) return true;
+          const error = new Error("authority exited");
+          error.code = "ESRCH";
+          throw error;
+        }
+        signals.push(signal);
+        authorityAlive = false;
+        server.close();
+        try {
+          fs.unlinkSync(socketPath);
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+        }
+        return true;
+      }
+      return process.kill(pid, signal);
+    },
+  };
+  const fsImpl = {
+    ...fs,
+    readFileSync(candidate, ...args) {
+      if (candidate === `/proc/${authorityPid}/cmdline`) {
+        return Buffer.from(`codex\0app-server\0--listen\0unix://${socketPath}\0`);
+      }
+      return fs.readFileSync(candidate, ...args);
+    },
+    lstatSync(candidate, ...args) {
+      if (candidate === `/proc/${authorityPid}`) return { uid: process.getuid() };
+      return fs.lstatSync(candidate, ...args);
+    },
+  };
+  const { Transport } = loadInjectedTransport({
+    fsImpl,
+    processImpl,
+    spawnImpl: () => fakeChild(),
+  });
+  const transport = new Transport(socketPath);
+  try {
+    await transport.acquireOwnership();
+    assert.deepEqual(signals, ["SIGTERM"]);
+    assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).ownerPid, process.pid);
+    transport.releaseOwnedPaths();
+  } finally {
+    if (server.listening) await closeServer(server);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("injected transport reclaims an orphan when the group leader exited first", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-orphan-group-"));
+  const socketPath = path.join(tempDir, "app-server.sock");
+  const lockPath = `${socketPath}.lock`;
+  const ownerPid = 2_147_483_647;
+  const authorityPid = 912_445;
+  const nativePid = 912_446;
+  const server = await listenUnix(socketPath);
+  const socketIdentity = fs.lstatSync(socketPath);
+  fs.writeFileSync(
+    lockPath,
+    `${JSON.stringify({
+      version: 1,
+      ownerPid,
+      authorityPid,
+      socketDev: socketIdentity.dev,
+      socketIno: socketIdentity.ino,
+    })}\n`,
+    { mode: 0o600 },
+  );
+  let authorityGroupAlive = true;
+  const signals = [];
+  const processImpl = {
+    env: process.env,
+    getuid: process.getuid.bind(process),
+    pid: process.pid,
+    kill(pid, signal) {
+      if (pid === ownerPid) {
+        const error = new Error("owner exited");
+        error.code = "ESRCH";
+        throw error;
+      }
+      if (pid === -authorityPid) {
+        if (signal === 0) {
+          if (authorityGroupAlive) return true;
+          const error = new Error("authority group exited");
+          error.code = "ESRCH";
+          throw error;
+        }
+        signals.push(signal);
+        authorityGroupAlive = false;
+        server.close();
+        try {
+          fs.unlinkSync(socketPath);
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+        }
+        return true;
+      }
+      return process.kill(pid, signal);
+    },
+  };
+  const fsImpl = {
+    ...fs,
+    readdirSync(candidate, ...args) {
+      if (candidate === "/proc") return [String(nativePid)];
+      return fs.readdirSync(candidate, ...args);
+    },
+    readFileSync(candidate, ...args) {
+      if (candidate === `/proc/${authorityPid}/cmdline`) {
+        const error = new Error("group leader exited");
+        error.code = "ENOENT";
+        throw error;
+      }
+      if (candidate === `/proc/${nativePid}/stat`) {
+        return `${nativePid} (codex) S 1 ${authorityPid} ${authorityPid} 0 0 0`;
+      }
+      if (candidate === `/proc/${nativePid}/cmdline`) {
+        return Buffer.from(`codex\0app-server\0--listen\0unix://${socketPath}\0`);
+      }
+      return fs.readFileSync(candidate, ...args);
+    },
+    lstatSync(candidate, ...args) {
+      if (candidate === `/proc/${nativePid}`) return { uid: process.getuid() };
+      return fs.lstatSync(candidate, ...args);
+    },
+  };
+  const { Transport } = loadInjectedTransport({
+    fsImpl,
+    processImpl,
+    spawnImpl: () => fakeChild(),
+  });
+  const transport = new Transport(socketPath);
+  try {
+    await transport.acquireOwnership();
+    assert.deepEqual(signals, ["SIGTERM"]);
+    assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).ownerPid, process.pid);
+    transport.releaseOwnedPaths();
+  } finally {
+    if (server.listening) await closeServer(server);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("authority cleanup waits for the whole process group and escalates", async () => {
+  const authorityPid = 912_545;
+  const child = fakeChild();
+  child.pid = authorityPid;
+  let groupAlive = true;
+  const signals = [];
+  const processImpl = {
+    env: process.env,
+    pid: process.pid,
+    kill(pid, signal) {
+      assert.equal(pid, -authorityPid);
+      if (signal === 0) {
+        if (groupAlive) return true;
+        const error = new Error("authority group exited");
+        error.code = "ESRCH";
+        throw error;
+      }
+      signals.push(signal);
+      if (signal === "SIGTERM") {
+        child.signalCode = signal;
+        queueMicrotask(() => {
+          child.emit("exit", null, signal);
+          child.emit("close", null, signal);
+        });
+      } else {
+        groupAlive = false;
+      }
+      return true;
+    },
+  };
+  const { Transport } = loadInjectedTransport({
+    processImpl,
+    spawnImpl: () => child,
+    timeoutCapMs: 10,
+  });
+  const transport = new Transport("/unused/socket");
+
+  assert.equal(await transport.stopAuthority(child), true);
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+});
+
+test("authority cleanup treats a process group containing only zombies as exited", () => {
+  const authorityPid = 912_595;
+  const nativePid = 912_596;
+  const processImpl = {
+    env: process.env,
+    pid: process.pid,
+    kill(pid, signal) {
+      assert.equal(pid, -authorityPid);
+      assert.equal(signal, 0);
+      return true;
+    },
+  };
+  const fsImpl = {
+    ...fs,
+    readdirSync(candidate, ...args) {
+      if (candidate === "/proc") return [String(authorityPid), String(nativePid)];
+      return fs.readdirSync(candidate, ...args);
+    },
+    readFileSync(candidate, ...args) {
+      if (candidate === `/proc/${authorityPid}/stat`) {
+        return `${authorityPid} (node) Z 1 ${authorityPid} ${authorityPid} 0 0 0`;
+      }
+      if (candidate === `/proc/${nativePid}/stat`) {
+        return `${nativePid} (codex) Z 1 ${authorityPid} ${authorityPid} 0 0 0`;
+      }
+      return fs.readFileSync(candidate, ...args);
+    },
+  };
+  const { Transport } = loadInjectedTransport({
+    fsImpl,
+    processImpl,
+    spawnImpl: () => fakeChild(),
+  });
+  const transport = new Transport("/unused/socket");
+
+  assert.equal(transport.childGroupAlive(authorityPid), false);
+});
+
+test("orphan recovery fails closed for an unknown authority command", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-unknown-group-"));
+  const socketPath = path.join(tempDir, "app-server.sock");
+  const lockPath = `${socketPath}.lock`;
+  const ownerPid = 2_147_483_647;
+  const authorityPid = 912_645;
+  const server = await listenUnix(socketPath);
+  const socketIdentity = fs.lstatSync(socketPath);
+  fs.writeFileSync(
+    lockPath,
+    `${JSON.stringify({
+      version: 1,
+      ownerPid,
+      authorityPid,
+      socketDev: socketIdentity.dev,
+      socketIno: socketIdentity.ino,
+    })}\n`,
+    { mode: 0o600 },
+  );
+  const signals = [];
+  const processImpl = {
+    env: process.env,
+    getuid: process.getuid.bind(process),
+    pid: process.pid,
+    kill(pid, signal) {
+      if (pid === ownerPid) {
+        const error = new Error("owner exited");
+        error.code = "ESRCH";
+        throw error;
+      }
+      if (pid === -authorityPid && signal === 0) return true;
+      if (pid === -authorityPid) {
+        signals.push(signal);
+        return true;
+      }
+      return process.kill(pid, signal);
+    },
+  };
+  const fsImpl = {
+    ...fs,
+    readdirSync(candidate, ...args) {
+      if (candidate === "/proc") return [String(authorityPid)];
+      return fs.readdirSync(candidate, ...args);
+    },
+    readFileSync(candidate, ...args) {
+      if (candidate === `/proc/${authorityPid}/stat`) {
+        return `${authorityPid} (unrelated) S 1 ${authorityPid} ${authorityPid} 0 0 0`;
+      }
+      if (candidate === `/proc/${authorityPid}/cmdline`) {
+        return Buffer.from(`unrelated\0--listen\0unix://${socketPath}\0`);
+      }
+      return fs.readFileSync(candidate, ...args);
+    },
+    lstatSync(candidate, ...args) {
+      if (candidate === `/proc/${authorityPid}`) return { uid: process.getuid() };
+      return fs.lstatSync(candidate, ...args);
+    },
+  };
+  const { Transport } = loadInjectedTransport({
+    fsImpl,
+    processImpl,
+    spawnImpl: () => fakeChild(),
+  });
+  const transport = new Transport(socketPath);
+  try {
+    await assert.rejects(transport.acquireOwnership(), /already owned/);
+    assert.deepEqual(signals, []);
+    assert.equal(fs.lstatSync(socketPath).isSocket(), true);
+    assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).authorityPid, authorityPid);
+  } finally {
+    await closeServer(server);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("injected transport fails closed on a pre-existing lock", async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-stale-lock-"));
   const socketPath = path.join(tempDir, "app-server.sock");
@@ -462,7 +947,7 @@ test("injected transport fails closed on a pre-existing lock", async () => {
   }
 });
 
-test("injected transport preserves a replacement lock inode", () => {
+test("injected transport preserves a replacement lock inode", async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-lock-replace-"));
   const socketPath = path.join(tempDir, "app-server.sock");
   const lockPath = `${socketPath}.lock`;
@@ -470,7 +955,7 @@ test("injected transport preserves a replacement lock inode", () => {
   const { Transport } = loadInjectedTransport({ spawnImpl: () => fakeChild() });
   const transport = new Transport(socketPath);
   try {
-    transport.acquireOwnership();
+    await transport.acquireOwnership();
     fs.renameSync(lockPath, oldLockPath);
     fs.writeFileSync(lockPath, "replacement\n", { mode: 0o600 });
     transport.releaseOwnedPaths();
@@ -768,6 +1253,7 @@ test("documented wrapper attaches to a real Codex authority through the stock pr
   const authority = spawn(codexCli, ["app-server", "--listen", `unix://${socketPath}`], {
     env,
     stdio: ["ignore", "ignore", "ignore"],
+    detached: true,
   });
   let proxy;
 
@@ -782,6 +1268,7 @@ test("documented wrapper attaches to a real Codex authority through the stock pr
     proxy = spawn("bash", ["-c", "codex app-server proxy"], {
       env,
       stdio: ["pipe", "pipe", "ignore"],
+      detached: true,
     });
     const responsePromise = readWebSocketUpgrade(proxy);
     proxy.stdin.end(
@@ -801,6 +1288,51 @@ test("documented wrapper attaches to a real Codex authority through the stock pr
     assert.match(response.toLowerCase(), /upgrade: websocket/);
   } finally {
     await Promise.all([stopChild(proxy), stopChild(authority)]);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("injected transport owns and stops a real Codex wrapper process group", { timeout: 15000 }, async (t) => {
+  const codexCli = process.env.CODEX_CLI_PATH;
+  if (codexCli == null) {
+    t.skip("set CODEX_CLI_PATH to run the real Codex process-group integration test");
+    return;
+  }
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-group-integration-"));
+  const codexHome = path.join(tempDir, "codex-home");
+  const socketPath = path.join(tempDir, "authority", "app-server.sock");
+  const originalCodexHome = process.env.CODEX_HOME;
+  fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+  process.env.CODEX_HOME = codexHome;
+  const { Transport } = loadInjectedTransport({ spawnImpl: spawn });
+  const transport = new Transport(socketPath);
+  let authorityPid;
+
+  try {
+    await transport.ensureAuthority();
+    const ownership = JSON.parse(fs.readFileSync(`${socketPath}.lock`, "utf8"));
+    authorityPid = ownership.authorityPid;
+    assert.equal(ownership.ownerPid, process.pid);
+    assert.equal(ownership.socketDev, fs.lstatSync(socketPath).dev);
+    assert.equal(ownership.socketIno, fs.lstatSync(socketPath).ino);
+    assert.equal(processGroupAlive(authorityPid), true);
+
+    transport.dispose();
+    await waitForCondition(
+      () => !fs.existsSync(`${socketPath}.lock`) && !processGroupAlive(authorityPid),
+      "transport did not release its lock and Codex process group",
+    );
+  } finally {
+    if (Number.isInteger(authorityPid) && processGroupAlive(authorityPid)) {
+      try {
+        process.kill(-authorityPid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+      }
+    }
+    if (originalCodexHome == null) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = originalCodexHome;
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });

@@ -81,6 +81,48 @@ Do not rely on an environment-only feature list for this direct build path; if t
 . Summarize fixed issues, verified features, and known gaps before committing.
 . Push to the maintainer fork and create the matching tag or hotfix tag.
 
+==== Shared app-server restart gate
+
+Every accepted payload that enables `shared-app-server-socket` must pass a
+restart lifecycle test in the target distribution environment. A successful
+first launch is not sufficient.
+
+Run all automated GUI acceptance for this gate inside the matching XFS-backed
+Podman container with a dedicated test `HOME`, Xvfb display, and xdotool. Never
+drive the maintainer host's active desktop with coordinate or window
+automation: unrelated foreground applications make those results
+nondeterministic and can disrupt normal use. After installation, host checks
+are limited to hashes, metadata, dependencies, file layout, and process absence
+unless the maintainer explicitly requests a manual interactive check.
+
+The acceptance run must:
+
+* confirm that `app-server.sock.lock` contains versioned owner metadata with the
+  Desktop owner PID, authority PID, and socket device/inode;
+* invoke **Restart Codex++** from the Manager twice and verify that each old
+  launcher process tree exits before the replacement starts;
+* in an isolated Xvfb test home, terminate the owned Desktop process tree
+  abnormally, then relaunch without deleting either runtime path by hand;
+* confirm that a dead recorded owner, matching orphan authority, matching socket
+  inode, and unchanged lock inode are recovered automatically;
+* confirm that a recorded owner in Linux `/proc` state `Z` or `X`, and an
+  authority process group containing only those states, are treated as exited;
+  `kill -0` alone is not valid liveness evidence;
+* SIGKILL only the Electron owner and confirm that any still-running Electron
+  or Crashpad children reparented to PID 1, plus a CDP port that accepts TCP but
+  no longer serves `/json`, are reclaimed before replacement startup;
+* repeat with the old launcher absent and confirm the current Manager path can
+  still identify the Desktop root without terminating the Manager or anything
+  under its `.codex-plusplus` management directory;
+* confirm that a live owner, fresh legacy lock, replacement inode, unknown
+  authority, or mismatched socket still fails closed;
+* verify the replacement Electron CDP target and Codex++ injection, not merely
+  the existence of a `codex app-server` process.
+
+If launch reports `shared app-server socket is already owned`, capture the
+socket, lock, process, and `/proc` evidence before cleanup. Requiring a manual
+`rm app-server.sock*` is a release blocker, not an accepted workaround.
+
 === bounded-auto
 
 `bounded-auto` is allowed for continued automation experiments, but one run may complete only one stage.

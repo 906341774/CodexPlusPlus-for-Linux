@@ -87,6 +87,13 @@ Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility
 |Needed when legacy rows already have valid rollout metadata and first-user text but remain absent from the project conversation index because `preview` is empty.
 |xref:attachment$patches/compatibility/086-linux-thread-preview-backfill.patch[patch]
 
+|`087-linux-restart-process-tree`
+|Required
+|`crates/codex-plus-core/src/watcher.rs`
+|Make Linux Manager restart terminate the complete Codex++ launcher descendant tree, deepest children first, and reclaim Electron or Crashpad processes from the same Desktop root after they are reparented to PID 1. The current Manager and its `.codex-plusplus` management tree remain protected.
+|Needed when **Restart Codex++** leaves an orphan authority, a stale shared app-server lock, or a reparented Electron process holding the configured CDP port, including after the old launcher has exited completely.
+|xref:attachment$patches/compatibility/087-linux-restart-process-tree.patch[patch]
+
 |`100-browser-native-rehosting`
 |Enabled enhancement
 |Codex++ launcher, Manager, gateway core, browser shim, and focused tests
@@ -97,7 +104,7 @@ Compatibility patches under `docs/modules/ROOT/attachments/patches/compatibility
 |`900-regression-tests`
 |Optional
 |The focused compatibility test files and aggregate test configuration under `apps/codex-plus-manager`, `crates/codex-plus-core/tests`, and `crates/codex-plus-data/tests`
-|Add regression coverage for the compatibility patches, including GPT-5.6 Fast/Standard variants, coexistence with the official Fast control, Linux user-script URL aliasing, real-title catalog backfill, empty thread-preview repair, idempotent catalog sync, and projectless exclusion.
+|Add regression coverage for the compatibility patches, including GPT-5.6 Fast/Standard variants, coexistence with the official Fast control, Linux user-script URL aliasing, restart process-tree cleanup, real-title catalog backfill, empty thread-preview repair, idempotent catalog sync, and projectless exclusion.
 |Recommended for source builds and CI; can be disabled for a faster production-only patch.
 |xref:attachment$patches/compatibility/900-regression-tests.patch[patch]
 |===
@@ -232,6 +239,17 @@ The manager script extracts the JSON block between the markers below.
     "purpose": "Backfill empty visible thread previews from first_user_message so legacy conversations satisfy the Codex Desktop project index without overwriting existing previews."
   },
   {
+    "id": "087-linux-restart-process-tree",
+    "required": true,
+    "defaultEnabled": true,
+    "kind": "production",
+    "patch": "docs/modules/ROOT/attachments/patches/compatibility/087-linux-restart-process-tree.patch",
+    "targets": [
+      "crates/codex-plus-core/src/watcher.rs"
+    ],
+    "purpose": "Terminate the complete Linux Codex++ launcher descendant tree children-first and reclaim same-Desktop-root Electron or Crashpad processes after PID 1 reparenting, including when the old launcher has exited, without terminating the current Manager management tree."
+  },
+  {
     "id": "100-browser-native-rehosting",
     "required": false,
     "defaultEnabled": true,
@@ -363,6 +381,14 @@ include::attachment$patches/compatibility/085-linux-workspace-state-paths.patch[
 [source,diff]
 ----
 include::attachment$patches/compatibility/086-linux-thread-preview-backfill.patch[]
+----
+
+[#snippet-087-linux-restart-process-tree]
+=== 087 Linux restart process tree
+
+[source,diff]
+----
+include::attachment$patches/compatibility/087-linux-restart-process-tree.patch[]
 ----
 
 [#snippet-100-browser-native-rehosting]
